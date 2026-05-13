@@ -7,6 +7,7 @@ import type {
   StoredRoll
 } from "./shared/protocol";
 import { defaultConfig, type ExtensionConfig } from "./shared/storage";
+import * as THREE from "three";
 
 const candidateSelectors = [
   ".dice-history-main-container",
@@ -26,16 +27,21 @@ const maxLiveToasts = 3;
 const diceAnimationMs = 6800;
 const maxAnimatedDice = 20;
 const panelUiStorageKey = "diceRoomPanelUi";
+const defaultDiceAnimationScale = 0.75;
+const minDiceAnimationScale = 0.45;
+const maxDiceAnimationScale = 1.15;
 const activeToastByActor = new Map<string, HTMLElement>();
 let collapsed = true;
 let settingsOpen = false;
 let panelOpacity = 0.94;
+let diceAnimationScale = defaultDiceAnimationScale;
 let panelPosition: { left: number; top: number } | undefined;
 let uiLanguage: UiLanguage = "pt-BR";
 let scanTimer: number | undefined;
 let captureArmedUntil = 0;
-let armedBaselineSignatures = new Set<string>();
+let armedBaselineElements = new WeakSet<Element>();
 let captureScanTimers: number[] = [];
+const publishedElements = new WeakSet<Element>();
 
 declare global {
   interface Window {
@@ -75,6 +81,7 @@ const messages = {
     showOwnRollsHint: "Normalmente o Demiplane ja mostra sua rolagem. Deixe desligado para ver so as rolagens da sala; interpretacoes especiais ainda aparecem.",
     enableDiceAnimation: "Animacao dos dados",
     enableDiceAnimationHint: "Mostra os dados caindo e quicando na ficha, com som leve.",
+    diceAnimationSize: "Tamanho dos dados",
     sent: "enviado",
     received: "recebido",
     history: "historico",
@@ -133,6 +140,7 @@ const messages = {
     showOwnRollsHint: "Demiplane already shows your roll by default. Leave this off to see only room rolls; special interpretations still appear.",
     enableDiceAnimation: "Dice animation",
     enableDiceAnimationHint: "Shows dice falling and bouncing on the sheet, with light sound.",
+    diceAnimationSize: "Dice size",
     sent: "sent",
     received: "received",
     history: "history",
@@ -188,9 +196,15 @@ if (firstLoad) {
 async function initializeContentScript(): Promise<void> {
   await loadPanelUiState();
   liveLayer = createLiveLayer();
-  diceAnimationLayer = createDiceAnimationLayer();
+  try {
+    diceAnimationLayer = createDiceAnimationLayer();
+  } catch (error) {
+    console.warn("Demiplane Dice Room: animacao 3D indisponivel.", error);
+  }
   panel = createPanel();
-  document.documentElement.append(diceAnimationLayer.host);
+  if (diceAnimationLayer) {
+    document.documentElement.append(diceAnimationLayer.host);
+  }
   document.documentElement.append(liveLayer.host);
   document.documentElement.append(panel.host);
   renderPanel();
@@ -283,7 +297,11 @@ function handlePotentialRollAction(event: PointerEvent): void {
     return;
   }
 
-  if (!findRollActionElement(event.target)) {
+  if (isOwnPanelElement(event.target)) {
+    return;
+  }
+
+  if (!findRollActionElement(event.target) && !findDicePoolInteractionElement(event.target)) {
     return;
   }
 
@@ -298,13 +316,40 @@ function findRollActionElement(target: Element): Element | undefined {
     const label = normalizeText(
       [current.textContent ?? "", current.getAttribute("aria-label") ?? "", current.getAttribute("title") ?? ""].join(" ")
     );
+    const context = getElementContext(current);
     const isButtonLike =
       current instanceof HTMLButtonElement ||
       current.getAttribute("role") === "button" ||
       current.tagName.toLowerCase() === "button";
+    const isClickable =
+      isButtonLike ||
+      current.getAttribute("tabindex") !== null ||
+      /button|click|roll|reroll|re-roll/i.test(context) ||
+      (current instanceof HTMLElement && window.getComputedStyle(current).cursor === "pointer");
     const isSmallRollLabel = label.length <= 40;
 
-    if ((isButtonLike || isSmallRollLabel) && /\b(re-roll|reroll|roll)\b/i.test(label)) {
+    if ((isClickable || isSmallRollLabel) && /\b(re-roll|reroll|roll)\b/i.test(`${label} ${context}`)) {
+      return current;
+    }
+
+    current = current.parentElement;
+    depth += 1;
+  }
+
+  return undefined;
+}
+
+function findDicePoolInteractionElement(target: Element): Element | undefined {
+  let current: Element | null = target;
+  let depth = 0;
+
+  while (current && depth < 8 && current !== document.body) {
+    const label = normalizeText(
+      [current.textContent ?? "", current.getAttribute("aria-label") ?? "", current.getAttribute("title") ?? ""].join(" ")
+    );
+    const context = getElementContext(current);
+
+    if (/(dice pool|add dice to roll|regular|hunger|fome)/i.test(`${label} ${context}`)) {
       return current;
     }
 
@@ -317,7 +362,7 @@ function findRollActionElement(target: Element): Element | undefined {
 
 function armCapture(): void {
   baselineCurrentRolls();
-  armedBaselineSignatures = new Set(collectRollCandidates().map(({ captured }) => captured.signature));
+  armedBaselineElements = new WeakSet(collectRollCandidates().map(({ element }) => element));
   captureArmedUntil = Date.now() + 6000;
 
   for (const timer of captureScanTimers) {
@@ -333,7 +378,7 @@ function armCapture(): void {
 
 function disarmCapture(): void {
   captureArmedUntil = 0;
-  armedBaselineSignatures = new Set<string>();
+  armedBaselineElements = new WeakSet<Element>();
 
   for (const timer of captureScanTimers) {
     clearTimeout(timer);
@@ -361,7 +406,6 @@ function isRelevantMutation(mutation: MutationRecord): boolean {
 function baselineCurrentRolls(): void {
   for (const { element, captured } of collectRollCandidates()) {
     elementSignatures.set(element, captured.signature);
-    seenSignatures.set(captured.signature, Date.now());
   }
 }
 
@@ -374,22 +418,31 @@ function scanPage(): void {
 
   for (const { element, captured } of candidates) {
     const previousSignature = elementSignatures.get(element);
+    const isBaselineElement = armedBaselineElements.has(element);
 
-    if (previousSignature === captured.signature || armedBaselineSignatures.has(captured.signature)) {
+    if (publishedElements.has(element) && previousSignature === captured.signature) {
       elementSignatures.set(element, captured.signature);
       continue;
     }
 
+    if (isBaselineElement && previousSignature === captured.signature) {
+      continue;
+    }
+
     elementSignatures.set(element, captured.signature);
-    publishCapturedRoll(captured);
+    publishCapturedRoll(captured, element);
     disarmCapture();
     return;
   }
 }
 
-function publishCapturedRoll(captured: CapturedRoll): void {
-  if (wasRecentlySeen(captured.signature)) {
+function publishCapturedRoll(captured: CapturedRoll, sourceElement?: Element): void {
+  if (!sourceElement && wasRecentlySeen(captured.signature)) {
     return;
+  }
+
+  if (sourceElement) {
+    publishedElements.add(sourceElement);
   }
 
   seenSignatures.set(captured.signature, Date.now());
@@ -958,6 +1011,7 @@ function createPanel(): {
   languageSelect: HTMLSelectElement;
   showOwnRollsInput: HTMLInputElement;
   diceAnimationInput: HTMLInputElement;
+  diceSizeInput: HTMLInputElement;
 } {
   const host = document.createElement("div");
   host.id = "demiplane-dice-room-panel";
@@ -1425,6 +1479,13 @@ function createPanel(): {
           </label>
           <p data-settings-animation-help class="settings-help"></p>
         </div>
+        <div class="settings-row">
+          <label>
+            <span data-settings-dice-size-label>Tamanho dos dados</span>
+            <span data-dice-size-value></span>
+          </label>
+          <input data-dice-size type="range" min="0.45" max="1.15" step="0.05" />
+        </div>
       </div>
       <ol data-list class="list"></ol>
     </section>
@@ -1444,6 +1505,7 @@ function createPanel(): {
   const languageSelect = shadow.querySelector("[data-language]");
   const showOwnRollsInput = shadow.querySelector("[data-show-own-rolls]");
   const diceAnimationInput = shadow.querySelector("[data-dice-animation]");
+  const diceSizeInput = shadow.querySelector("[data-dice-size]");
   const opacityValue = shadow.querySelector("[data-opacity-value]");
 
   if (
@@ -1461,6 +1523,7 @@ function createPanel(): {
     !(languageSelect instanceof HTMLSelectElement) ||
     !(showOwnRollsInput instanceof HTMLInputElement) ||
     !(diceAnimationInput instanceof HTMLInputElement) ||
+    !(diceSizeInput instanceof HTMLInputElement) ||
     !(opacityValue instanceof HTMLSpanElement)
   ) {
     throw new Error("Painel nao foi inicializado corretamente.");
@@ -1519,6 +1582,15 @@ function createPanel(): {
     void chrome.storage.local.set({ enableDiceAnimation: diceAnimationInput.checked });
   });
 
+  diceSizeInput.addEventListener("input", () => {
+    diceAnimationScale = clampNumber(Number.parseFloat(diceSizeInput.value), minDiceAnimationScale, maxDiceAnimationScale);
+    renderPanel();
+  });
+
+  diceSizeInput.addEventListener("change", () => {
+    void savePanelUiState();
+  });
+
   installPanelDrag(host, header);
 
   return {
@@ -1536,7 +1608,8 @@ function createPanel(): {
     opacityInput,
     languageSelect,
     showOwnRollsInput,
-    diceAnimationInput
+    diceAnimationInput,
+    diceSizeInput
   };
 }
 
@@ -1561,6 +1634,7 @@ function renderPanel(): void {
   panel.languageSelect.value = uiLanguage;
   panel.showOwnRollsInput.checked = shouldShowOwnRolls();
   panel.diceAnimationInput.checked = shouldAnimateDice();
+  panel.diceSizeInput.value = String(diceAnimationScale);
   panel.toggle.textContent = collapsed ? "^" : "v";
   panel.toggle.removeAttribute("title");
   panel.toggle.dataset.tooltip = collapsed ? t("openHistory") : t("closeHistory");
@@ -1596,6 +1670,14 @@ function renderPanel(): void {
   const diceAnimationHelp = panel.host.shadowRoot?.querySelector("[data-settings-animation-help]");
   if (diceAnimationHelp instanceof HTMLParagraphElement) {
     diceAnimationHelp.textContent = t("enableDiceAnimationHint");
+  }
+  const diceSizeLabel = panel.host.shadowRoot?.querySelector("[data-settings-dice-size-label]");
+  if (diceSizeLabel instanceof HTMLSpanElement) {
+    diceSizeLabel.textContent = t("diceAnimationSize");
+  }
+  const diceSizeValue = panel.host.shadowRoot?.querySelector("[data-dice-size-value]");
+  if (diceSizeValue instanceof HTMLSpanElement) {
+    diceSizeValue.textContent = `${Math.round(diceAnimationScale * 100)}%`;
   }
 
   if (panelPosition) {
@@ -1702,6 +1784,7 @@ async function loadPanelUiState(): Promise<void> {
       collapsed: true,
       settingsOpen: false,
       opacity: 0.94,
+      diceAnimationScale: defaultDiceAnimationScale,
       position: undefined,
       language: "pt-BR"
     }
@@ -1712,6 +1795,7 @@ async function loadPanelUiState(): Promise<void> {
         collapsed?: unknown;
         settingsOpen?: unknown;
         opacity?: unknown;
+        diceAnimationScale?: unknown;
         position?: unknown;
         language?: unknown;
       }
@@ -1720,6 +1804,10 @@ async function loadPanelUiState(): Promise<void> {
   collapsed = value?.collapsed !== false;
   settingsOpen = value?.settingsOpen === true;
   panelOpacity = typeof value?.opacity === "number" ? clampNumber(value.opacity, 0.45, 1) : 0.94;
+  diceAnimationScale =
+    typeof value?.diceAnimationScale === "number"
+      ? clampNumber(value.diceAnimationScale, minDiceAnimationScale, maxDiceAnimationScale)
+      : defaultDiceAnimationScale;
   uiLanguage = value?.language === "en" ? "en" : "pt-BR";
 
   if (isPanelPosition(value?.position)) {
@@ -1733,6 +1821,7 @@ async function savePanelUiState(): Promise<void> {
       collapsed,
       settingsOpen,
       opacity: panelOpacity,
+      diceAnimationScale,
       position: panelPosition,
       language: uiLanguage
     }
@@ -1989,7 +2078,54 @@ function createLiveLayer(): { host: HTMLDivElement; stack: HTMLDivElement } {
   return { host, stack };
 }
 
-function createDiceAnimationLayer(): { host: HTMLDivElement; stage: HTMLDivElement } {
+type DiceAnimationLayer = {
+  host: HTMLDivElement;
+  stage: HTMLDivElement;
+  scene: THREE.Scene;
+  camera: THREE.PerspectiveCamera;
+  renderer: THREE.WebGLRenderer;
+  activeDice: Set<AnimatedDie>;
+  d10Model: D10Model;
+  resultFaceNormal: THREE.Vector3;
+  desiredResultNormal: THREE.Vector3;
+  animationFrame: number;
+  lastFrame: number;
+};
+
+type D10Model = {
+  geometry: THREE.BufferGeometry;
+  faceAnchors: FaceAnchor[];
+};
+
+type FaceAnchor = {
+  center: THREE.Vector3;
+  normal: THREE.Vector3;
+  twist: number;
+};
+
+type AnimatedDie = {
+  group: THREE.Group;
+  value: number;
+  kind: DiceValue["kind"];
+  radius: number;
+  x: number;
+  y: number;
+  z: number;
+  vx: number;
+  vy: number;
+  vz: number;
+  angularVelocity: THREE.Vector3;
+  birth: number;
+  settled: boolean;
+  settling: boolean;
+  settleStart: number;
+  settleFrom: THREE.Quaternion;
+  settleTo: THREE.Quaternion;
+  fadeStarted: boolean;
+  fadeStart: number;
+};
+
+function createDiceAnimationLayer(): DiceAnimationLayer {
   const host = document.createElement("div");
   host.id = "demiplane-dice-room-animation";
 
@@ -2017,142 +2153,11 @@ function createDiceAnimationLayer(): { host: HTMLDivElement; stage: HTMLDivEleme
         pointer-events: none;
       }
 
-      .anim-die {
-        --die-shape: polygon(50% 0, 70% 9%, 92% 30%, 100% 50%, 82% 78%, 50% 100%, 18% 78%, 0 50%, 8% 30%, 30% 9%);
-        --die-body: #08090c;
-        --die-body-deep: #010203;
-        --die-body-light: #1f242c;
-        --die-ink: #b20d1b;
-        --die-ink-glow: rgba(178, 13, 27, 0.36);
-        --die-ridge: rgba(255, 255, 255, 0.2);
-        --die-ridge-dark: rgba(0, 0, 0, 0.52);
-        --die-glint: rgba(255, 255, 255, 0.2);
-        position: absolute;
-        left: 0;
-        top: 0;
-        isolation: isolate;
-        width: var(--die-size, 54px);
-        height: var(--die-size, 54px);
-        color: var(--die-ink, #f2f5fb);
-        transform-origin: center;
-        transform-style: preserve-3d;
-        will-change: transform, opacity;
-        pointer-events: none;
-        user-select: none;
-        filter: drop-shadow(var(--table-shadow-x, 10px) var(--table-shadow-y, 18px) var(--table-shadow-blur, 18px) rgba(0, 0, 0, var(--table-shadow-alpha, 0.36)));
-      }
-
-      .anim-die::before {
-        content: "";
-        position: absolute;
-        inset: 0;
-        z-index: 0;
-        clip-path: var(--die-shape);
-        background:
-          radial-gradient(circle at 35% 18%, var(--die-glint), transparent 18%),
-          linear-gradient(145deg, var(--die-body-light) 0 18%, transparent 38%),
-          conic-gradient(
-            from -18deg at 50% 50%,
-            rgba(255, 255, 255, 0.18) 0deg 36deg,
-            rgba(0, 0, 0, 0.12) 36deg 72deg,
-            rgba(255, 255, 255, 0.08) 72deg 108deg,
-            rgba(0, 0, 0, 0.28) 108deg 144deg,
-            rgba(255, 255, 255, 0.1) 144deg 180deg,
-            rgba(0, 0, 0, 0.2) 180deg 216deg,
-            rgba(255, 255, 255, 0.07) 216deg 252deg,
-            rgba(0, 0, 0, 0.3) 252deg 288deg,
-            rgba(255, 255, 255, 0.14) 288deg 324deg,
-            rgba(0, 0, 0, 0.18) 324deg 360deg
-          ),
-          linear-gradient(165deg, var(--die-body-light), var(--die-body) 48%, var(--die-body-deep));
-        box-shadow:
-          inset -16px -18px 24px rgba(0, 0, 0, 0.42),
-          inset 10px 8px 18px rgba(255, 255, 255, 0.1);
-      }
-
-      .anim-die::after {
-        content: "";
-        position: absolute;
-        inset: 0;
-        z-index: 1;
-        clip-path: var(--die-shape);
-        background:
-          linear-gradient(90deg, transparent 49.2%, var(--die-ridge) 49.2% 50.8%, transparent 50.8%),
-          linear-gradient(58deg, transparent 49.3%, var(--die-ridge) 49.3% 50.7%, transparent 50.7%),
-          linear-gradient(122deg, transparent 49.3%, var(--die-ridge-dark) 49.3% 50.7%, transparent 50.7%),
-          linear-gradient(28deg, transparent 49.4%, rgba(255, 255, 255, 0.12) 49.4% 50.6%, transparent 50.6%),
-          linear-gradient(152deg, transparent 49.4%, rgba(0, 0, 0, 0.42) 49.4% 50.6%, transparent 50.6%);
-        box-shadow:
-          inset 0 0 0 2px rgba(0, 0, 0, 0.56),
-          inset 0 0 0 3px rgba(255, 255, 255, 0.08);
-        pointer-events: none;
-      }
-
-      .anim-hunger {
-        --die-body: #970b17;
-        --die-body-deep: #3a0207;
-        --die-body-light: #c51a28;
-        --die-ink: #050507;
-        --die-ink-glow: rgba(0, 0, 0, 0.38);
-        --die-ridge: rgba(255, 205, 210, 0.26);
-        --die-ridge-dark: rgba(20, 0, 2, 0.55);
-        --die-glint: rgba(255, 180, 185, 0.24);
-      }
-
-      .anim-regular {
-        --die-body: #08090c;
-        --die-body-deep: #010203;
-        --die-body-light: #232832;
-        --die-ink: #b20d1b;
-        --die-ink-glow: rgba(178, 13, 27, 0.36);
-        --die-ridge: rgba(255, 255, 255, 0.2);
-        --die-ridge-dark: rgba(0, 0, 0, 0.55);
-        --die-glint: rgba(255, 255, 255, 0.18);
-      }
-
-      .anim-face {
-        position: absolute;
-        inset: 19% 22% 20%;
-        z-index: 2;
-        display: grid;
-        grid-template-rows: 1fr auto;
-        place-items: center;
-        color: var(--die-ink);
-        font-weight: 950;
-        line-height: 1;
-        text-shadow:
-          0 1px 0 rgba(255, 255, 255, 0.08),
-          0 0 9px var(--die-ink-glow);
-      }
-
-      .anim-value {
+      canvas {
         display: block;
-        font-size: calc(var(--die-size, 54px) * 0.4);
-        letter-spacing: 0;
-        font-weight: 900;
-      }
-
-      .anim-symbol {
-        display: block;
-        margin-top: 1px;
-        min-height: calc(var(--die-size, 54px) * 0.16);
-        font-size: calc(var(--die-size, 54px) * 0.15);
-        font-weight: 900;
-        opacity: 0.9;
-      }
-
-      .anim-settled {
-        pointer-events: auto;
-        cursor: grab;
-      }
-
-      .anim-settled:active {
-        cursor: grabbing;
-      }
-
-      .anim-fading {
-        opacity: 0;
-        transition: opacity 650ms ease;
+        width: 100%;
+        height: 100%;
+        pointer-events: none;
       }
     </style>
     <div data-stage class="stage" aria-hidden="true"></div>
@@ -2163,235 +2168,500 @@ function createDiceAnimationLayer(): { host: HTMLDivElement; stage: HTMLDivEleme
     throw new Error("Camada de animacao dos dados nao foi inicializada corretamente.");
   }
 
-  return { host, stage };
-}
+  const scene = new THREE.Scene();
+  const camera = new THREE.PerspectiveCamera(38, 1, 1, 2200);
+  camera.position.set(0, -560, 430);
+  camera.lookAt(0, 10, 0);
 
-type AnimatedDie = {
-  element: HTMLDivElement;
-  value: number;
-  kind: DiceValue["kind"];
-  face: DiceFace;
-  x: number;
-  y: number;
-  vx: number;
-  vy: number;
-  z: number;
-  vz: number;
-  rotation: number;
-  spin: number;
-  size: number;
-  radius: number;
-  birth: number;
-  settled: boolean;
-  dragging: boolean;
-  dragOffsetX: number;
-  dragOffsetY: number;
-};
+  const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+  renderer.setClearColor(0x000000, 0);
+  renderer.shadowMap.enabled = true;
+  renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+  stage.append(renderer.domElement);
+
+  const hemiLight = new THREE.HemisphereLight(0xd6d9df, 0x151018, 1.6);
+  scene.add(hemiLight);
+
+  const keyLight = new THREE.DirectionalLight(0xffffff, 2.6);
+  keyLight.position.set(-210, -260, 520);
+  keyLight.castShadow = true;
+  keyLight.shadow.mapSize.set(2048, 2048);
+  keyLight.shadow.camera.left = -560;
+  keyLight.shadow.camera.right = 560;
+  keyLight.shadow.camera.top = 420;
+  keyLight.shadow.camera.bottom = -420;
+  scene.add(keyLight);
+
+  const rimLight = new THREE.DirectionalLight(0xb30d1d, 1.3);
+  rimLight.position.set(360, 180, 260);
+  scene.add(rimLight);
+
+  const shadowPlane = new THREE.Mesh(
+    new THREE.PlaneGeometry(1800, 1200),
+    new THREE.ShadowMaterial({ color: 0x000000, opacity: 0.42 })
+  );
+  shadowPlane.rotation.x = -Math.PI / 2;
+  shadowPlane.position.z = 0;
+  shadowPlane.receiveShadow = true;
+  scene.add(shadowPlane);
+
+  const d10Model = createD10Geometry();
+  const layer: DiceAnimationLayer = {
+    host,
+    stage,
+    scene,
+    camera,
+    renderer,
+    activeDice: new Set<AnimatedDie>(),
+    d10Model,
+    resultFaceNormal: d10Model.faceAnchors[0].normal.clone().normalize(),
+    desiredResultNormal: new THREE.Vector3(0, -0.48, 0.88).normalize(),
+    animationFrame: 0,
+    lastFrame: performance.now()
+  };
+
+  resizeDiceAnimationLayer(layer);
+  window.addEventListener("resize", () => {
+    resizeDiceAnimationLayer(layer);
+  });
+
+  return layer;
+}
 
 function playDiceAnimation(roll: RollEvent): void {
   if (!shouldAnimateDice() || !diceAnimationLayer || roll.dice.length === 0) {
     return;
   }
 
+  const layer = diceAnimationLayer;
   const dice = roll.dice.slice(0, maxAnimatedDice);
-  const animatedDice = dice.map((die, index) => createAnimatedDie(die, index, dice.length));
-  diceAnimationLayer.stage.append(...animatedDice.map((die) => die.element));
+  const animatedDice = dice.map((die, index) => createAnimatedDie(die, index, dice.length, layer));
+  for (const die of animatedDice) {
+    layer.activeDice.add(die);
+    layer.scene.add(die.group);
+  }
   playDiceRollSound(animatedDice.length);
-
-  let animationFrame = 0;
-  let lastFrame = performance.now();
-
-  const frame = (now: number) => {
-    const dt = Math.min(0.034, Math.max(0.001, (now - lastFrame) / 1000));
-    lastFrame = now;
-    updateAnimatedDice(animatedDice, now, dt);
-
-    if (animatedDice.some((die) => die.element.isConnected)) {
-      animationFrame = requestAnimationFrame(frame);
-    }
-  };
-
-  animationFrame = requestAnimationFrame(frame);
-
-  window.setTimeout(() => {
-    for (const die of animatedDice) {
-      die.element.classList.add("anim-fading");
-    }
-  }, Math.max(1200, diceAnimationMs - 700));
-
-  window.setTimeout(() => {
-    cancelAnimationFrame(animationFrame);
-    for (const die of animatedDice) {
-      die.element.remove();
-    }
-  }, diceAnimationMs);
+  ensureDiceAnimationLoop();
 }
 
-function createAnimatedDie(die: DiceValue, index: number, total: number): AnimatedDie {
-  const element = document.createElement("div");
-  const kind = die.kind === "hunger" ? "hunger" : "regular";
-  const face = getDieFace(die);
-  const size = clampNumber(60 + Math.random() * 18 - Math.max(0, total - 10) * 0.9, 44, 78);
-  const centerX = window.innerWidth * 0.48;
-  const centerY = window.innerHeight * 0.44;
+function ensureDiceAnimationLoop(): void {
+  if (!diceAnimationLayer || diceAnimationLayer.animationFrame) {
+    return;
+  }
+
+  diceAnimationLayer.lastFrame = performance.now();
+  diceAnimationLayer.animationFrame = requestAnimationFrame(tickDiceAnimation);
+}
+
+function tickDiceAnimation(now: number): void {
+  if (!diceAnimationLayer) {
+    return;
+  }
+
+  const dt = Math.min(0.034, Math.max(0.001, (now - diceAnimationLayer.lastFrame) / 1000));
+  diceAnimationLayer.lastFrame = now;
+  updateAnimatedDice(diceAnimationLayer, now, dt);
+  diceAnimationLayer.renderer.render(diceAnimationLayer.scene, diceAnimationLayer.camera);
+
+  if (diceAnimationLayer.activeDice.size > 0) {
+    diceAnimationLayer.animationFrame = requestAnimationFrame(tickDiceAnimation);
+    return;
+  }
+
+  diceAnimationLayer.animationFrame = 0;
+}
+
+function createAnimatedDie(die: DiceValue, index: number, total: number, layer: DiceAnimationLayer): AnimatedDie {
+  const radius = getAnimatedDieRadius(total);
+  const group = createDieMesh(die, radius, layer);
+  const bounds = getWorldBounds();
   const angle = (Math.PI * 2 * index) / Math.max(1, total) + (Math.random() - 0.5) * 0.9;
-  const startRadius = 12 + Math.random() * 70;
-  const spread = 110 + Math.random() * 230;
-  const startX = clampNumber(centerX + Math.cos(angle) * startRadius - size / 2, 16, window.innerWidth - size - 16);
-  const startY = clampNumber(centerY + Math.sin(angle) * startRadius - size / 2, 92, window.innerHeight - size - 120);
+  const launchRadius = 16 + Math.random() * 76;
+  const spread = 90 + Math.random() * 190;
+  const centerX = (bounds.left + bounds.right) / 2;
+  const centerY = bounds.top + (bounds.bottom - bounds.top) * 0.34;
+  const groundZ = getGroundZ(radius);
+  const startX = clampNumber(centerX + Math.cos(angle) * launchRadius, bounds.left + radius, bounds.right - radius);
+  const startY = clampNumber(centerY + Math.sin(angle) * launchRadius, bounds.top + radius, bounds.bottom - radius);
+  const startZ = groundZ + 175 + Math.random() * 160;
 
-  element.className = `anim-die anim-${kind} anim-${face}`;
-  element.style.setProperty("--die-size", `${size}px`);
-  const symbol = faceSymbolMarkup(face);
-  element.innerHTML = `
-    <span class="anim-face">
-      <span class="anim-value">${escapeHtml(String(die.value))}</span>
-      <span class="anim-symbol">${symbol}</span>
-    </span>
-  `;
+  group.position.set(startX, startY, startZ);
+  group.rotation.set(Math.random() * Math.PI, Math.random() * Math.PI, Math.random() * Math.PI);
 
-  const animatedDie: AnimatedDie = {
-    element,
+  return {
+    group,
     value: die.value,
     kind: die.kind,
-    face,
     x: startX,
     y: startY,
+    z: startZ,
     vx: Math.cos(angle) * spread + (Math.random() - 0.5) * 90,
     vy: Math.sin(angle) * spread + (Math.random() - 0.5) * 90,
-    z: 360 + Math.random() * 260,
-    vz: -360 - Math.random() * 260,
-    rotation: Math.random() * 360,
-    spin: (Math.random() > 0.5 ? 1 : -1) * (560 + Math.random() * 820),
-    size,
-    radius: size * 0.46,
+    vz: -300 - Math.random() * 220,
+    angularVelocity: new THREE.Vector3(randomSigned(4.8, 9.8), randomSigned(5.6, 11.2), randomSigned(4.2, 10.4)),
+    radius,
     birth: performance.now(),
     settled: false,
-    dragging: false,
-    dragOffsetX: 0,
-    dragOffsetY: 0
+    settling: false,
+    settleStart: 0,
+    settleFrom: new THREE.Quaternion(),
+    settleTo: createResultQuaternion(layer),
+    fadeStarted: false,
+    fadeStart: 0
   };
-
-  installDieDrag(animatedDie);
-  renderAnimatedDie(animatedDie);
-  return animatedDie;
 }
 
-function updateAnimatedDice(dice: AnimatedDie[], now: number, dt: number): void {
-  const bounds = getAnimationBounds();
+function createDieMesh(die: DiceValue, radius: number, layer: DiceAnimationLayer): THREE.Group {
+  const group = new THREE.Group();
+  group.scale.setScalar(radius);
 
-  for (const die of dice) {
-    if (!die.element.isConnected || die.dragging) {
-      continue;
-    }
+  const palette = getDiePalette(die.kind);
+  const material = new THREE.MeshStandardMaterial({
+    color: palette.body,
+    emissive: palette.emissive,
+    emissiveIntensity: palette.emissiveIntensity,
+    roughness: 0.72,
+    metalness: 0.05,
+    flatShading: true,
+    side: THREE.DoubleSide
+  });
 
-    if (!die.settled) {
-      die.vz -= 1850 * dt;
+  const mesh = new THREE.Mesh(layer.d10Model.geometry, material);
+  mesh.castShadow = true;
+  mesh.receiveShadow = true;
+  group.add(mesh);
+
+  const edgeMaterial = new THREE.LineBasicMaterial({
+    color: palette.edge,
+    transparent: true,
+    opacity: 0.54
+  });
+  const edges = new THREE.LineSegments(new THREE.EdgesGeometry(layer.d10Model.geometry, 18), edgeMaterial);
+  edges.scale.setScalar(1.006);
+  group.add(edges);
+
+  const anchor = layer.d10Model.faceAnchors[0];
+  const label = createFaceLabel({
+    value: die.value,
+    face: getDieFace(die),
+    color: palette.ink,
+    glow: palette.inkGlow
+  });
+  label.position.copy(anchor.center).addScaledVector(anchor.normal, 0.07);
+  label.quaternion.setFromUnitVectors(new THREE.Vector3(0, 0, 1), anchor.normal);
+  label.rotateZ(anchor.twist);
+  group.add(label);
+
+  return group;
+}
+
+function updateAnimatedDice(layer: DiceAnimationLayer, now: number, dt: number): void {
+  const bounds = getWorldBounds();
+
+  for (const die of [...layer.activeDice]) {
+    if (!die.settled && !die.settling) {
+      const groundZ = getGroundZ(die.radius);
+      die.vz -= 1450 * dt;
       die.z += die.vz * dt;
       die.x += die.vx * dt;
       die.y += die.vy * dt;
-      die.rotation += die.spin * dt;
+      die.group.rotation.x += die.angularVelocity.x * dt;
+      die.group.rotation.y += die.angularVelocity.y * dt;
+      die.group.rotation.z += die.angularVelocity.z * dt;
 
-      if (die.x < bounds.left) {
-        die.x = bounds.left;
+      if (die.x < bounds.left + die.radius) {
+        die.x = bounds.left + die.radius;
         die.vx = Math.abs(die.vx) * 0.68;
-        die.spin *= -0.64;
+        die.angularVelocity.z *= -0.72;
         playDiceImpactSound(0.08);
       }
 
-      if (die.x + die.size > bounds.right) {
-        die.x = bounds.right - die.size;
+      if (die.x > bounds.right - die.radius) {
+        die.x = bounds.right - die.radius;
         die.vx = -Math.abs(die.vx) * 0.68;
-        die.spin *= -0.64;
+        die.angularVelocity.z *= -0.72;
         playDiceImpactSound(0.08);
       }
 
-      if (die.y < bounds.top) {
-        die.y = bounds.top;
+      if (die.y < bounds.top + die.radius) {
+        die.y = bounds.top + die.radius;
         die.vy = Math.abs(die.vy) * 0.68;
-        die.spin *= -0.64;
+        die.angularVelocity.x *= -0.72;
       }
 
-      if (die.y + die.size > bounds.bottom) {
-        die.y = bounds.bottom - die.size;
+      if (die.y > bounds.bottom - die.radius) {
+        die.y = bounds.bottom - die.radius;
         die.vy = -Math.abs(die.vy) * 0.68;
-        die.spin *= -0.64;
+        die.angularVelocity.x *= -0.72;
       }
 
-      if (die.z <= 0) {
-        die.z = 0;
+      if (die.z <= groundZ) {
+        die.z = groundZ;
         if (Math.abs(die.vz) > 120) {
-          playDiceImpactSound(clampNumber(Math.abs(die.vz) / 2400, 0.07, 0.22));
+          playDiceImpactSound(clampNumber(Math.abs(die.vz) / 2300, 0.06, 0.24));
         }
-        die.vz = Math.abs(die.vz) * 0.36;
-        die.vx *= 0.82;
-        die.vy *= 0.82;
-        die.spin *= 0.7;
+        die.vz = Math.abs(die.vz) * 0.38;
+        die.vx *= 0.8;
+        die.vy *= 0.8;
+        die.angularVelocity.multiplyScalar(0.72);
       }
 
-      const planeDrag = die.z <= 0.5 ? Math.pow(0.18, dt) : Math.pow(0.76, dt);
+      const planeDrag = die.z <= groundZ + 1 ? Math.pow(0.14, dt) : Math.pow(0.72, dt);
       die.vx *= planeDrag;
       die.vy *= planeDrag;
-      die.spin *= Math.pow(die.z <= 0.5 ? 0.22 : 0.82, dt);
+      die.angularVelocity.multiplyScalar(Math.pow(die.z <= groundZ + 1 ? 0.2 : 0.84, dt));
 
       if (
         now - die.birth > 2300 &&
-        die.z <= 1 &&
-        Math.abs(die.vz) < 80 &&
-        Math.hypot(die.vx, die.vy) < 65 &&
-        Math.abs(die.spin) < 120
+        die.z <= groundZ + 1 &&
+        Math.abs(die.vz) < 95 &&
+        Math.hypot(die.vx, die.vy) < 72 &&
+        die.angularVelocity.length() < 1.15
       ) {
-        settleAnimatedDie(die);
+        beginSettleAnimatedDie(die, layer, now);
       }
 
-      if (now - die.birth > 3900) {
-        settleAnimatedDie(die);
+      if (now - die.birth > 4200) {
+        beginSettleAnimatedDie(die, layer, now);
       }
+    }
+
+    if (die.settling) {
+      const progress = clampNumber((now - die.settleStart) / 760, 0, 1);
+      const eased = 1 - Math.pow(1 - progress, 3);
+      die.group.quaternion.slerpQuaternions(die.settleFrom, die.settleTo, eased);
+      die.z = getGroundZ(die.radius) + Math.sin(progress * Math.PI) * 5;
+      die.vx *= Math.pow(0.04, dt);
+      die.vy *= Math.pow(0.04, dt);
+
+      if (progress >= 1) {
+        die.settling = false;
+        die.settled = true;
+        die.z = getGroundZ(die.radius);
+        playDiceImpactSound(0.045);
+      }
+    }
+
+    die.group.position.set(die.x, die.y, die.z);
+
+    if (!die.fadeStarted && now - die.birth > diceAnimationMs - 900) {
+      fadeAnimatedDie(die, now);
+    }
+
+    if (die.fadeStarted) {
+      renderDieFade(die, now);
+    }
+
+    if (now - die.birth > diceAnimationMs) {
+      layer.scene.remove(die.group);
+      disposeAnimatedDie(die.group, layer.d10Model.geometry);
+      layer.activeDice.delete(die);
     }
   }
 
-  resolveDieCollisions(dice);
-
-  for (const die of dice) {
-    clampAnimatedDieToViewport(die, bounds);
-    renderAnimatedDie(die);
-  }
+  resolveDieCollisions(layer);
 }
 
-function getAnimationBounds(): { left: number; right: number; top: number; bottom: number } {
+function createD10Geometry(): D10Model {
+  const top = new THREE.Vector3(0, 0, 1.16);
+  const bottom = new THREE.Vector3(0, 0, -1.16);
+  const equator: THREE.Vector3[] = [];
+  const radius = 0.92;
+
+  for (let index = 0; index < 10; index += 1) {
+    const angle = -Math.PI / 2 + (Math.PI * 2 * index) / 10;
+    const z = index % 2 === 0 ? 0.18 : -0.18;
+    equator.push(new THREE.Vector3(Math.cos(angle) * radius, Math.sin(angle) * radius, z));
+  }
+
+  const vertices: number[] = [];
+  const indices: number[] = [];
+  const faceAnchors: FaceAnchor[] = [];
+
+  for (let faceIndex = 0; faceIndex < 10; faceIndex += 1) {
+    const nextIndex = (faceIndex + 1) % 10;
+    const a = top.clone();
+    const b = equator[faceIndex].clone();
+    const c = bottom.clone();
+    const d = equator[nextIndex].clone();
+    const base = vertices.length / 3;
+    vertices.push(a.x, a.y, a.z, b.x, b.y, b.z, c.x, c.y, c.z, d.x, d.y, d.z);
+    indices.push(base, base + 1, base + 3, base + 1, base + 2, base + 3);
+
+    const center = a.clone().add(b).add(c).add(d).multiplyScalar(0.25);
+    const normal = b.clone().sub(a).cross(d.clone().sub(a)).normalize();
+    if (normal.dot(center) < 0) {
+      normal.multiplyScalar(-1);
+    }
+
+    faceAnchors.push({
+      center,
+      normal,
+      twist: Math.atan2(center.y, center.x) + Math.PI / 2
+    });
+  }
+
+  const geometry = new THREE.BufferGeometry();
+  geometry.setAttribute("position", new THREE.Float32BufferAttribute(vertices, 3));
+  geometry.setIndex(indices);
+  geometry.computeVertexNormals();
+  geometry.normalizeNormals();
+
+  return { geometry, faceAnchors };
+}
+
+function createFaceLabel({
+  value,
+  face,
+  color,
+  glow
+}: {
+  value: number;
+  face: DiceFace;
+  color: string;
+  glow: string;
+}): THREE.Mesh {
+  const canvas = document.createElement("canvas");
+  canvas.width = 256;
+  canvas.height = 180;
+  const context = canvas.getContext("2d");
+  if (!context) {
+    throw new Error("Nao foi possivel criar textura dos dados.");
+  }
+
+  context.clearRect(0, 0, canvas.width, canvas.height);
+  context.textAlign = "center";
+  context.textBaseline = "middle";
+  context.lineJoin = "round";
+  context.shadowColor = glow;
+  context.shadowBlur = 12;
+  context.strokeStyle = "rgba(0, 0, 0, 0.72)";
+  context.lineWidth = 9;
+  context.fillStyle = color;
+  context.font = "900 124px Georgia, serif";
+  context.strokeText(String(value), 128, 92);
+  context.fillText(String(value), 128, 92);
+  context.font = "900 34px Georgia, serif";
+  context.lineWidth = 7;
+  context.strokeText(faceSymbolText(face), 190, 132);
+  context.fillText(faceSymbolText(face), 190, 132);
+
+  const texture = new THREE.CanvasTexture(canvas);
+  texture.colorSpace = THREE.SRGBColorSpace;
+  texture.anisotropy = 8;
+
+  return new THREE.Mesh(
+    new THREE.PlaneGeometry(0.98, 0.66),
+    new THREE.MeshBasicMaterial({
+      map: texture,
+      transparent: true,
+      depthWrite: false,
+      depthTest: false,
+      side: THREE.DoubleSide
+    })
+  );
+}
+
+function createResultQuaternion(layer: DiceAnimationLayer): THREE.Quaternion {
+  const alignResult = new THREE.Quaternion().setFromUnitVectors(layer.resultFaceNormal, layer.desiredResultNormal);
+  const twist = new THREE.Quaternion().setFromAxisAngle(layer.desiredResultNormal, (Math.random() - 0.5) * 0.72);
+  return twist.multiply(alignResult);
+}
+
+function beginSettleAnimatedDie(die: AnimatedDie, layer: DiceAnimationLayer, now: number): void {
+  if (die.settled || die.settling) {
+    return;
+  }
+
+  die.settling = true;
+  die.settleStart = now;
+  die.settleFrom.copy(die.group.quaternion);
+  die.settleTo.copy(createResultQuaternion(layer));
+  die.vx *= 0.22;
+  die.vy *= 0.22;
+  die.vz = 0;
+  die.angularVelocity.set(0, 0, 0);
+}
+
+function fadeAnimatedDie(die: AnimatedDie, now: number): void {
+  die.fadeStarted = true;
+  die.fadeStart = now;
+  die.group.traverse((child: THREE.Object3D) => {
+    const material = (child as { material?: THREE.Material | THREE.Material[] }).material;
+    const materials = Array.isArray(material) ? material : material ? [material] : [];
+    for (const item of materials) {
+      item.transparent = true;
+    }
+  });
+}
+
+function renderDieFade(die: AnimatedDie, now: number): void {
+  const opacity = 1 - clampNumber((now - die.fadeStart) / 700, 0, 1);
+  die.group.traverse((child: THREE.Object3D) => {
+    const material = (child as { material?: THREE.Material | THREE.Material[] }).material;
+    const materials = Array.isArray(material) ? material : material ? [material] : [];
+    for (const item of materials) {
+      item.opacity = opacity;
+    }
+  });
+}
+
+function disposeAnimatedDie(group: THREE.Group, sharedGeometry: THREE.BufferGeometry): void {
+  group.traverse((child: THREE.Object3D) => {
+    const geometry = (child as { geometry?: THREE.BufferGeometry }).geometry;
+    if (geometry && geometry !== sharedGeometry) {
+      geometry.dispose();
+    }
+
+    const material = (child as { material?: THREE.Material | THREE.Material[] }).material;
+    const materials = Array.isArray(material) ? material : material ? [material] : [];
+    for (const item of materials) {
+      const map = (item as THREE.Material & { map?: THREE.Texture }).map;
+      if (map) {
+        map.dispose();
+      }
+      item.dispose();
+    }
+  });
+}
+
+function getWorldBounds(): { left: number; right: number; top: number; bottom: number } {
+  const aspect = Math.max(0.8, window.innerWidth / Math.max(1, window.innerHeight));
+  const height = 480;
+  const width = height * aspect;
+
   return {
-    left: 12,
-    right: window.innerWidth - 12,
-    top: 84,
-    bottom: window.innerHeight - 96
+    left: -width / 2 + 44,
+    right: width / 2 - 44,
+    top: -height / 2 + 28,
+    bottom: height / 2 - 96
   };
 }
 
-function clampAnimatedDieToViewport(
-  die: AnimatedDie,
-  bounds: { left: number; right: number; top: number; bottom: number }
-): void {
-  die.x = clampNumber(die.x, bounds.left, Math.max(bounds.left, bounds.right - die.size));
-  die.y = clampNumber(die.y, bounds.top, Math.max(bounds.top, bounds.bottom - die.size));
+function resizeDiceAnimationLayer(layer: DiceAnimationLayer): void {
+  const width = Math.max(1, layer.stage.clientWidth || window.innerWidth);
+  const height = Math.max(1, layer.stage.clientHeight || window.innerHeight);
+  layer.renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
+  layer.renderer.setSize(width, height, false);
+  layer.camera.aspect = width / height;
+  layer.camera.updateProjectionMatrix();
 }
 
-function resolveDieCollisions(dice: AnimatedDie[]): void {
+function resolveDieCollisions(layer: DiceAnimationLayer): void {
+  const dice = [...layer.activeDice].filter((die) => !die.settled);
+
   for (let i = 0; i < dice.length; i += 1) {
     for (let j = i + 1; j < dice.length; j += 1) {
       const first = dice[i];
       const second = dice[j];
-      if ((first.settled && second.settled) || Math.abs(first.z - second.z) > 140) {
+      if (Math.abs(first.z - second.z) > Math.max(first.radius, second.radius) * 2.2) {
         continue;
       }
 
-      const firstCenterX = first.x + first.size / 2;
-      const firstCenterY = first.y + first.size / 2;
-      const secondCenterX = second.x + second.size / 2;
-      const secondCenterY = second.y + second.size / 2;
-      const dx = secondCenterX - firstCenterX;
-      const dy = secondCenterY - firstCenterY;
+      const dx = second.x - first.x;
+      const dy = second.y - first.y;
       const distance = Math.hypot(dx, dy) || 1;
-      const minDistance = first.radius + second.radius;
+      const minDistance = (first.radius + second.radius) * 0.82;
 
       if (distance >= minDistance) {
         continue;
@@ -2400,119 +2670,82 @@ function resolveDieCollisions(dice: AnimatedDie[]): void {
       const nx = dx / distance;
       const ny = dy / distance;
       const overlap = minDistance - distance;
-      const firstCanMove = !first.dragging && !first.settled;
-      const secondCanMove = !second.dragging && !second.settled;
-      const firstShare = firstCanMove && secondCanMove ? 0.5 : firstCanMove ? 1 : 0;
-      const secondShare = firstCanMove && secondCanMove ? 0.5 : secondCanMove ? 1 : 0;
-
-      first.x -= nx * overlap * firstShare;
-      first.y -= ny * overlap * firstShare;
-      second.x += nx * overlap * secondShare;
-      second.y += ny * overlap * secondShare;
+      first.x -= nx * overlap * 0.5;
+      first.y -= ny * overlap * 0.5;
+      second.x += nx * overlap * 0.5;
+      second.y += ny * overlap * 0.5;
 
       const relativeVelocity = (second.vx - first.vx) * nx + (second.vy - first.vy) * ny;
       if (relativeVelocity < 0) {
-        const impulse = -(1.15 * relativeVelocity) / 2;
-        if (firstCanMove) {
-          first.vx -= impulse * nx;
-          first.vy -= impulse * ny;
-          first.spin += impulse * 1.8;
-        }
-        if (secondCanMove) {
-          second.vx += impulse * nx;
-          second.vy += impulse * ny;
-          second.spin -= impulse * 1.8;
-        }
+        const impulse = -(1.1 * relativeVelocity) / 2;
+        first.vx -= impulse * nx;
+        first.vy -= impulse * ny;
+        second.vx += impulse * nx;
+        second.vy += impulse * ny;
+        first.angularVelocity.z += impulse * 0.018;
+        second.angularVelocity.z -= impulse * 0.018;
         if (Math.abs(relativeVelocity) > 120) {
-          playDiceImpactSound(clampNumber(Math.abs(relativeVelocity) / 3200, 0.04, 0.12));
+          playDiceImpactSound(clampNumber(Math.abs(relativeVelocity) / 3000, 0.04, 0.13));
         }
       }
     }
   }
 }
 
-function settleAnimatedDie(die: AnimatedDie): void {
-  if (die.settled) {
-    return;
+function getAnimatedDieRadius(total: number): number {
+  const crowding = Math.max(0, total - 10) * 0.45;
+  return clampNumber((42 - crowding) * diceAnimationScale, 18, 54);
+}
+
+function getGroundZ(radius: number): number {
+  return radius * 0.82;
+}
+
+function getDiePalette(kind: DiceValue["kind"]): {
+  body: number;
+  emissive: number;
+  emissiveIntensity: number;
+  edge: number;
+  ink: string;
+  inkGlow: string;
+} {
+  if (kind === "hunger") {
+    return {
+      body: 0x970b17,
+      emissive: 0x230005,
+      emissiveIntensity: 0.2,
+      edge: 0x240004,
+      ink: "#030305",
+      inkGlow: "rgba(0, 0, 0, 0.55)"
+    };
   }
 
-  die.settled = true;
-  die.vx = 0;
-  die.vy = 0;
-  die.z = 0;
-  die.vz = 0;
-  die.spin = 0;
-  die.rotation = Math.round(die.rotation / 18) * 18;
-  die.element.classList.add("anim-settled");
-  playDiceImpactSound(0.05);
+  return {
+    body: 0x040506,
+    emissive: 0x080000,
+    emissiveIntensity: 0.16,
+    edge: 0x3d050b,
+    ink: "#b20d1b",
+    inkGlow: "rgba(178, 13, 27, 0.62)"
+  };
 }
 
-function renderAnimatedDie(die: AnimatedDie): void {
-  const heightRatio = clampNumber(die.z / 520, 0, 1);
-  const liftScale = die.settled ? 1.04 : 1 + heightRatio * 0.58 + Math.sin(die.rotation / 42) * 0.035;
-  const tilt = die.settled ? 0 : 12 + heightRatio * 24 + Math.sin(die.rotation / 35) * 8;
-  const shadowAlpha = clampNumber(0.43 - heightRatio * 0.24, 0.16, 0.43);
-  const shadowBlur = 14 + heightRatio * 34;
-  const shadowY = 16 + heightRatio * 34;
-  const shadowX = 5 + heightRatio * 15;
-
-  die.element.style.setProperty("--table-shadow-alpha", String(shadowAlpha));
-  die.element.style.setProperty("--table-shadow-blur", `${shadowBlur}px`);
-  die.element.style.setProperty("--table-shadow-y", `${shadowY}px`);
-  die.element.style.setProperty("--table-shadow-x", `${shadowX}px`);
-  die.element.style.transform = `translate3d(${die.x}px, ${die.y}px, 0) rotateX(${tilt}deg) rotateY(${tilt / 3}deg) rotateZ(${die.rotation}deg) scale(${liftScale})`;
-}
-
-function installDieDrag(die: AnimatedDie): void {
-  die.element.addEventListener("pointerdown", (event) => {
-    if (!die.settled) {
-      return;
-    }
-
-    die.dragging = true;
-    die.dragOffsetX = event.clientX - die.x;
-    die.dragOffsetY = event.clientY - die.y;
-    die.element.setPointerCapture(event.pointerId);
-    event.preventDefault();
-    event.stopPropagation();
-  });
-
-  die.element.addEventListener("pointermove", (event) => {
-    if (!die.dragging) {
-      return;
-    }
-
-    const bounds = getAnimationBounds();
-    die.x = clampNumber(event.clientX - die.dragOffsetX, bounds.left, bounds.right - die.size);
-    die.y = clampNumber(event.clientY - die.dragOffsetY, bounds.top, bounds.bottom - die.size);
-    renderAnimatedDie(die);
-    event.preventDefault();
-    event.stopPropagation();
-  });
-
-  die.element.addEventListener("pointerup", (event) => {
-    if (!die.dragging) {
-      return;
-    }
-
-    die.dragging = false;
-    die.element.releasePointerCapture(event.pointerId);
-    event.preventDefault();
-    event.stopPropagation();
-  });
-}
-
-function faceSymbolMarkup(face: DiceFace): string {
+function faceSymbolText(face: DiceFace): string {
   if (face === "skull") {
-    return "&#9760;";
+    return "\u2620";
   }
   if (face === "critical") {
-    return "&#9765;&#10022;";
+    return "\u2625\u2726";
   }
   if (face === "success") {
-    return "&#9765;";
+    return "\u2625";
   }
-  return "&#10038;";
+  return "\u2736";
+}
+
+function randomSigned(min: number, max: number): number {
+  const value = min + Math.random() * (max - min);
+  return Math.random() > 0.5 ? value : -value;
 }
 
 function unlockDiceAudio(): void {
