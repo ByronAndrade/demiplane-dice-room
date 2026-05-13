@@ -1,0 +1,30 @@
+{
+  "manifest_version": 3,
+  "name": "Demiplane Dice Room",
+  "description": "Compartilha rolagens do Demiplane com jogadores no mesmo canal de mesa.",
+  "version": "0.1.15",
+  "action": {
+    "default_title": "Demiplane Dice Room",
+    "default_popup": "popup.html"
+  },
+  "background": {
+    "service_worker": "background.js",
+    "type": "module"
+  },
+  "permissions": ["storage", "tabs", "scripting"],
+  "host_permissions": [
+    "https://app.demiplane.com/*",
+    "http://localhost/*",
+    "http://127.0.0.1/*"
+  ],
+  "content_scripts": [
+    {
+      "matches": ["https://app.demiplane.com/nexus/*/character-sheet/*"],
+      "js": ["content.js"],
+      "run_at": "document_idle"
+    }
+  ],
+  "content_security_policy": {
+    "extension_pages": "script-src 'self'; object-src 'self'; connect-src 'self' ws://*:* wss://*:*;"
+  }
+}

@@ -1,0 +1,31 @@
+{
+  "name": "demiplane-dice-room",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Browser extension and realtime relay for sharing Demiplane dice rolls.",
+  "workspaces": [
+    "extension",
+    "relay-cloudflare",
+    "server"
+  ],
+  "scripts": {
+    "build": "npm run build --workspace server && npm run build --workspace relay-cloudflare && npm run build --workspace extension",
+    "build:extension": "npm run build --workspace extension",
+    "build:relay:cloudflare": "npm run build --workspace relay-cloudflare",
+    "build:server": "npm run build --workspace server",
+    "deploy:relay:cloudflare": "npm run deploy --workspace relay-cloudflare",
+    "dev:relay:cloudflare": "npm run dev --workspace relay-cloudflare",
+    "dev:server": "npm run dev --workspace server",
+    "host:relay": "node scripts/start-relay.mjs",
+    "package:extension": "npm run build:extension && node scripts/package-extension.mjs",
+    "simulate:roll": "node server/scripts/send-test-roll.mjs",
+    "start:server": "npm run start --workspace server",
+    "typecheck": "npm run typecheck --workspace server && npm run typecheck --workspace relay-cloudflare && npm run typecheck --workspace extension"
+  },
+  "devDependencies": {
+    "archiver": "^7.0.1"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}

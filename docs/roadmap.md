@@ -8,12 +8,12 @@
 
 ## Fase 1 - Prototipo local
 
-- Criar extensao Manifest V3 minima.
-- Injetar content script em fichas do Demiplane.
-- Detectar rolagem por `MutationObserver`.
-- Exibir painel flutuante local com rolagens capturadas.
-- Criar relay WebSocket local.
-- Conectar duas janelas no mesmo canal.
+- [x] Criar extensao Manifest V3 minima.
+- [x] Injetar content script em fichas do Demiplane.
+- [x] Detectar rolagem por `MutationObserver`.
+- [x] Exibir painel flutuante local com rolagens capturadas.
+- [x] Criar relay WebSocket local.
+- [x] Conectar duas janelas no mesmo canal.
 
 ## Fase 2 - MVP jogavel
 

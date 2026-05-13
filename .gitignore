@@ -3,13 +3,16 @@ node_modules/
 
 # Build outputs
 dist/
+dist-firefox/
 build/
 .vite/
+.wrangler/
 
 # Local environment
 .env
 .env.*
 !.env.example
+.tools/
 
 # Logs
 *.log

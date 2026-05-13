@@ -1,0 +1,12 @@
+"$schema" = "../node_modules/wrangler/config-schema.json"
+name = "demiplane-dice-room-relay"
+main = "src/index.ts"
+compatibility_date = "2026-05-13"
+
+[[durable_objects.bindings]]
+name = "DICE_ROOM_ROOMS"
+class_name = "DiceRoomDurableObject"
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["DiceRoomDurableObject"]

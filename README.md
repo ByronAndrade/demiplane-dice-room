@@ -35,6 +35,68 @@ O Demiplane ja permite rolar dados dentro da ficha de personagem, mas o resultad
 
 Comece por [docs/product-brief.md](docs/product-brief.md) para entender o produto e depois leia [docs/architecture.md](docs/architecture.md) para a arquitetura proposta.
 
+## Como rodar o prototipo local
+
+Instale as dependencias:
+
+```bash
+npm install
+```
+
+Para mesa remota, o ideal e usar um relay online:
+
+```bash
+npm run deploy:relay:cloudflare
+```
+
+Depois use a URL `wss://...workers.dev` no campo `Relay` da extensao. Assim ninguem precisa abrir o launcher local durante a sessao.
+
+Para gerar a extensao ja apontando para esse relay:
+
+```bash
+DICE_ROOM_DEFAULT_RELAY=wss://demiplane-dice-room-relay.SEUSUBDOMINIO.workers.dev npm run package:extension
+```
+
+Para desenvolvimento local, suba o relay WebSocket:
+
+```bash
+npm run host:relay
+```
+
+No Windows/WSL, tambem da para abrir `launchers/Start Dice Room Relay.cmd`. Ele sobe o relay, tenta criar um tunel publico temporario para jogadores remotos e abre uma pagina com os enderecos para copiar. Esse caminho agora e principalmente um fallback; para uso facil e recorrente, prefira o relay online.
+
+Gere a extensao:
+
+```bash
+npm run build:extension
+```
+
+Depois abra `chrome://extensions`, ative o modo desenvolvedor e carregue a pasta `extension/dist` como extensao sem pacote.
+
+Para gerar zips instalaveis para navegadores Chromium e Firefox:
+
+```bash
+npm run package:extension
+```
+
+Veja [docs/hosting-and-browser-support.md](docs/hosting-and-browser-support.md) para hospedar o relay durante a sessao e para notas sobre Chrome, Edge, Opera e Firefox.
+
+## Fluxo de teste
+
+1. Abra uma ficha em `https://app.demiplane.com/nexus/*/character-sheet/*`.
+2. Abra o popup da extensao.
+3. Informe nome do jogador, canal, senha e use o relay online `wss://...workers.dev`. Para teste na mesma maquina, `ws://localhost:8787` funciona; para fallback temporario, o launcher ainda pode gerar um `wss://...trycloudflare.com`.
+4. Clique em `Conectar`.
+5. Repita em outra janela/perfil de navegador com o mesmo canal e senha.
+6. Use o botao `Teste` ou faca uma rolagem no Demiplane.
+
 ## Status
 
-Projeto iniciado com documentacao tecnica e de produto. A proxima etapa e implementar um prototipo da extensao com captura por `MutationObserver` e um relay WebSocket local.
+Prototipo local iniciado:
+
+- Relay WebSocket em Node.js/TypeScript com salas por hash de canal/senha.
+- Extensao Chrome/Chromium Manifest V3.
+- Popup de configuracao e conexao.
+- Content script com `MutationObserver` para capturar rolagens renderizadas.
+- Painel flutuante retratil com historico curto de rolagens locais e remotas.
+- Historico em memoria no relay com as ultimas 100 rolagens por sala enquanto o servidor estiver rodando.
