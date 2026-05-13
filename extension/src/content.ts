@@ -2086,7 +2086,6 @@ type DiceAnimationLayer = {
   renderer: THREE.WebGLRenderer;
   activeDice: Set<AnimatedDie>;
   d10Model: D10Model;
-  resultFaceNormal: THREE.Vector3;
   desiredResultNormal: THREE.Vector3;
   animationFrame: number;
   lastFrame: number;
@@ -2119,8 +2118,10 @@ type AnimatedDie = {
   settled: boolean;
   settling: boolean;
   settleStart: number;
-  settleFrom: THREE.Quaternion;
-  settleTo: THREE.Quaternion;
+  resultRevealed: boolean;
+  revealStart: number;
+  resultLabel?: THREE.Mesh;
+  resultAnchor?: FaceAnchor;
   fadeStarted: boolean;
   fadeStart: number;
 };
@@ -2214,7 +2215,6 @@ function createDiceAnimationLayer(): DiceAnimationLayer {
     renderer,
     activeDice: new Set<AnimatedDie>(),
     d10Model,
-    resultFaceNormal: d10Model.faceAnchors[0].normal.clone().normalize(),
     desiredResultNormal: new THREE.Vector3(0, -0.48, 0.88).normalize(),
     animationFrame: 0,
     lastFrame: performance.now()
@@ -2304,8 +2304,8 @@ function createAnimatedDie(die: DiceValue, index: number, total: number, layer: 
     settled: false,
     settling: false,
     settleStart: 0,
-    settleFrom: new THREE.Quaternion(),
-    settleTo: createResultQuaternion(layer),
+    resultRevealed: false,
+    revealStart: 0,
     fadeStarted: false,
     fadeStart: 0
   };
@@ -2339,18 +2339,6 @@ function createDieMesh(die: DiceValue, radius: number, layer: DiceAnimationLayer
   const edges = new THREE.LineSegments(new THREE.EdgesGeometry(layer.d10Model.geometry, 18), edgeMaterial);
   edges.scale.setScalar(1.006);
   group.add(edges);
-
-  const anchor = layer.d10Model.faceAnchors[0];
-  const label = createFaceLabel({
-    value: die.value,
-    face: getDieFace(die),
-    color: palette.ink,
-    glow: palette.inkGlow
-  });
-  label.position.copy(anchor.center).addScaledVector(anchor.normal, 0.07);
-  label.quaternion.setFromUnitVectors(new THREE.Vector3(0, 0, 1), anchor.normal);
-  label.rotateZ(anchor.twist);
-  group.add(label);
 
   return group;
 }
@@ -2418,21 +2406,23 @@ function updateAnimatedDice(layer: DiceAnimationLayer, now: number, dt: number):
         Math.hypot(die.vx, die.vy) < 72 &&
         die.angularVelocity.length() < 1.15
       ) {
-        beginSettleAnimatedDie(die, layer, now);
+        beginSettleAnimatedDie(die, now);
       }
 
       if (now - die.birth > 4200) {
-        beginSettleAnimatedDie(die, layer, now);
+        beginSettleAnimatedDie(die, now);
       }
     }
 
     if (die.settling) {
-      const progress = clampNumber((now - die.settleStart) / 760, 0, 1);
-      const eased = 1 - Math.pow(1 - progress, 3);
-      die.group.quaternion.slerpQuaternions(die.settleFrom, die.settleTo, eased);
-      die.z = getGroundZ(die.radius) + Math.sin(progress * Math.PI) * 5;
+      const progress = clampNumber((now - die.settleStart) / 520, 0, 1);
+      die.z = getGroundZ(die.radius) + Math.sin(progress * Math.PI) * 2;
       die.vx *= Math.pow(0.04, dt);
       die.vy *= Math.pow(0.04, dt);
+
+      if (!die.resultRevealed && progress >= 0.18) {
+        revealDieResult(die, layer, now);
+      }
 
       if (progress >= 1) {
         die.settling = false;
@@ -2440,6 +2430,10 @@ function updateAnimatedDice(layer: DiceAnimationLayer, now: number, dt: number):
         die.z = getGroundZ(die.radius);
         playDiceImpactSound(0.045);
       }
+    }
+
+    if (die.resultLabel) {
+      renderDieResultReveal(die, now);
     }
 
     die.group.position.set(die.x, die.y, die.z);
@@ -2555,28 +2549,87 @@ function createFaceLabel({
     new THREE.MeshBasicMaterial({
       map: texture,
       transparent: true,
+      opacity: 0,
       depthWrite: false,
-      depthTest: false,
+      depthTest: true,
       side: THREE.DoubleSide
     })
   );
 }
 
-function createResultQuaternion(layer: DiceAnimationLayer): THREE.Quaternion {
-  const alignResult = new THREE.Quaternion().setFromUnitVectors(layer.resultFaceNormal, layer.desiredResultNormal);
-  const twist = new THREE.Quaternion().setFromAxisAngle(layer.desiredResultNormal, (Math.random() - 0.5) * 0.72);
-  return twist.multiply(alignResult);
+function revealDieResult(die: AnimatedDie, layer: DiceAnimationLayer, now: number): void {
+  if (die.resultRevealed) {
+    return;
+  }
+
+  const anchor = getVisibleResultAnchor(die, layer);
+  const palette = getDiePalette(die.kind);
+  const label = createFaceLabel({
+    value: die.value,
+    face: getDieFace({ kind: die.kind, value: die.value }),
+    color: palette.ink,
+    glow: palette.inkGlow
+  });
+
+  label.position.copy(anchor.center).addScaledVector(anchor.normal, 0.018);
+  label.quaternion.setFromUnitVectors(new THREE.Vector3(0, 0, 1), anchor.normal);
+  label.rotateZ(anchor.twist);
+  setObjectOpacity(label, 0);
+
+  die.group.add(label);
+  die.resultAnchor = anchor;
+  die.resultLabel = label;
+  die.revealStart = now;
+  die.resultRevealed = true;
 }
 
-function beginSettleAnimatedDie(die: AnimatedDie, layer: DiceAnimationLayer, now: number): void {
+function getVisibleResultAnchor(die: AnimatedDie, layer: DiceAnimationLayer): FaceAnchor {
+  let bestAnchor = layer.d10Model.faceAnchors[0];
+  let bestScore = -Infinity;
+
+  for (const anchor of layer.d10Model.faceAnchors) {
+    const visibleNormal = anchor.normal.clone().applyQuaternion(die.group.quaternion).normalize();
+    const score = visibleNormal.dot(layer.desiredResultNormal);
+    if (score > bestScore) {
+      bestScore = score;
+      bestAnchor = anchor;
+    }
+  }
+
+  return bestAnchor;
+}
+
+function renderDieResultReveal(die: AnimatedDie, now: number): void {
+  if (!die.resultLabel || !die.resultAnchor) {
+    return;
+  }
+
+  const progress = clampNumber((now - die.revealStart) / 460, 0, 1);
+  const eased = 1 - Math.pow(1 - progress, 3);
+  die.resultLabel.position
+    .copy(die.resultAnchor.center)
+    .addScaledVector(die.resultAnchor.normal, 0.018 + eased * 0.052);
+  setObjectOpacity(die.resultLabel, eased);
+}
+
+function setObjectOpacity(object: THREE.Object3D, opacity: number): void {
+  object.traverse((child: THREE.Object3D) => {
+    const material = (child as { material?: THREE.Material | THREE.Material[] }).material;
+    const materials = Array.isArray(material) ? material : material ? [material] : [];
+    for (const item of materials) {
+      item.transparent = true;
+      item.opacity = opacity;
+    }
+  });
+}
+
+function beginSettleAnimatedDie(die: AnimatedDie, now: number): void {
   if (die.settled || die.settling) {
     return;
   }
 
   die.settling = true;
   die.settleStart = now;
-  die.settleFrom.copy(die.group.quaternion);
-  die.settleTo.copy(createResultQuaternion(layer));
   die.vx *= 0.22;
   die.vy *= 0.22;
   die.vz = 0;
