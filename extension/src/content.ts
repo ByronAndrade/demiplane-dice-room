@@ -2117,6 +2117,7 @@ type AnimatedDie = {
   birth: number;
   settled: boolean;
   settleAnchor?: FaceAnchor;
+  settleAnchorLocked: boolean;
   resultRevealed: boolean;
   revealStart: number;
   resultLabel?: THREE.Mesh;
@@ -2305,6 +2306,7 @@ function createAnimatedDie(die: DiceValue, index: number, total: number, layer: 
     radius,
     birth: performance.now(),
     settled: false,
+    settleAnchorLocked: false,
     resultRevealed: false,
     revealStart: 0,
     fadeStarted: false,
@@ -2574,8 +2576,7 @@ function getVisibleResultAnchor(die: AnimatedDie, layer: DiceAnimationLayer): Fa
   const targetNormal = getDieSettleNormal(die, layer);
 
   for (const anchor of layer.d10Model.faceAnchors) {
-    const visibleNormal = anchor.normal.clone().applyQuaternion(die.group.quaternion).normalize();
-    const score = visibleNormal.dot(targetNormal);
+    const score = getFaceAnchorScore(die, anchor, targetNormal);
     if (score > bestScore) {
       bestScore = score;
       bestAnchor = anchor;
@@ -2583,6 +2584,10 @@ function getVisibleResultAnchor(die: AnimatedDie, layer: DiceAnimationLayer): Fa
   }
 
   return bestAnchor;
+}
+
+function getFaceAnchorScore(die: AnimatedDie, anchor: FaceAnchor, targetNormal: THREE.Vector3): number {
+  return anchor.normal.clone().applyQuaternion(die.group.quaternion).normalize().dot(targetNormal);
 }
 
 function stabilizeDieOnGround(die: AnimatedDie, layer: DiceAnimationLayer, now: number, dt: number): void {
@@ -2593,19 +2598,33 @@ function stabilizeDieOnGround(die: AnimatedDie, layer: DiceAnimationLayer, now: 
 
   const motion = Math.hypot(die.vx, die.vy) + Math.abs(die.vz) * 0.2 + die.angularVelocity.length() * 24;
   const candidateAnchor = getVisibleResultAnchor(die, layer);
-  if (!die.settleAnchor || motion > 160) {
+  const targetNormal = getDieSettleNormal(die, layer);
+  const candidateScore = getFaceAnchorScore(die, candidateAnchor, targetNormal);
+  const currentScore = die.settleAnchor ? getFaceAnchorScore(die, die.settleAnchor, targetNormal) : -Infinity;
+
+  if (!die.settleAnchor || (!die.settleAnchorLocked && candidateScore > currentScore + 0.08)) {
     die.settleAnchor = candidateAnchor;
+  }
+
+  if (motion < 185 || now - die.birth > 2600) {
+    die.settleAnchorLocked = true;
+  }
+
+  const anchor = die.settleAnchor;
+  const anchorScore = getFaceAnchorScore(die, anchor, targetNormal);
+  if (anchorScore < 0.24) {
+    return;
   }
 
   const slowFactor = clampNumber((280 - motion) / 260, 0, 1);
   const ageFactor = clampNumber((now - die.birth - 1100) / 2300, 0, 1);
-  const strength = clampNumber((0.016 + slowFactor * 0.15 + ageFactor * 0.08) * dt * 60, 0, 0.24);
-  if (strength <= 0) {
+  const maxStep = clampNumber((0.012 + slowFactor * 0.055 + ageFactor * 0.035) * dt * 60, 0, 0.095);
+  if (maxStep <= 0) {
     return;
   }
 
-  die.group.quaternion.slerp(createFaceUpQuaternion(die, die.settleAnchor, layer), strength);
-  die.angularVelocity.multiplyScalar(1 - strength * 0.52);
+  die.group.quaternion.rotateTowards(createFaceUpQuaternion(die, anchor, layer), maxStep);
+  die.angularVelocity.multiplyScalar(1 - maxStep * 2.3);
 }
 
 function isDieFaceStable(die: AnimatedDie, layer: DiceAnimationLayer): boolean {
@@ -2615,8 +2634,7 @@ function isDieFaceStable(die: AnimatedDie, layer: DiceAnimationLayer): boolean {
 }
 
 function getDieSettleNormal(die: AnimatedDie, layer: DiceAnimationLayer): THREE.Vector3 {
-  const diePosition = new THREE.Vector3(die.x, die.y, die.z);
-  return layer.camera.position.clone().sub(diePosition).normalize().lerp(layer.desiredResultNormal, 0.42).normalize();
+  return layer.desiredResultNormal.clone();
 }
 
 function createFaceUpQuaternion(die: AnimatedDie, anchor: FaceAnchor, layer: DiceAnimationLayer): THREE.Quaternion {
@@ -2657,11 +2675,10 @@ function beginSettleAnimatedDie(die: AnimatedDie, layer: DiceAnimationLayer, now
 
   const anchor = die.settleAnchor ?? getVisibleResultAnchor(die, layer);
   die.settleAnchor = anchor;
-  if (!isDieFaceStable(die, layer) && now - die.birth < 6200) {
+  if (!isDieFaceStable(die, layer) && now - die.birth < 6500) {
     return;
   }
 
-  die.group.quaternion.copy(createFaceUpQuaternion(die, anchor, layer));
   die.settled = true;
   die.x += die.vx * 0.016;
   die.y += die.vy * 0.016;
