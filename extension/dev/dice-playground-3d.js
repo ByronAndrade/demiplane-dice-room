@@ -54,7 +54,6 @@ shadowPlane.receiveShadow = true;
 scene.add(shadowPlane);
 
 const d10Model = createD10Geometry();
-const resultFaceNormal = d10Model.faceAnchors[0].normal.clone().normalize();
 const desiredResultNormal = new THREE.Vector3(0, -0.48, 0.88).normalize();
 
 document.getElementById("rollButton").addEventListener("click", () => playDiceAnimation(createRandomDice()));
@@ -209,8 +208,10 @@ function createAnimatedDie(die, index, total) {
     settled: false,
     settling: false,
     settleStart: 0,
-    settleFrom: new THREE.Quaternion(),
-    settleTo: createResultQuaternion(),
+    resultRevealed: false,
+    revealStart: 0,
+    resultLabel: undefined,
+    resultAnchor: undefined,
     fadeStarted: false
   };
 }
@@ -244,31 +245,10 @@ function createDieMesh(die) {
   edges.scale.setScalar(1.006);
   group.add(edges);
 
-  const faceValues = createFaceValues(die.value);
-  for (let faceIndex = 0; faceIndex < d10Model.faceAnchors.length; faceIndex += 1) {
-    if (faceIndex !== 0) {
-      continue;
-    }
-
-    const anchor = d10Model.faceAnchors[faceIndex];
-    const face = getDieFace({ kind: die.kind, value: faceValues[faceIndex] });
-    const label = createFaceLabel({
-      value: faceValues[faceIndex],
-      face,
-      color: palette.ink,
-      glow: palette.inkGlow,
-      scale: faceIndex === 0 ? 1 : 0.82
-    });
-    label.position.copy(anchor.center).addScaledVector(anchor.normal, 0.07);
-    label.quaternion.setFromUnitVectors(new THREE.Vector3(0, 0, 1), anchor.normal);
-    label.rotateZ(anchor.twist + (faceIndex === 0 ? 0 : Math.PI));
-    group.add(label);
-  }
-
   return group;
 }
 
-function createFaceLabel({ value, face, color, glow, scale }) {
+function createFaceLabel({ value, face, color, glow, scale = 1 }) {
   const canvas = document.createElement("canvas");
   canvas.width = 256;
   canvas.height = 180;
@@ -295,32 +275,18 @@ function createFaceLabel({ value, face, color, glow, scale }) {
   texture.anisotropy = 8;
 
   const label = new THREE.Mesh(
-      new THREE.PlaneGeometry(0.98 * scale, 0.66 * scale),
+    new THREE.PlaneGeometry(0.98 * scale, 0.66 * scale),
     new THREE.MeshBasicMaterial({
       map: texture,
       transparent: true,
+      opacity: 0,
       depthWrite: false,
-      depthTest: false,
+      depthTest: true,
       side: THREE.DoubleSide
     })
   );
   label.renderOrder = 4;
   return label;
-}
-
-function createFaceValues(resultValue) {
-  const remaining = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10].filter((value) => value !== resultValue);
-  const values = [resultValue];
-  while (values.length < 10) {
-    values.push(remaining.splice(Math.floor(Math.random() * remaining.length), 1)[0] ?? randomDieValue());
-  }
-  return values;
-}
-
-function createResultQuaternion() {
-  const alignResult = new THREE.Quaternion().setFromUnitVectors(resultFaceNormal, desiredResultNormal);
-  const twist = new THREE.Quaternion().setFromAxisAngle(desiredResultNormal, (Math.random() - 0.5) * 0.72);
-  return twist.multiply(alignResult);
 }
 
 function tick(now) {
@@ -431,18 +397,23 @@ function updateAnimatedDice(now, dt) {
     }
 
     if (die.settling) {
-      const progress = clampNumber((now - die.settleStart) / 760, 0, 1);
-      const eased = 1 - Math.pow(1 - progress, 3);
-      die.group.quaternion.slerpQuaternions(die.settleFrom, die.settleTo, eased);
-      die.z = groundZ + Math.sin(progress * Math.PI) * 5;
+      const progress = clampNumber((now - die.settleStart) / 520, 0, 1);
+      die.z = groundZ + Math.sin(progress * Math.PI) * 2;
       die.vx *= Math.pow(0.04, dt);
       die.vy *= Math.pow(0.04, dt);
+      if (!die.resultRevealed && progress >= 0.18) {
+        revealDieResult(die, now);
+      }
       if (progress >= 1) {
         die.settling = false;
         die.settled = true;
         die.z = groundZ;
         playDiceImpactSound(0.045);
       }
+    }
+
+    if (die.resultLabel && !die.fadeStarted) {
+      renderDieResultReveal(die, now);
     }
 
     die.group.position.set(die.x, die.y, die.z);
@@ -468,11 +439,78 @@ function beginSettle(die, now) {
   }
   die.settling = true;
   die.settleStart = now;
-  die.settleFrom.copy(die.group.quaternion);
   die.vx *= 0.22;
   die.vy *= 0.22;
   die.vz = 0;
   die.angularVelocity.set(0, 0, 0);
+}
+
+function revealDieResult(die, now) {
+  if (die.resultRevealed) {
+    return;
+  }
+
+  const anchor = getVisibleResultAnchor(die);
+  const palette = getDiePalette(die.kind);
+  const label = createFaceLabel({
+    value: die.value,
+    face: getDieFace({ kind: die.kind, value: die.value }),
+    color: palette.ink,
+    glow: palette.inkGlow
+  });
+
+  label.position.copy(anchor.center).addScaledVector(anchor.normal, 0.018);
+  label.quaternion.setFromUnitVectors(new THREE.Vector3(0, 0, 1), anchor.normal);
+  label.rotateZ(anchor.twist);
+  setObjectOpacity(label, 0);
+
+  die.group.add(label);
+  die.resultAnchor = anchor;
+  die.resultLabel = label;
+  die.revealStart = now;
+  die.resultRevealed = true;
+}
+
+function getVisibleResultAnchor(die) {
+  let bestAnchor = d10Model.faceAnchors[0];
+  let bestScore = -Infinity;
+
+  for (const anchor of d10Model.faceAnchors) {
+    const visibleNormal = anchor.normal.clone().applyQuaternion(die.group.quaternion).normalize();
+    const score = visibleNormal.dot(desiredResultNormal);
+    if (score > bestScore) {
+      bestScore = score;
+      bestAnchor = anchor;
+    }
+  }
+
+  return bestAnchor;
+}
+
+function renderDieResultReveal(die, now) {
+  if (!die.resultLabel || !die.resultAnchor) {
+    return;
+  }
+
+  const progress = clampNumber((now - die.revealStart) / 460, 0, 1);
+  const eased = 1 - Math.pow(1 - progress, 3);
+  die.resultLabel.position
+    .copy(die.resultAnchor.center)
+    .addScaledVector(die.resultAnchor.normal, 0.018 + eased * 0.052);
+  setObjectOpacity(die.resultLabel, eased);
+}
+
+function setObjectOpacity(object, opacity) {
+  object.traverse((child) => {
+    if (!child.material) {
+      return;
+    }
+    const materials = Array.isArray(child.material) ? child.material : [child.material];
+    for (const material of materials) {
+      material.transparent = true;
+      material.opacity = opacity;
+    }
+  });
 }
 
 function resolveDieCollisions() {
