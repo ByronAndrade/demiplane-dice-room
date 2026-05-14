@@ -2118,6 +2118,9 @@ type AnimatedDie = {
   settled: boolean;
   settling: boolean;
   settleStart: number;
+  settleFrom: THREE.Quaternion;
+  settleTo: THREE.Quaternion;
+  settleAnchor?: FaceAnchor;
   resultRevealed: boolean;
   revealStart: number;
   resultLabel?: THREE.Mesh;
@@ -2194,6 +2197,7 @@ function createDiceAnimationLayer(): DiceAnimationLayer {
   keyLight.shadow.camera.right = 560;
   keyLight.shadow.camera.top = 420;
   keyLight.shadow.camera.bottom = -420;
+  keyLight.shadow.normalBias = 0.025;
   scene.add(keyLight);
 
   const rimLight = new THREE.DirectionalLight(0xb30d1d, 1.3);
@@ -2202,7 +2206,7 @@ function createDiceAnimationLayer(): DiceAnimationLayer {
 
   const shadowPlane = new THREE.Mesh(
     new THREE.PlaneGeometry(1800, 1200),
-    new THREE.ShadowMaterial({ color: 0x000000, opacity: 0.42 })
+    new THREE.ShadowMaterial({ color: 0x000000, opacity: 0.56 })
   );
   shadowPlane.rotation.x = -Math.PI / 2;
   shadowPlane.position.z = 0;
@@ -2286,7 +2290,7 @@ function createAnimatedDie(die: DiceValue, index: number, total: number, layer: 
   const groundZ = getGroundZ(radius);
   const startX = clampNumber(centerX + Math.cos(angle) * launchRadius, bounds.left + radius, bounds.right - radius);
   const startY = clampNumber(centerY + Math.sin(angle) * launchRadius, bounds.top + radius, bounds.bottom - radius);
-  const startZ = groundZ + 175 + Math.random() * 160;
+  const startZ = groundZ + 120 + Math.random() * 110;
 
   group.position.set(startX, startY, startZ);
   group.rotation.set(Math.random() * Math.PI, Math.random() * Math.PI, Math.random() * Math.PI);
@@ -2300,13 +2304,15 @@ function createAnimatedDie(die: DiceValue, index: number, total: number, layer: 
     z: startZ,
     vx: Math.cos(angle) * spread + (Math.random() - 0.5) * 90,
     vy: Math.sin(angle) * spread + (Math.random() - 0.5) * 90,
-    vz: -300 - Math.random() * 220,
-    angularVelocity: new THREE.Vector3(randomSigned(4.8, 9.8), randomSigned(5.6, 11.2), randomSigned(4.2, 10.4)),
+    vz: -430 - Math.random() * 260,
+    angularVelocity: new THREE.Vector3(randomSigned(4.4, 8.8), randomSigned(5.0, 9.6), randomSigned(4.0, 8.8)),
     radius,
     birth: performance.now(),
     settled: false,
     settling: false,
     settleStart: 0,
+    settleFrom: new THREE.Quaternion(),
+    settleTo: new THREE.Quaternion(),
     resultRevealed: false,
     revealStart: 0,
     fadeStarted: false,
@@ -2323,8 +2329,8 @@ function createDieMesh(die: DiceValue, radius: number, layer: DiceAnimationLayer
     color: palette.body,
     emissive: palette.emissive,
     emissiveIntensity: palette.emissiveIntensity,
-    roughness: 0.72,
-    metalness: 0.05,
+    roughness: 0.48,
+    metalness: 0.16,
     flatShading: true,
     side: THREE.DoubleSide
   });
@@ -2337,7 +2343,7 @@ function createDieMesh(die: DiceValue, radius: number, layer: DiceAnimationLayer
   const edgeMaterial = new THREE.LineBasicMaterial({
     color: palette.edge,
     transparent: true,
-    opacity: 0.54
+    opacity: 0.64
   });
   const edges = new THREE.LineSegments(new THREE.EdgesGeometry(layer.d10Model.geometry, 18), edgeMaterial);
   edges.scale.setScalar(1.006);
@@ -2352,7 +2358,7 @@ function updateAnimatedDice(layer: DiceAnimationLayer, now: number, dt: number):
   for (const die of [...layer.activeDice]) {
     if (!die.settled && !die.settling) {
       const groundZ = getGroundZ(die.radius);
-      die.vz -= 1450 * dt;
+      die.vz -= 2250 * dt;
       die.z += die.vz * dt;
       die.x += die.vx * dt;
       die.y += die.vy * dt;
@@ -2362,28 +2368,28 @@ function updateAnimatedDice(layer: DiceAnimationLayer, now: number, dt: number):
 
       if (die.x < bounds.left + die.radius) {
         die.x = bounds.left + die.radius;
-        die.vx = Math.abs(die.vx) * 0.68;
-        die.angularVelocity.z *= -0.72;
+        die.vx = Math.abs(die.vx) * 0.5;
+        die.angularVelocity.z *= -0.58;
         playDiceImpactSound(0.08);
       }
 
       if (die.x > bounds.right - die.radius) {
         die.x = bounds.right - die.radius;
-        die.vx = -Math.abs(die.vx) * 0.68;
-        die.angularVelocity.z *= -0.72;
+        die.vx = -Math.abs(die.vx) * 0.5;
+        die.angularVelocity.z *= -0.58;
         playDiceImpactSound(0.08);
       }
 
       if (die.y < bounds.top + die.radius) {
         die.y = bounds.top + die.radius;
-        die.vy = Math.abs(die.vy) * 0.68;
-        die.angularVelocity.x *= -0.72;
+        die.vy = Math.abs(die.vy) * 0.5;
+        die.angularVelocity.x *= -0.58;
       }
 
       if (die.y > bounds.bottom - die.radius) {
         die.y = bounds.bottom - die.radius;
-        die.vy = -Math.abs(die.vy) * 0.68;
-        die.angularVelocity.x *= -0.72;
+        die.vy = -Math.abs(die.vy) * 0.5;
+        die.angularVelocity.x *= -0.58;
       }
 
       if (die.z <= groundZ) {
@@ -2391,16 +2397,16 @@ function updateAnimatedDice(layer: DiceAnimationLayer, now: number, dt: number):
         if (Math.abs(die.vz) > 120) {
           playDiceImpactSound(clampNumber(Math.abs(die.vz) / 2300, 0.06, 0.24));
         }
-        die.vz = Math.abs(die.vz) * 0.38;
-        die.vx *= 0.8;
-        die.vy *= 0.8;
-        die.angularVelocity.multiplyScalar(0.72);
+        die.vz = Math.abs(die.vz) * 0.24;
+        die.vx *= 0.68;
+        die.vy *= 0.68;
+        die.angularVelocity.multiplyScalar(0.58);
       }
 
-      const planeDrag = die.z <= groundZ + 1 ? Math.pow(0.14, dt) : Math.pow(0.72, dt);
+      const planeDrag = die.z <= groundZ + 1 ? Math.pow(0.045, dt) : Math.pow(0.58, dt);
       die.vx *= planeDrag;
       die.vy *= planeDrag;
-      die.angularVelocity.multiplyScalar(Math.pow(die.z <= groundZ + 1 ? 0.2 : 0.84, dt));
+      die.angularVelocity.multiplyScalar(Math.pow(die.z <= groundZ + 1 ? 0.08 : 0.72, dt));
 
       if (
         now - die.birth > 2300 &&
@@ -2409,28 +2415,34 @@ function updateAnimatedDice(layer: DiceAnimationLayer, now: number, dt: number):
         Math.hypot(die.vx, die.vy) < 72 &&
         die.angularVelocity.length() < 1.15
       ) {
-        beginSettleAnimatedDie(die, now);
+        beginSettleAnimatedDie(die, layer, now);
       }
 
       if (now - die.birth > 4200) {
-        beginSettleAnimatedDie(die, now);
+        beginSettleAnimatedDie(die, layer, now);
       }
     }
 
     if (die.settling) {
-      const progress = clampNumber((now - die.settleStart) / 520, 0, 1);
-      die.z = getGroundZ(die.radius) + Math.sin(progress * Math.PI) * 2;
+      const progress = clampNumber((now - die.settleStart) / 560, 0, 1);
+      const eased = 1 - Math.pow(1 - progress, 3);
+      die.group.quaternion.slerpQuaternions(die.settleFrom, die.settleTo, eased);
+      die.z = getGroundZ(die.radius) + Math.sin(progress * Math.PI) * 2.4;
       die.vx *= Math.pow(0.04, dt);
       die.vy *= Math.pow(0.04, dt);
 
-      if (!die.resultRevealed && progress >= 0.18) {
+      if (!die.resultRevealed && progress >= 0.72) {
         revealDieResult(die, layer, now);
       }
 
       if (progress >= 1) {
         die.settling = false;
         die.settled = true;
+        die.group.quaternion.copy(die.settleTo);
         die.z = getGroundZ(die.radius);
+        if (!die.resultRevealed) {
+          revealDieResult(die, layer, now);
+        }
         playDiceImpactSound(0.045);
       }
     }
@@ -2565,7 +2577,7 @@ function revealDieResult(die: AnimatedDie, layer: DiceAnimationLayer, now: numbe
     return;
   }
 
-  const anchor = getVisibleResultAnchor(die, layer);
+  const anchor = die.settleAnchor ?? getVisibleResultAnchor(die, layer);
   const palette = getDiePalette(die.kind);
   const label = createFaceLabel({
     value: die.value,
@@ -2590,11 +2602,11 @@ function revealDieResult(die: AnimatedDie, layer: DiceAnimationLayer, now: numbe
 function getVisibleResultAnchor(die: AnimatedDie, layer: DiceAnimationLayer): FaceAnchor {
   let bestAnchor = layer.d10Model.faceAnchors[0];
   let bestScore = -Infinity;
-  const cameraDirection = layer.camera.position.clone().sub(new THREE.Vector3(die.x, die.y, die.z)).normalize();
+  const targetNormal = getDieSettleNormal(die, layer);
 
   for (const anchor of layer.d10Model.faceAnchors) {
     const visibleNormal = anchor.normal.clone().applyQuaternion(die.group.quaternion).normalize();
-    const score = visibleNormal.dot(cameraDirection);
+    const score = visibleNormal.dot(targetNormal);
     if (score > bestScore) {
       bestScore = score;
       bestAnchor = anchor;
@@ -2602,6 +2614,18 @@ function getVisibleResultAnchor(die: AnimatedDie, layer: DiceAnimationLayer): Fa
   }
 
   return bestAnchor;
+}
+
+function getDieSettleNormal(die: AnimatedDie, layer: DiceAnimationLayer): THREE.Vector3 {
+  const diePosition = new THREE.Vector3(die.x, die.y, die.z);
+  return layer.camera.position.clone().sub(diePosition).normalize().lerp(layer.desiredResultNormal, 0.42).normalize();
+}
+
+function createFaceUpQuaternion(die: AnimatedDie, anchor: FaceAnchor, layer: DiceAnimationLayer): THREE.Quaternion {
+  const current = die.group.quaternion.clone();
+  const currentNormal = anchor.normal.clone().applyQuaternion(current).normalize();
+  const alignFace = new THREE.Quaternion().setFromUnitVectors(currentNormal, getDieSettleNormal(die, layer));
+  return alignFace.multiply(current).normalize();
 }
 
 function renderDieResultReveal(die: AnimatedDie, now: number): void {
@@ -2628,13 +2652,17 @@ function setObjectOpacity(object: THREE.Object3D, opacity: number): void {
   });
 }
 
-function beginSettleAnimatedDie(die: AnimatedDie, now: number): void {
+function beginSettleAnimatedDie(die: AnimatedDie, layer: DiceAnimationLayer, now: number): void {
   if (die.settled || die.settling) {
     return;
   }
 
+  const anchor = getVisibleResultAnchor(die, layer);
   die.settling = true;
   die.settleStart = now;
+  die.settleAnchor = anchor;
+  die.settleFrom.copy(die.group.quaternion);
+  die.settleTo.copy(createFaceUpQuaternion(die, anchor, layer));
   die.vx *= 0.22;
   die.vy *= 0.22;
   die.vz = 0;
