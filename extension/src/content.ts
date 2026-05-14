@@ -28,10 +28,11 @@ const maxLiveToasts = 3;
 const diceAnimationMs = 8800;
 const diceFadeLeadMs = 420;
 const diceFadeMs = 360;
-const stableFaceScore = 0.982;
+const stableFaceScore = 0.972;
 const diceSettleMotion = 34;
 const diceStableHoldMs = 260;
-const diceEdgeToppleAcceleration = 16.5;
+const diceToppleEnergyCost = 0.9;
+const diceToppleImpulse = 5.8;
 const maxAnimatedDice = 20;
 const panelUiStorageKey = "diceRoomPanelUi";
 const defaultDiceAnimationScale = 0.75;
@@ -2302,6 +2303,9 @@ type AnimatedDie = {
   vy: number;
   vz: number;
   angularVelocity: THREE.Vector3;
+  rollEnergy: number;
+  rollEnergyLoss: number;
+  nextToppleAt: number;
   birth: number;
   batchId: number;
   settled: boolean;
@@ -2510,6 +2514,9 @@ function createAnimatedDie(die: DiceValue, index: number, total: number, batchId
     vy: Math.sin(angle) * spread + (Math.random() - 0.5) * 90,
     vz: -430 - Math.random() * 260,
     angularVelocity: new THREE.Vector3(randomSigned(4.4, 8.8), randomSigned(5.0, 9.6), randomSigned(4.0, 8.8)),
+    rollEnergy: 2.4 + Math.random() * 5.7,
+    rollEnergyLoss: 0.82 + Math.random() * 0.48,
+    nextToppleAt: 0,
     radius,
     birth: performance.now(),
     batchId,
@@ -2886,39 +2893,100 @@ function stabilizeDieOnGround(die: AnimatedDie, layer: DiceAnimationLayer, now: 
     return false;
   }
 
+  drainGroundRollEnergy(die, dt);
   const supportNormal = getDieSupportNormal();
   die.supportAnchor = getSupportAnchor(die, layer);
   die.settleAnchor = getVisibleResultAnchor(die, layer);
   const anchor = die.supportAnchor;
   const anchorScore = getFaceAnchorScore(die, anchor, supportNormal);
   if (anchorScore > stableFaceScore) {
+    if (die.rollEnergy >= getToppleEnergyCost(die, anchorScore)) {
+      die.stableSince = 0;
+      maybeSpendEnergyForTopple(die, layer, anchorScore, now);
+      return false;
+    }
     if (!die.stableSince) {
       die.stableSince = now;
     }
     return true;
   }
   die.stableSince = 0;
-  toppleUnstableDie(die, layer, anchorScore, dt);
+  if (
+    !maybeSpendEnergyForTopple(die, layer, anchorScore, now) &&
+    canDieStopWithoutAnotherTopple(die, anchorScore)
+  ) {
+    die.stableSince = die.stableSince || now;
+    return true;
+  }
   return false;
 }
 
-function toppleUnstableDie(die: AnimatedDie, layer: DiceAnimationLayer, anchorScore: number, dt: number): void {
-  const pivot = getLowestDieVertex(die, layer);
-  const rollAxis = new THREE.Vector3(pivot.y, -pivot.x, 0);
-  if (rollAxis.lengthSq() < 0.0001) {
+function drainGroundRollEnergy(die: AnimatedDie, dt: number): void {
+  if (die.rollEnergy <= 0) {
     return;
   }
 
-  rollAxis.normalize();
-  const currentSpin = die.angularVelocity.dot(rollAxis);
-  if (currentSpin < -0.35) {
-    rollAxis.multiplyScalar(-1);
+  const speed = Math.hypot(die.vx, die.vy);
+  const spin = die.angularVelocity.length();
+  const distanceCost = speed / Math.max(70, die.radius * 1.55);
+  const spinCost = Math.max(0, spin - 0.9) * 0.11;
+  die.rollEnergy = Math.max(0, die.rollEnergy - (distanceCost * 0.46 + spinCost) * dt * die.rollEnergyLoss);
+}
+
+function maybeSpendEnergyForTopple(
+  die: AnimatedDie,
+  layer: DiceAnimationLayer,
+  anchorScore: number,
+  now: number
+): boolean {
+  const cost = getToppleEnergyCost(die, anchorScore);
+  if (die.rollEnergy < cost || now < die.nextToppleAt || getDieMotion(die) > 150) {
+    return false;
   }
 
-  const instability = Math.max(0.16, clampNumber((stableFaceScore - anchorScore) / 0.5, 0, 1));
-  const groundSpeed = Math.hypot(die.vx, die.vy);
-  const motionBoost = clampNumber(groundSpeed / Math.max(42, die.radius * 1.2), 0.42, 1);
-  die.angularVelocity.addScaledVector(rollAxis, diceEdgeToppleAcceleration * instability * motionBoost * dt);
+  const rollAxis = getEnergyToppleAxis(die, layer);
+  if (!rollAxis) {
+    return false;
+  }
+
+  die.rollEnergy = Math.max(0, die.rollEnergy - cost);
+  die.nextToppleAt = now + 115 + Math.random() * 95;
+  die.stableSince = 0;
+
+  const impulse = clampNumber(diceToppleImpulse * (0.78 + Math.random() * 0.36), 4.4, 7.4);
+  die.angularVelocity.addScaledVector(rollAxis, impulse);
+  const travelImpulse = clampNumber(die.radius * (0.18 + Math.random() * 0.26), 7, 24);
+  die.vx += -rollAxis.y * travelImpulse;
+  die.vy += rollAxis.x * travelImpulse;
+  return true;
+}
+
+function getToppleEnergyCost(die: AnimatedDie, anchorScore: number): number {
+  const instabilityDiscount = clampNumber((stableFaceScore - anchorScore) / 0.48, 0, 0.42);
+  return diceToppleEnergyCost * die.rollEnergyLoss * (1 - instabilityDiscount);
+}
+
+function canDieStopWithoutAnotherTopple(die: AnimatedDie, anchorScore: number): boolean {
+  return die.rollEnergy < getToppleEnergyCost(die, anchorScore) && getDieMotion(die) < 30;
+}
+
+function getEnergyToppleAxis(die: AnimatedDie, layer: DiceAnimationLayer): THREE.Vector3 | undefined {
+  const speed = Math.hypot(die.vx, die.vy);
+  if (speed > 20) {
+    return new THREE.Vector3(die.vy, -die.vx, 0).normalize();
+  }
+
+  const angularAxis = new THREE.Vector3(die.angularVelocity.x, die.angularVelocity.y, 0);
+  if (angularAxis.lengthSq() > 0.09) {
+    return angularAxis.normalize();
+  }
+
+  const pivot = getLowestDieVertex(die, layer);
+  const pivotAxis = new THREE.Vector3(pivot.y, -pivot.x, 0);
+  if (pivotAxis.lengthSq() < 0.0001) {
+    return undefined;
+  }
+  return pivotAxis.normalize();
 }
 
 function getLowestDieVertex(die: AnimatedDie, layer: DiceAnimationLayer): THREE.Vector3 {
@@ -2933,7 +3001,7 @@ function getLowestDieVertex(die: AnimatedDie, layer: DiceAnimationLayer): THREE.
 }
 
 function applyGroundRollingVelocity(die: AnimatedDie, groundZ: number, dt: number): void {
-  if (die.dragging || die.z > groundZ + 1) {
+  if (die.dragging || die.z > groundZ + 1 || die.rollEnergy < diceToppleEnergyCost * 0.35) {
     return;
   }
 
@@ -2950,8 +3018,14 @@ function applyGroundRollingVelocity(die: AnimatedDie, groundZ: number, dt: numbe
   rollAxis.normalize();
   const targetSpin = clampNumber(speed / Math.max(18, die.radius * 0.72), 0, 5.4);
   const currentSpin = die.angularVelocity.dot(rollAxis);
-  const blend = clampNumber(dt * 8, 0, 0.24);
-  die.angularVelocity.addScaledVector(rollAxis, (targetSpin - currentSpin) * blend);
+  if (currentSpin >= targetSpin) {
+    return;
+  }
+
+  const blend = clampNumber(dt * 5, 0, 0.14);
+  const spinDelta = (targetSpin - currentSpin) * blend;
+  die.angularVelocity.addScaledVector(rollAxis, spinDelta);
+  die.rollEnergy = Math.max(0, die.rollEnergy - Math.abs(spinDelta) * 0.018);
 }
 
 function getDieMotion(die: AnimatedDie): number {
@@ -2977,7 +3051,8 @@ function getSupportAnchor(die: AnimatedDie, layer: DiceAnimationLayer): FaceAnch
 function isDieFaceStable(die: AnimatedDie, layer: DiceAnimationLayer): boolean {
   const anchor = die.supportAnchor ?? getSupportAnchor(die, layer);
   const normal = anchor.normal.clone().applyQuaternion(die.group.quaternion).normalize();
-  return normal.dot(getDieSupportNormal()) > stableFaceScore;
+  const anchorScore = normal.dot(getDieSupportNormal());
+  return anchorScore > stableFaceScore || canDieStopWithoutAnotherTopple(die, anchorScore);
 }
 
 function getDieSettleNormal(die: AnimatedDie, layer: DiceAnimationLayer): THREE.Vector3 {
@@ -3024,7 +3099,8 @@ function beginSettleAnimatedDie(die: AnimatedDie, layer: DiceAnimationLayer, now
   die.settleAnchor = getVisibleResultAnchor(die, layer);
 
   const motion = getDieMotion(die);
-  if (motion > diceSettleMotion) {
+  const settleMotion = die.rollEnergy < getToppleEnergyCost(die, stableFaceScore) ? 82 : diceSettleMotion;
+  if (motion > settleMotion) {
     return;
   }
   if (!die.stableSince || now - die.stableSince < diceStableHoldMs) {
@@ -3036,6 +3112,7 @@ function beginSettleAnimatedDie(die: AnimatedDie, layer: DiceAnimationLayer, now
   die.vx = 0;
   die.vy = 0;
   die.vz = 0;
+  die.rollEnergy = 0;
   die.angularVelocity.set(0, 0, 0);
   playDiceImpactSound(0.045);
 }
@@ -3215,10 +3292,14 @@ function finishDiceDrag(layer: DiceAnimationLayer, event: PointerEvent): void {
 
   event.preventDefault();
   event.stopPropagation();
-  layer.drag.die.dragging = false;
-  layer.drag.die.stableSince = 0;
-  layer.drag.die.vx *= 0.18;
-  layer.drag.die.vy *= 0.18;
+  const die = layer.drag.die;
+  const dragSpeed = Math.hypot(die.vx, die.vy);
+  die.dragging = false;
+  die.stableSince = 0;
+  die.rollEnergy = Math.max(die.rollEnergy, clampNumber(dragSpeed / 160, 0.8, 4.4));
+  die.nextToppleAt = performance.now() + 90;
+  die.vx *= 0.18;
+  die.vy *= 0.18;
   layer.drag = undefined;
 }
 
