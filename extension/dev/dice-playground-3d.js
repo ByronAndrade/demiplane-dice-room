@@ -3,6 +3,7 @@ import * as THREE from "https://unpkg.com/three@0.164.1/build/three.module.js";
 const diceAnimationMs = 8800;
 const diceFadeLeadMs = 420;
 const diceFadeMs = 360;
+const stableFaceScore = 0.985;
 const maxAnimatedDice = 20;
 const dieRadius = 42;
 const groundZ = dieRadius * 0.82;
@@ -339,6 +340,16 @@ function createDieMesh(die) {
   return group;
 }
 
+function applyDieAngularVelocity(die, dt) {
+  const spin = die.angularVelocity.length();
+  if (spin < 0.0001) {
+    return;
+  }
+
+  const rotation = new THREE.Quaternion().setFromAxisAngle(die.angularVelocity.clone().normalize(), spin * dt);
+  die.group.quaternion.premultiply(rotation).normalize();
+}
+
 function createFaceLabel({ value, color, glow, scale = 1 }) {
   const canvas = document.createElement("canvas");
   canvas.width = 256;
@@ -427,9 +438,7 @@ function updateAnimatedDice(now, dt) {
       die.x += die.vx * dt;
       die.y += die.vy * dt;
       die.z += die.vz * dt;
-      die.group.rotation.x += die.angularVelocity.x * dt;
-      die.group.rotation.y += die.angularVelocity.y * dt;
-      die.group.rotation.z += die.angularVelocity.z * dt;
+      applyDieAngularVelocity(die, dt);
 
       if (die.x < bounds.left + dieRadius) {
         die.x = bounds.left + dieRadius;
@@ -515,7 +524,7 @@ function beginSettle(die, now) {
   }
   const anchor = die.settleAnchor ?? getVisibleResultAnchor(die);
   die.settleAnchor = anchor;
-  if (!isDieFaceStable(die) && now - die.birth < 6500) {
+  if (!isDieFaceStable(die)) {
     return;
   }
 
@@ -581,7 +590,7 @@ function getFaceAnchorScore(die, anchor, targetNormal) {
 }
 
 function stabilizeDieOnGround(die, now, dt) {
-  if (die.z > groundZ + 2 || now - die.birth < 900) {
+  if (die.dragging || die.z > groundZ + 2 || now - die.birth < 900) {
     return;
   }
 
@@ -591,46 +600,64 @@ function stabilizeDieOnGround(die, now, dt) {
   const candidateScore = getFaceAnchorScore(die, candidateAnchor, targetNormal);
   const currentScore = die.settleAnchor ? getFaceAnchorScore(die, die.settleAnchor, targetNormal) : -Infinity;
 
-  if (!die.settleAnchor || (!die.settleAnchorLocked && candidateScore > currentScore + 0.08)) {
+  if (!die.settleAnchor || (!die.settleAnchorLocked && candidateScore > currentScore + 0.035)) {
     die.settleAnchor = candidateAnchor;
   }
 
-  if (motion < 185 || now - die.birth > 2600) {
+  if (motion < 150 || now - die.birth > 3200) {
     die.settleAnchorLocked = true;
   }
 
   const anchor = die.settleAnchor;
   const anchorScore = getFaceAnchorScore(die, anchor, targetNormal);
-  if (anchorScore < 0.24) {
+  if (anchorScore > stableFaceScore) {
+    die.settleAnchorLocked = true;
+    die.vx *= Math.pow(0.018, dt);
+    die.vy *= Math.pow(0.018, dt);
+    die.angularVelocity.multiplyScalar(Math.pow(0.012, dt));
     return;
   }
 
-  const slowFactor = clampNumber((280 - motion) / 260, 0, 1);
-  const ageFactor = clampNumber((now - die.birth - 1100) / 2300, 0, 1);
-  const maxStep = clampNumber((0.012 + slowFactor * 0.055 + ageFactor * 0.035) * dt * 60, 0, 0.095);
-  if (maxStep <= 0) {
+  if (anchorScore < 0.12) {
     return;
   }
 
-  die.group.quaternion.rotateTowards(createFaceUpQuaternion(die, anchor), maxStep);
-  die.angularVelocity.multiplyScalar(1 - maxStep * 2.3);
+  const currentNormal = anchor.normal.clone().applyQuaternion(die.group.quaternion).normalize();
+  const correctionAxis = currentNormal.clone().cross(targetNormal);
+  if (correctionAxis.lengthSq() < 0.0001) {
+    return;
+  }
+
+  correctionAxis.normalize();
+  const ageFactor = clampNumber((now - die.birth - 1400) / 2800, 0, 1);
+  const correctionNeed = clampNumber((stableFaceScore - anchorScore) / 0.72, 0, 1);
+  const desiredSpin = (0.75 + ageFactor * 2.9 + correctionNeed * 1.7) * correctionNeed;
+  const currentSpin = die.angularVelocity.dot(correctionAxis);
+  const spinBlend = clampNumber(dt * (4.2 + ageFactor * 10.5), 0, 0.32);
+  die.angularVelocity.addScaledVector(correctionAxis, (desiredSpin - currentSpin) * spinBlend);
+
+  const maxSpin = 1.4 + ageFactor * 3.2;
+  const spin = die.angularVelocity.length();
+  if (spin > maxSpin) {
+    die.angularVelocity.multiplyScalar(maxSpin / spin);
+  }
+
+  const balanceRoll = (0.35 + ageFactor * 0.55) * correctionNeed;
+  die.vx += correctionAxis.y * dieRadius * balanceRoll * dt;
+  die.vy -= correctionAxis.x * dieRadius * balanceRoll * dt;
+  const driftDrag = Math.pow(0.24 + (1 - ageFactor) * 0.2, dt);
+  die.vx *= driftDrag;
+  die.vy *= driftDrag;
 }
 
 function isDieFaceStable(die) {
   const anchor = die.settleAnchor ?? getVisibleResultAnchor(die);
   const normal = anchor.normal.clone().applyQuaternion(die.group.quaternion).normalize();
-  return normal.dot(getDieSettleNormal(die)) > 0.965;
+  return normal.dot(getDieSettleNormal(die)) > stableFaceScore;
 }
 
 function getDieSettleNormal(die) {
   return desiredResultNormal.clone();
-}
-
-function createFaceUpQuaternion(die, anchor) {
-  const current = die.group.quaternion.clone();
-  const currentNormal = anchor.normal.clone().applyQuaternion(current).normalize();
-  const alignFace = new THREE.Quaternion().setFromUnitVectors(currentNormal, getDieSettleNormal(die));
-  return alignFace.multiply(current).normalize();
 }
 
 function renderDieResultReveal(die, now) {
