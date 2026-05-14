@@ -2304,6 +2304,7 @@ type AnimatedDie = {
   settled: boolean;
   settleAnchor?: FaceAnchor;
   settleAnchorLocked: boolean;
+  settleBounceStarted: boolean;
   resultRevealed: boolean;
   revealStart: number;
   resultLabel?: THREE.Mesh;
@@ -2509,6 +2510,7 @@ function createAnimatedDie(die: DiceValue, index: number, total: number, layer: 
     birth: performance.now(),
     settled: false,
     settleAnchorLocked: false,
+    settleBounceStarted: false,
     resultRevealed: false,
     revealStart: 0,
     fadeStarted: false,
@@ -2903,6 +2905,13 @@ function stabilizeDieOnGround(die: AnimatedDie, layer: DiceAnimationLayer, now: 
   const urgency = clampNumber((settleAge - diceSettleStartMs) / 2200, 0, 1);
   const momentumSpin = die.angularVelocity.length() * 0.65;
   const desiredSpin = clampNumber(Math.max(momentumSpin, angle * (4.6 + urgency * 2.4) + 1.6), 3.2, 8.4);
+  if (!die.settleBounceStarted) {
+    die.settleBounceStarted = true;
+    die.vz = Math.max(die.vz, 96 + Math.min(42, angle * 34));
+    die.angularVelocity.addScaledVector(correctionAxis, desiredSpin * 0.42);
+    die.vx += correctionAxis.y * die.radius * 0.62;
+    die.vy -= correctionAxis.x * die.radius * 0.62;
+  }
   const currentSpin = die.angularVelocity.dot(correctionAxis);
   const spinBlend = clampNumber(dt * (5 + settleProgress * 12 + urgency * 8), 0, 0.38);
   const lateralSpin = die.angularVelocity.clone().sub(correctionAxis.clone().multiplyScalar(currentSpin));
