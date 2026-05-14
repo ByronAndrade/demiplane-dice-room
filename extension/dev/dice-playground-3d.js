@@ -8,6 +8,8 @@ const diceSettleMotion = 34;
 const diceStableHoldMs = 260;
 const diceToppleEnergyCost = 0.9;
 const diceToppleImpulse = 5.8;
+const diceRollAxisXBias = 1.55;
+const diceRollAxisYBias = 0.24;
 const maxAnimatedDice = 20;
 const dieRadius = 42;
 const groundZ = dieRadius * 0.82;
@@ -295,11 +297,7 @@ function createAnimatedDie(die, index, total, batchId) {
     vx: Math.cos(angle) * spread + (Math.random() - 0.5) * 110,
     vy: Math.sin(angle) * spread + (Math.random() - 0.5) * 110,
     vz: -430 - Math.random() * 260,
-    angularVelocity: new THREE.Vector3(
-      randomSigned(4.4, 8.8),
-      randomSigned(5.0, 9.6),
-      randomSigned(4.0, 8.8)
-    ),
+    angularVelocity: createBiasedInitialAngularVelocity(),
     rollEnergy: 2.4 + Math.random() * 5.7,
     rollEnergyLoss: 0.82 + Math.random() * 0.48,
     nextToppleAt: 0,
@@ -702,12 +700,12 @@ function canDieStopWithoutAnotherTopple(die, anchorScore) {
 function getEnergyToppleAxis(die) {
   const speed = Math.hypot(die.vx, die.vy);
   if (speed > 20) {
-    return new THREE.Vector3(die.vy, -die.vx, 0).normalize();
+    return biasDieRollAxis(new THREE.Vector3(die.vy, -die.vx, 0));
   }
 
   const angularAxis = new THREE.Vector3(die.angularVelocity.x, die.angularVelocity.y, 0);
   if (angularAxis.lengthSq() > 0.09) {
-    return angularAxis.normalize();
+    return biasDieRollAxis(angularAxis);
   }
 
   const pivot = getLowestDieVertex(die);
@@ -715,7 +713,25 @@ function getEnergyToppleAxis(die) {
   if (pivotAxis.lengthSq() < 0.0001) {
     return undefined;
   }
-  return pivotAxis.normalize();
+  return biasDieRollAxis(pivotAxis);
+}
+
+function createBiasedInitialAngularVelocity() {
+  return new THREE.Vector3(
+    randomSigned(7.4, 12.4),
+    randomSigned(0.7, 2.1),
+    randomSigned(2.8, 5.8)
+  );
+}
+
+function biasDieRollAxis(axis) {
+  axis.x *= diceRollAxisXBias;
+  axis.y *= diceRollAxisYBias;
+  axis.z *= 0.48;
+  if (axis.lengthSq() < 0.0001) {
+    return undefined;
+  }
+  return axis.normalize();
 }
 
 function getLowestDieVertex(die) {
@@ -739,12 +755,11 @@ function applyGroundRollingVelocity(die, currentGroundZ, dt) {
     return;
   }
 
-  const rollAxis = new THREE.Vector3(die.vy, -die.vx, 0);
-  if (rollAxis.lengthSq() < 0.0001) {
+  const rollAxis = biasDieRollAxis(new THREE.Vector3(die.vy, -die.vx, 0));
+  if (!rollAxis) {
     return;
   }
 
-  rollAxis.normalize();
   const targetSpin = clampNumber(speed / Math.max(18, dieRadius * 0.72), 0, 5.4);
   const currentSpin = die.angularVelocity.dot(rollAxis);
   if (currentSpin >= targetSpin) {
