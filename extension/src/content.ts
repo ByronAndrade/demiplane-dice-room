@@ -31,7 +31,7 @@ const diceFadeMs = 360;
 const stableFaceScore = 0.982;
 const diceSettleMotion = 34;
 const diceStableHoldMs = 260;
-const diceEdgeInstabilityTurnRate = 2.15;
+const diceEdgeToppleAcceleration = 16.5;
 const maxAnimatedDice = 20;
 const panelUiStorageKey = "diceRoomPanelUi";
 const defaultDiceAnimationScale = 0.75;
@@ -2609,17 +2609,19 @@ function updateAnimatedDice(layer: DiceAnimationLayer, now: number, dt: number):
         if (Math.abs(die.vz) > 120) {
           playDiceImpactSound(clampNumber(Math.abs(die.vz) / 2300, 0.06, 0.24));
         }
-        die.vz = Math.abs(die.vz) * 0.24;
-        die.vx *= 0.68;
-        die.vy *= 0.68;
-        die.angularVelocity.multiplyScalar(0.58);
+        die.vz = Math.abs(die.vz) * 0.18;
+        die.vx *= 0.78;
+        die.vy *= 0.78;
+        die.angularVelocity.multiplyScalar(0.86);
       }
 
-      const planeDrag = die.z <= groundZ + 1 ? Math.pow(0.28, dt) : Math.pow(0.58, dt);
+      applyGroundRollingVelocity(die, groundZ, dt);
+      const stableOnGround = stabilizeDieOnGround(die, layer, now, dt);
+      const isGrounded = die.z <= groundZ + 1;
+      const planeDrag = isGrounded ? Math.pow(stableOnGround ? 0.28 : 0.62, dt) : Math.pow(0.58, dt);
       die.vx *= planeDrag;
       die.vy *= planeDrag;
-      die.angularVelocity.multiplyScalar(Math.pow(die.z <= groundZ + 1 ? 0.58 : 0.72, dt));
-      stabilizeDieOnGround(die, layer, now, dt);
+      die.angularVelocity.multiplyScalar(Math.pow(isGrounded ? stableOnGround ? 0.58 : 0.9 : 0.72, dt));
 
       if (die.z <= groundZ + 1 && Math.abs(die.vz) < 90) {
         beginSettleAnimatedDie(die, layer, now);
@@ -2878,10 +2880,10 @@ function getFaceAnchorScore(die: AnimatedDie, anchor: FaceAnchor, targetNormal: 
   return anchor.normal.clone().applyQuaternion(die.group.quaternion).normalize().dot(targetNormal);
 }
 
-function stabilizeDieOnGround(die: AnimatedDie, layer: DiceAnimationLayer, now: number, dt: number): void {
+function stabilizeDieOnGround(die: AnimatedDie, layer: DiceAnimationLayer, now: number, dt: number): boolean {
   const groundZ = getDieGroundZ(die, layer);
   if (die.dragging || die.z > groundZ + 2) {
-    return;
+    return false;
   }
 
   const supportNormal = getDieSupportNormal();
@@ -2893,31 +2895,67 @@ function stabilizeDieOnGround(die: AnimatedDie, layer: DiceAnimationLayer, now: 
     if (!die.stableSince) {
       die.stableSince = now;
     }
-    return;
+    return true;
   }
   die.stableSince = 0;
+  toppleUnstableDie(die, layer, anchorScore, dt);
+  return false;
+}
 
-  const currentNormal = anchor.normal.clone().applyQuaternion(die.group.quaternion).normalize();
-  const rollAxis = currentNormal.clone().cross(supportNormal);
+function toppleUnstableDie(die: AnimatedDie, layer: DiceAnimationLayer, anchorScore: number, dt: number): void {
+  const pivot = getLowestDieVertex(die, layer);
+  const rollAxis = new THREE.Vector3(pivot.y, -pivot.x, 0);
   if (rollAxis.lengthSq() < 0.0001) {
     return;
   }
 
   rollAxis.normalize();
-  rollOffUnstableEdge(die, rollAxis, anchorScore, dt);
+  const currentSpin = die.angularVelocity.dot(rollAxis);
+  if (currentSpin < -0.35) {
+    rollAxis.multiplyScalar(-1);
+  }
+
+  const instability = Math.max(0.16, clampNumber((stableFaceScore - anchorScore) / 0.5, 0, 1));
+  const groundSpeed = Math.hypot(die.vx, die.vy);
+  const motionBoost = clampNumber(groundSpeed / Math.max(42, die.radius * 1.2), 0.42, 1);
+  die.angularVelocity.addScaledVector(rollAxis, diceEdgeToppleAcceleration * instability * motionBoost * dt);
+}
+
+function getLowestDieVertex(die: AnimatedDie, layer: DiceAnimationLayer): THREE.Vector3 {
+  let lowest = layer.d10Model.vertices[0].clone().applyQuaternion(die.group.quaternion);
+  for (let index = 1; index < layer.d10Model.vertices.length; index += 1) {
+    const vertex = layer.d10Model.vertices[index].clone().applyQuaternion(die.group.quaternion);
+    if (vertex.z < lowest.z) {
+      lowest = vertex;
+    }
+  }
+  return lowest;
+}
+
+function applyGroundRollingVelocity(die: AnimatedDie, groundZ: number, dt: number): void {
+  if (die.dragging || die.z > groundZ + 1) {
+    return;
+  }
+
+  const speed = Math.hypot(die.vx, die.vy);
+  if (speed < 8) {
+    return;
+  }
+
+  const rollAxis = new THREE.Vector3(die.vy, -die.vx, 0);
+  if (rollAxis.lengthSq() < 0.0001) {
+    return;
+  }
+
+  rollAxis.normalize();
+  const targetSpin = clampNumber(speed / Math.max(18, die.radius * 0.72), 0, 5.4);
+  const currentSpin = die.angularVelocity.dot(rollAxis);
+  const blend = clampNumber(dt * 8, 0, 0.24);
+  die.angularVelocity.addScaledVector(rollAxis, (targetSpin - currentSpin) * blend);
 }
 
 function getDieMotion(die: AnimatedDie): number {
   return Math.hypot(die.vx, die.vy) + Math.abs(die.vz) * 0.2 + die.angularVelocity.length() * 24;
-}
-
-function rollOffUnstableEdge(die: AnimatedDie, rollAxis: THREE.Vector3, anchorScore: number, dt: number): void {
-  const instability = clampNumber((stableFaceScore - anchorScore) / 0.55, 0, 1);
-  const currentSpin = die.angularVelocity.dot(rollAxis);
-  const targetSpin = diceEdgeInstabilityTurnRate * instability;
-  if (currentSpin < targetSpin) {
-    die.angularVelocity.addScaledVector(rollAxis, (targetSpin - currentSpin) * clampNumber(dt * 5, 0, 0.18));
-  }
 }
 
 function getSupportAnchor(die: AnimatedDie, layer: DiceAnimationLayer): FaceAnchor {
