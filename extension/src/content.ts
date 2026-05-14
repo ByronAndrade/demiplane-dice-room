@@ -2126,6 +2126,9 @@ type AnimatedDie = {
   fadeStart: number;
 };
 
+const resultLabelBaseOffset = 0.055;
+const resultLabelRevealLift = 0.055;
+
 function createDiceAnimationLayer(): DiceAnimationLayer {
   const host = document.createElement("div");
   host.id = "demiplane-dice-room-animation";
@@ -2551,7 +2554,7 @@ function createFaceLabel({
       transparent: true,
       opacity: 0,
       depthWrite: false,
-      depthTest: true,
+      depthTest: false,
       side: THREE.DoubleSide
     })
   );
@@ -2571,7 +2574,8 @@ function revealDieResult(die: AnimatedDie, layer: DiceAnimationLayer, now: numbe
     glow: palette.inkGlow
   });
 
-  label.position.copy(anchor.center).addScaledVector(anchor.normal, 0.018);
+  label.renderOrder = 8;
+  label.position.copy(anchor.center).addScaledVector(anchor.normal, resultLabelBaseOffset);
   label.quaternion.setFromUnitVectors(new THREE.Vector3(0, 0, 1), anchor.normal);
   label.rotateZ(anchor.twist);
   setObjectOpacity(label, 0);
@@ -2586,10 +2590,11 @@ function revealDieResult(die: AnimatedDie, layer: DiceAnimationLayer, now: numbe
 function getVisibleResultAnchor(die: AnimatedDie, layer: DiceAnimationLayer): FaceAnchor {
   let bestAnchor = layer.d10Model.faceAnchors[0];
   let bestScore = -Infinity;
+  const cameraDirection = layer.camera.position.clone().sub(new THREE.Vector3(die.x, die.y, die.z)).normalize();
 
   for (const anchor of layer.d10Model.faceAnchors) {
     const visibleNormal = anchor.normal.clone().applyQuaternion(die.group.quaternion).normalize();
-    const score = visibleNormal.dot(layer.desiredResultNormal);
+    const score = visibleNormal.dot(cameraDirection);
     if (score > bestScore) {
       bestScore = score;
       bestAnchor = anchor;
@@ -2608,7 +2613,7 @@ function renderDieResultReveal(die: AnimatedDie, now: number): void {
   const eased = 1 - Math.pow(1 - progress, 3);
   die.resultLabel.position
     .copy(die.resultAnchor.center)
-    .addScaledVector(die.resultAnchor.normal, 0.018 + eased * 0.052);
+    .addScaledVector(die.resultAnchor.normal, resultLabelBaseOffset + eased * resultLabelRevealLift);
   setObjectOpacity(die.resultLabel, eased);
 }
 

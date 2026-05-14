@@ -54,7 +54,8 @@ shadowPlane.receiveShadow = true;
 scene.add(shadowPlane);
 
 const d10Model = createD10Geometry();
-const desiredResultNormal = new THREE.Vector3(0, -0.48, 0.88).normalize();
+const resultLabelBaseOffset = 0.055;
+const resultLabelRevealLift = 0.055;
 
 document.getElementById("rollButton").addEventListener("click", () => playDiceAnimation(createRandomDice()));
 document.getElementById("criticalButton").addEventListener("click", () =>
@@ -281,11 +282,11 @@ function createFaceLabel({ value, face, color, glow, scale = 1 }) {
       transparent: true,
       opacity: 0,
       depthWrite: false,
-      depthTest: true,
+      depthTest: false,
       side: THREE.DoubleSide
     })
   );
-  label.renderOrder = 4;
+  label.renderOrder = 8;
   return label;
 }
 
@@ -459,7 +460,7 @@ function revealDieResult(die, now) {
     glow: palette.inkGlow
   });
 
-  label.position.copy(anchor.center).addScaledVector(anchor.normal, 0.018);
+  label.position.copy(anchor.center).addScaledVector(anchor.normal, resultLabelBaseOffset);
   label.quaternion.setFromUnitVectors(new THREE.Vector3(0, 0, 1), anchor.normal);
   label.rotateZ(anchor.twist);
   setObjectOpacity(label, 0);
@@ -474,10 +475,11 @@ function revealDieResult(die, now) {
 function getVisibleResultAnchor(die) {
   let bestAnchor = d10Model.faceAnchors[0];
   let bestScore = -Infinity;
+  const cameraDirection = camera.position.clone().sub(new THREE.Vector3(die.x, die.y, die.z)).normalize();
 
   for (const anchor of d10Model.faceAnchors) {
     const visibleNormal = anchor.normal.clone().applyQuaternion(die.group.quaternion).normalize();
-    const score = visibleNormal.dot(desiredResultNormal);
+    const score = visibleNormal.dot(cameraDirection);
     if (score > bestScore) {
       bestScore = score;
       bestAnchor = anchor;
@@ -496,7 +498,7 @@ function renderDieResultReveal(die, now) {
   const eased = 1 - Math.pow(1 - progress, 3);
   die.resultLabel.position
     .copy(die.resultAnchor.center)
-    .addScaledVector(die.resultAnchor.normal, 0.018 + eased * 0.052);
+    .addScaledVector(die.resultAnchor.normal, resultLabelBaseOffset + eased * resultLabelRevealLift);
   setObjectOpacity(die.resultLabel, eased);
 }
 
