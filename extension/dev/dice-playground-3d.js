@@ -9,7 +9,7 @@ const diceStableHoldMs = 260;
 const diceToppleEnergyCost = 0.9;
 const diceToppleImpulse = 5.8;
 const diceRollAxisXBias = 1.55;
-const diceRollAxisYBias = 0.24;
+const diceRollAxisYBias = 0.14;
 const maxAnimatedDice = 20;
 const dieRadius = 42;
 const groundZ = dieRadius * 0.82;
@@ -117,7 +117,7 @@ function createD10Geometry() {
   const primalVertices = [];
   const primalFaces = [];
   const ringRadius = 1;
-  const ringHeight = 0.72;
+  const ringHeight = 0.9;
 
   for (let index = 0; index < 5; index += 1) {
     const angle = -Math.PI / 2 + (Math.PI * 2 * index) / 5;
@@ -719,7 +719,7 @@ function getEnergyToppleAxis(die) {
 function createBiasedInitialAngularVelocity() {
   return new THREE.Vector3(
     randomSigned(7.4, 12.4),
-    randomSigned(0.7, 2.1),
+    randomSigned(0.25, 1.05),
     randomSigned(2.8, 5.8)
   );
 }
@@ -918,7 +918,7 @@ function finishDiceDrag(event) {
 }
 
 function getPointerDie(event) {
-  const dice = [...activeDice].filter((die) => !die.fadeStarted && (die.settled || die.resultRevealed));
+  const dice = [...activeDice].filter((die) => !die.fadeStarted);
   if (dice.length === 0) {
     return undefined;
   }
