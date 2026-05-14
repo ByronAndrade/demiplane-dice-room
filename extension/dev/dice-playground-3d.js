@@ -7,6 +7,8 @@ const stableFaceScore = 0.982;
 const diceSettleStartMs = 950;
 const diceSettleFreezeMs = 1900;
 const diceSettleForceMs = 6200;
+const diceCollapseMotion = 142;
+const diceCollapseTurnRate = 13.5;
 const maxAnimatedDice = 20;
 const dieRadius = 42;
 const groundZ = dieRadius * 0.82;
@@ -61,7 +63,7 @@ shadowPlane.receiveShadow = true;
 scene.add(shadowPlane);
 
 const d10Model = createD10Geometry();
-const desiredResultNormal = new THREE.Vector3(0, -0.48, 0.88).normalize();
+const desiredResultNormal = new THREE.Vector3(0, 0, 1);
 const raycaster = new THREE.Raycaster();
 const pointer = new THREE.Vector2();
 const resultLabelBaseOffset = 0.055;
@@ -482,7 +484,7 @@ function updateAnimatedDice(now, dt) {
       die.angularVelocity.multiplyScalar(Math.pow(die.z <= groundZ + 1 ? 0.58 : 0.72, dt));
       stabilizeDieOnGround(die, now, dt);
 
-      if (now - die.birth > diceSettleFreezeMs && die.z <= groundZ + 1 && Math.abs(die.vz) < 140) {
+      if ((die.settleAnchorLocked || now - die.birth > diceSettleFreezeMs) && die.z <= groundZ + 1 && Math.abs(die.vz) < 140) {
         beginSettle(die, now);
       }
       if (now - die.birth > diceSettleForceMs && die.z <= groundZ + 1) {
@@ -525,7 +527,7 @@ function beginSettle(die, now) {
     return;
   }
 
-  const motion = Math.hypot(die.vx, die.vy) + Math.abs(die.vz) * 0.2 + die.angularVelocity.length() * 24;
+  const motion = getDieMotion(die);
   if (motion > 118 && now - die.birth < diceSettleForceMs) {
     return;
   }
@@ -596,49 +598,59 @@ function stabilizeDieOnGround(die, now, dt) {
     return;
   }
 
-  const candidateAnchor = getVisibleResultAnchor(die);
   const targetNormal = getDieSettleNormal(die);
-  die.settleAnchor = candidateAnchor;
+  if (!die.settleAnchorLocked || !die.settleAnchor) {
+    die.settleAnchor = getVisibleResultAnchor(die);
+  }
 
-  const anchor = die.settleAnchor;
+  const anchor = die.settleAnchor ?? getVisibleResultAnchor(die);
   const anchorScore = getFaceAnchorScore(die, anchor, targetNormal);
   if (anchorScore > stableFaceScore) {
-    die.settleAnchorLocked = true;
     return;
   }
 
   const currentNormal = anchor.normal.clone().applyQuaternion(die.group.quaternion).normalize();
-  const correctionAxis = currentNormal.clone().cross(targetNormal);
-  if (correctionAxis.lengthSq() < 0.0001) {
+  const collapseAxis = currentNormal.clone().cross(targetNormal);
+  if (collapseAxis.lengthSq() < 0.0001) {
     return;
   }
 
-  correctionAxis.normalize();
   const settleAge = now - die.birth;
-  const angle = Math.acos(clampNumber(anchorScore, -1, 1));
-  const settleProgress = clampNumber((settleAge - diceSettleStartMs) / 1800, 0, 1);
-  const urgency = clampNumber((settleAge - diceSettleStartMs) / 3600, 0, 1);
-  const currentSpin = die.angularVelocity.dot(correctionAxis);
-  const preservedSpin = Math.max(0, currentSpin);
-  const momentumSpin = die.angularVelocity.length() * (0.3 + urgency * 0.18);
-  const desiredSpin = clampNumber(Math.max(preservedSpin, momentumSpin, angle * (1.25 + urgency * 3.2) + 0.25), 0.45, 5.8);
-  const spinBlend = clampNumber(dt * (0.85 + settleProgress * 3.2 + urgency * 4.8), 0, 0.16);
-  const lateralSpin = die.angularVelocity.clone().sub(correctionAxis.clone().multiplyScalar(currentSpin));
-  lateralSpin.multiplyScalar(Math.pow(0.93 - urgency * 0.24, dt));
-  die.angularVelocity.copy(lateralSpin).addScaledVector(correctionAxis, currentSpin + (desiredSpin - currentSpin) * spinBlend);
-
-  const maxSpin = 7.2;
-  const spin = die.angularVelocity.length();
-  if (spin > maxSpin) {
-    die.angularVelocity.multiplyScalar(maxSpin / spin);
+  const motion = getDieMotion(die);
+  if (!die.settleAnchorLocked) {
+    if (motion > diceCollapseMotion && settleAge < diceSettleForceMs) {
+      return;
+    }
+    die.settleAnchorLocked = true;
+    die.vx *= 0.08;
+    die.vy *= 0.08;
+    die.vz = 0;
+    die.angularVelocity.multiplyScalar(0.08);
+    playDiceImpactSound(0.035);
   }
 
-  const rollImpulse = clampNumber(angle / 0.9, 0.2, 1);
-  die.vx += correctionAxis.y * dieRadius * desiredSpin * 0.0055 * rollImpulse * dt;
-  die.vy -= correctionAxis.x * dieRadius * desiredSpin * 0.0055 * rollImpulse * dt;
-  const driftDrag = Math.pow(0.88 - urgency * 0.24, dt);
-  die.vx *= driftDrag;
-  die.vy *= driftDrag;
+  collapseAxis.normalize();
+  const angle = Math.acos(clampNumber(anchorScore, -1, 1));
+  const collapseStep = Math.min(angle, diceCollapseTurnRate * dt);
+  const rotation = new THREE.Quaternion().setFromAxisAngle(collapseAxis, collapseStep);
+  die.group.quaternion.premultiply(rotation).normalize();
+  die.angularVelocity.set(0, 0, 0);
+  die.vx *= Math.pow(0.05, dt);
+  die.vy *= Math.pow(0.05, dt);
+
+  if (angle <= collapseStep + 0.012) {
+    const finalNormal = anchor.normal.clone().applyQuaternion(die.group.quaternion).normalize();
+    const snapAxis = finalNormal.clone().cross(targetNormal);
+    if (snapAxis.lengthSq() > 0.0001) {
+      snapAxis.normalize();
+      const snapAngle = Math.acos(clampNumber(finalNormal.dot(targetNormal), -1, 1));
+      die.group.quaternion.premultiply(new THREE.Quaternion().setFromAxisAngle(snapAxis, snapAngle)).normalize();
+    }
+  }
+}
+
+function getDieMotion(die) {
+  return Math.hypot(die.vx, die.vy) + Math.abs(die.vz) * 0.2 + die.angularVelocity.length() * 24;
 }
 
 function isDieFaceStable(die) {
