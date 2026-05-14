@@ -2093,7 +2093,6 @@ type DiceAnimationLayer = {
 
 type D10Model = {
   geometry: THREE.BufferGeometry;
-  faceGeometry: THREE.BufferGeometry;
   edgeGeometry: THREE.BufferGeometry;
   faceAnchors: FaceAnchor[];
 };
@@ -2337,12 +2336,6 @@ function createDieMesh(die: DiceValue, radius: number, layer: DiceAnimationLayer
   mesh.receiveShadow = true;
   group.add(mesh);
 
-  const faceMesh = new THREE.Mesh(layer.d10Model.faceGeometry, material);
-  faceMesh.scale.setScalar(1.002);
-  faceMesh.castShadow = true;
-  faceMesh.receiveShadow = true;
-  group.add(faceMesh);
-
   const edgeMaterial = new THREE.LineBasicMaterial({
     color: palette.edge,
     transparent: true,
@@ -2452,92 +2445,96 @@ function updateAnimatedDice(layer: DiceAnimationLayer, now: number, dt: number):
 }
 
 function createD10Geometry(): D10Model {
-  const top = new THREE.Vector3(0, 0, 1.16);
-  const bottom = new THREE.Vector3(0, 0, -1.16);
-  const equator: THREE.Vector3[] = [];
-  const radius = 0.92;
+  const primalVertices: THREE.Vector3[] = [];
+  const primalFaces: number[][] = [];
+  const ringRadius = 1;
+  const ringHeight = 0.42;
 
-  for (let index = 0; index < 10; index += 1) {
-    const angle = -Math.PI / 2 + (Math.PI * 2 * index) / 10;
-    const z = index % 2 === 0 ? 0.18 : -0.18;
-    equator.push(new THREE.Vector3(Math.cos(angle) * radius, Math.sin(angle) * radius, z));
+  for (let index = 0; index < 5; index += 1) {
+    const angle = -Math.PI / 2 + (Math.PI * 2 * index) / 5;
+    primalVertices.push(new THREE.Vector3(Math.cos(angle) * ringRadius, Math.sin(angle) * ringRadius, ringHeight));
+  }
+
+  for (let index = 0; index < 5; index += 1) {
+    const angle = -Math.PI / 2 + Math.PI / 5 + (Math.PI * 2 * index) / 5;
+    primalVertices.push(new THREE.Vector3(Math.cos(angle) * ringRadius, Math.sin(angle) * ringRadius, -ringHeight));
+  }
+
+  primalFaces.push([0, 1, 2, 3, 4], [9, 8, 7, 6, 5]);
+  for (let index = 0; index < 5; index += 1) {
+    const next = (index + 1) % 5;
+    primalFaces.push([index, index + 5, next]);
+    primalFaces.push([next, index + 5, next + 5]);
+  }
+
+  const dualVertices = primalFaces.map((face) => createDualVertex(face, primalVertices));
+  const dualFaces: THREE.Vector3[][] = [];
+  for (let vertexIndex = 0; vertexIndex < primalVertices.length; vertexIndex += 1) {
+    const adjacentFaces = primalFaces
+      .map((face, faceIndex) => ({ face, faceIndex }))
+      .filter(({ face }) => face.includes(vertexIndex))
+      .map(({ faceIndex }) => faceIndex);
+    const center = adjacentFaces
+      .reduce((sum, faceIndex) => sum.add(dualVertices[faceIndex]), new THREE.Vector3())
+      .multiplyScalar(1 / adjacentFaces.length);
+    const normal = primalVertices[vertexIndex].clone().normalize();
+    const basisX = new THREE.Vector3(0, 0, 1).cross(normal);
+    if (basisX.lengthSq() < 0.001) {
+      basisX.set(1, 0, 0);
+    } else {
+      basisX.normalize();
+    }
+    const basisY = new THREE.Vector3().crossVectors(normal, basisX).normalize();
+    const orderedFaces = adjacentFaces.sort((first, second) => {
+      const firstDelta = dualVertices[first].clone().sub(center);
+      const secondDelta = dualVertices[second].clone().sub(center);
+      return Math.atan2(firstDelta.dot(basisY), firstDelta.dot(basisX)) -
+        Math.atan2(secondDelta.dot(basisY), secondDelta.dot(basisX));
+    });
+    const points = orderedFaces.map((faceIndex) => dualVertices[faceIndex].clone());
+    if (getFaceNormal(points).dot(center) < 0) {
+      points.reverse();
+    }
+    dualFaces.push(points);
+  }
+
+  const maxLength = Math.max(...dualFaces.flat().map((point) => point.length()));
+  for (const face of dualFaces) {
+    for (const point of face) {
+      point.multiplyScalar(1.18 / maxLength);
+    }
   }
 
   const vertices: number[] = [];
   const normals: number[] = [];
   const indices: number[] = [];
-  const faceVertices: number[] = [];
-  const faceNormals: number[] = [];
-  const faceIndices: number[] = [];
   const edgeVertices: number[] = [];
   const faceAnchors: FaceAnchor[] = [];
 
-  for (let faceIndex = 0; faceIndex < 10; faceIndex += 1) {
-    const nextIndex = (faceIndex + 1) % 10;
-    const a = top.clone();
-    const b = equator[faceIndex].clone();
-    const c = bottom.clone();
-    const d = equator[nextIndex].clone();
+  for (const face of dualFaces) {
     const base = vertices.length / 3;
-    vertices.push(a.x, a.y, a.z, b.x, b.y, b.z, c.x, c.y, c.z, d.x, d.y, d.z);
-    indices.push(base, base + 1, base + 3, base + 1, base + 2, base + 3);
-
-    const center = a.clone().add(b).add(c).add(d).multiplyScalar(0.25);
-    const firstNormal = b.clone().sub(a).cross(d.clone().sub(a)).normalize();
-    const secondNormal = c.clone().sub(b).cross(d.clone().sub(b)).normalize();
-    if (firstNormal.dot(center) < 0) {
-      firstNormal.multiplyScalar(-1);
-    }
-    if (secondNormal.dot(center) < 0) {
-      secondNormal.multiplyScalar(-1);
-    }
-    const normal = firstNormal.add(secondNormal).normalize();
-    if (normal.dot(center) < 0) {
-      normal.multiplyScalar(-1);
-    }
-
+    const normal = getFaceNormal(face);
+    const center = face.reduce((sum, point) => sum.add(point), new THREE.Vector3()).multiplyScalar(0.25);
+    vertices.push(...face.flatMap((point) => [point.x, point.y, point.z]));
     for (let vertexIndex = 0; vertexIndex < 4; vertexIndex += 1) {
       normals.push(normal.x, normal.y, normal.z);
     }
+    indices.push(base, base + 1, base + 2, base, base + 2, base + 3);
 
-    const vertical = a.clone().sub(c).projectOnPlane(normal).normalize();
-    const sideDirection = d.clone().sub(b);
-    const horizontal = new THREE.Vector3().crossVectors(vertical, normal).normalize();
-    if (horizontal.dot(sideDirection) < 0) {
-      horizontal.multiplyScalar(-1);
-    }
-
-    const halfHeight = Math.min(
-      Math.abs(a.clone().sub(center).dot(vertical)),
-      Math.abs(c.clone().sub(center).dot(vertical))
-    );
-    const halfWidth = Math.min(
-      Math.abs(b.clone().sub(center).dot(horizontal)),
-      Math.abs(d.clone().sub(center).dot(horizontal))
-    );
-    const visualCenter = center.clone().addScaledVector(normal, 0.012);
-    const topPoint = visualCenter.clone().addScaledVector(vertical, halfHeight * 0.98);
-    const rightPoint = visualCenter.clone().addScaledVector(horizontal, halfWidth * 0.98);
-    const bottomPoint = visualCenter.clone().addScaledVector(vertical, -halfHeight * 0.98);
-    const leftPoint = visualCenter.clone().addScaledVector(horizontal, -halfWidth * 0.98);
-    const faceBase = faceVertices.length / 3;
-    for (const point of [topPoint, rightPoint, bottomPoint, leftPoint]) {
-      faceVertices.push(point.x, point.y, point.z);
-      faceNormals.push(normal.x, normal.y, normal.z);
-    }
-    faceIndices.push(faceBase, faceBase + 1, faceBase + 2, faceBase, faceBase + 2, faceBase + 3);
-
-    for (const [start, end] of [
-      [topPoint, rightPoint],
-      [rightPoint, bottomPoint],
-      [bottomPoint, leftPoint],
-      [leftPoint, topPoint]
-    ] satisfies Array<[THREE.Vector3, THREE.Vector3]>) {
+    for (let edgeIndex = 0; edgeIndex < face.length; edgeIndex += 1) {
+      const start = face[edgeIndex];
+      const end = face[(edgeIndex + 1) % face.length];
       edgeVertices.push(start.x, start.y, start.z, end.x, end.y, end.z);
     }
 
+    const vertical = new THREE.Vector3(0, 0, 1).projectOnPlane(normal);
+    if (vertical.lengthSq() < 0.001) {
+      vertical.copy(face[0]).sub(face[2]).projectOnPlane(normal);
+    }
+    vertical.normalize();
+    const horizontal = new THREE.Vector3().crossVectors(vertical, normal).normalize();
     faceAnchors.push({
-      center: visualCenter,
+      center,
       normal,
       horizontal,
       vertical
@@ -2549,15 +2546,27 @@ function createD10Geometry(): D10Model {
   geometry.setAttribute("normal", new THREE.Float32BufferAttribute(normals, 3));
   geometry.setIndex(indices);
 
-  const faceGeometry = new THREE.BufferGeometry();
-  faceGeometry.setAttribute("position", new THREE.Float32BufferAttribute(faceVertices, 3));
-  faceGeometry.setAttribute("normal", new THREE.Float32BufferAttribute(faceNormals, 3));
-  faceGeometry.setIndex(faceIndices);
-
   const edgeGeometry = new THREE.BufferGeometry();
   edgeGeometry.setAttribute("position", new THREE.Float32BufferAttribute(edgeVertices, 3));
 
-  return { geometry, faceGeometry, edgeGeometry, faceAnchors };
+  return { geometry, edgeGeometry, faceAnchors };
+}
+
+function createDualVertex(face: number[], vertices: THREE.Vector3[]): THREE.Vector3 {
+  const points = face.map((index) => vertices[index]);
+  const normal = getFaceNormal(points);
+  const center = points.reduce((sum, point) => sum.add(point), new THREE.Vector3()).multiplyScalar(1 / points.length);
+  if (normal.dot(center) < 0) {
+    normal.multiplyScalar(-1);
+  }
+  const distance = normal.dot(points[0]);
+  return normal.multiplyScalar(1 / distance);
+}
+
+function getFaceNormal(points: THREE.Vector3[]): THREE.Vector3 {
+  const normal = points[1].clone().sub(points[0]).cross(points[2].clone().sub(points[0])).normalize();
+  const center = points.reduce((sum, point) => sum.add(point), new THREE.Vector3()).multiplyScalar(1 / points.length);
+  return normal.dot(center) < 0 ? normal.multiplyScalar(-1) : normal;
 }
 
 function createFaceLabel({
@@ -2784,7 +2793,6 @@ function renderDieFade(die: AnimatedDie, now: number): void {
 function disposeAnimatedDie(group: THREE.Group, d10Model: D10Model): void {
   const sharedGeometries = new Set<THREE.BufferGeometry>([
     d10Model.geometry,
-    d10Model.faceGeometry,
     d10Model.edgeGeometry
   ]);
 
