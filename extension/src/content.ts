@@ -2093,13 +2093,16 @@ type DiceAnimationLayer = {
 
 type D10Model = {
   geometry: THREE.BufferGeometry;
+  faceGeometry: THREE.BufferGeometry;
+  edgeGeometry: THREE.BufferGeometry;
   faceAnchors: FaceAnchor[];
 };
 
 type FaceAnchor = {
   center: THREE.Vector3;
   normal: THREE.Vector3;
-  twist: number;
+  horizontal: THREE.Vector3;
+  vertical: THREE.Vector3;
 };
 
 type AnimatedDie = {
@@ -2334,12 +2337,18 @@ function createDieMesh(die: DiceValue, radius: number, layer: DiceAnimationLayer
   mesh.receiveShadow = true;
   group.add(mesh);
 
+  const faceMesh = new THREE.Mesh(layer.d10Model.faceGeometry, material);
+  faceMesh.scale.setScalar(1.002);
+  faceMesh.castShadow = true;
+  faceMesh.receiveShadow = true;
+  group.add(faceMesh);
+
   const edgeMaterial = new THREE.LineBasicMaterial({
     color: palette.edge,
     transparent: true,
     opacity: 0.64
   });
-  const edges = new THREE.LineSegments(new THREE.EdgesGeometry(layer.d10Model.geometry, 18), edgeMaterial);
+  const edges = new THREE.LineSegments(layer.d10Model.edgeGeometry, edgeMaterial);
   edges.scale.setScalar(1.006);
   group.add(edges);
 
@@ -2434,7 +2443,7 @@ function updateAnimatedDice(layer: DiceAnimationLayer, now: number, dt: number):
 
     if (now - die.birth > diceAnimationMs) {
       layer.scene.remove(die.group);
-      disposeAnimatedDie(die.group, layer.d10Model.geometry);
+      disposeAnimatedDie(die.group, layer.d10Model);
       layer.activeDice.delete(die);
     }
   }
@@ -2457,6 +2466,10 @@ function createD10Geometry(): D10Model {
   const vertices: number[] = [];
   const normals: number[] = [];
   const indices: number[] = [];
+  const faceVertices: number[] = [];
+  const faceNormals: number[] = [];
+  const faceIndices: number[] = [];
+  const edgeVertices: number[] = [];
   const faceAnchors: FaceAnchor[] = [];
 
   for (let faceIndex = 0; faceIndex < 10; faceIndex += 1) {
@@ -2470,7 +2483,15 @@ function createD10Geometry(): D10Model {
     indices.push(base, base + 1, base + 3, base + 1, base + 2, base + 3);
 
     const center = a.clone().add(b).add(c).add(d).multiplyScalar(0.25);
-    const normal = b.clone().sub(a).cross(d.clone().sub(a)).normalize();
+    const firstNormal = b.clone().sub(a).cross(d.clone().sub(a)).normalize();
+    const secondNormal = c.clone().sub(b).cross(d.clone().sub(b)).normalize();
+    if (firstNormal.dot(center) < 0) {
+      firstNormal.multiplyScalar(-1);
+    }
+    if (secondNormal.dot(center) < 0) {
+      secondNormal.multiplyScalar(-1);
+    }
+    const normal = firstNormal.add(secondNormal).normalize();
     if (normal.dot(center) < 0) {
       normal.multiplyScalar(-1);
     }
@@ -2479,10 +2500,47 @@ function createD10Geometry(): D10Model {
       normals.push(normal.x, normal.y, normal.z);
     }
 
+    const vertical = a.clone().sub(c).projectOnPlane(normal).normalize();
+    const sideDirection = d.clone().sub(b);
+    const horizontal = new THREE.Vector3().crossVectors(vertical, normal).normalize();
+    if (horizontal.dot(sideDirection) < 0) {
+      horizontal.multiplyScalar(-1);
+    }
+
+    const halfHeight = Math.min(
+      Math.abs(a.clone().sub(center).dot(vertical)),
+      Math.abs(c.clone().sub(center).dot(vertical))
+    );
+    const halfWidth = Math.min(
+      Math.abs(b.clone().sub(center).dot(horizontal)),
+      Math.abs(d.clone().sub(center).dot(horizontal))
+    );
+    const visualCenter = center.clone().addScaledVector(normal, 0.012);
+    const topPoint = visualCenter.clone().addScaledVector(vertical, halfHeight * 0.98);
+    const rightPoint = visualCenter.clone().addScaledVector(horizontal, halfWidth * 0.98);
+    const bottomPoint = visualCenter.clone().addScaledVector(vertical, -halfHeight * 0.98);
+    const leftPoint = visualCenter.clone().addScaledVector(horizontal, -halfWidth * 0.98);
+    const faceBase = faceVertices.length / 3;
+    for (const point of [topPoint, rightPoint, bottomPoint, leftPoint]) {
+      faceVertices.push(point.x, point.y, point.z);
+      faceNormals.push(normal.x, normal.y, normal.z);
+    }
+    faceIndices.push(faceBase, faceBase + 1, faceBase + 2, faceBase, faceBase + 2, faceBase + 3);
+
+    for (const [start, end] of [
+      [topPoint, rightPoint],
+      [rightPoint, bottomPoint],
+      [bottomPoint, leftPoint],
+      [leftPoint, topPoint]
+    ] satisfies Array<[THREE.Vector3, THREE.Vector3]>) {
+      edgeVertices.push(start.x, start.y, start.z, end.x, end.y, end.z);
+    }
+
     faceAnchors.push({
-      center,
+      center: visualCenter,
       normal,
-      twist: Math.atan2(center.y, center.x) + Math.PI / 2
+      horizontal,
+      vertical
     });
   }
 
@@ -2491,7 +2549,15 @@ function createD10Geometry(): D10Model {
   geometry.setAttribute("normal", new THREE.Float32BufferAttribute(normals, 3));
   geometry.setIndex(indices);
 
-  return { geometry, faceAnchors };
+  const faceGeometry = new THREE.BufferGeometry();
+  faceGeometry.setAttribute("position", new THREE.Float32BufferAttribute(faceVertices, 3));
+  faceGeometry.setAttribute("normal", new THREE.Float32BufferAttribute(faceNormals, 3));
+  faceGeometry.setIndex(faceIndices);
+
+  const edgeGeometry = new THREE.BufferGeometry();
+  edgeGeometry.setAttribute("position", new THREE.Float32BufferAttribute(edgeVertices, 3));
+
+  return { geometry, faceGeometry, edgeGeometry, faceAnchors };
 }
 
 function createFaceLabel({
@@ -2556,8 +2622,7 @@ function revealDieResult(die: AnimatedDie, layer: DiceAnimationLayer, now: numbe
 
   label.renderOrder = 8;
   label.position.copy(anchor.center).addScaledVector(anchor.normal, resultLabelBaseOffset);
-  label.quaternion.setFromUnitVectors(new THREE.Vector3(0, 0, 1), anchor.normal);
-  label.rotateZ(anchor.twist);
+  alignObjectToFace(label, anchor);
   setObjectOpacity(label, 0);
 
   die.group.add(label);
@@ -2565,6 +2630,11 @@ function revealDieResult(die: AnimatedDie, layer: DiceAnimationLayer, now: numbe
   die.resultLabel = label;
   die.revealStart = now;
   die.resultRevealed = true;
+}
+
+function alignObjectToFace(object: THREE.Object3D, anchor: FaceAnchor): void {
+  const matrix = new THREE.Matrix4().makeBasis(anchor.horizontal, anchor.vertical, anchor.normal);
+  object.quaternion.setFromRotationMatrix(matrix);
 }
 
 function getVisibleResultAnchor(die: AnimatedDie, layer: DiceAnimationLayer): FaceAnchor {
@@ -2711,10 +2781,16 @@ function renderDieFade(die: AnimatedDie, now: number): void {
   });
 }
 
-function disposeAnimatedDie(group: THREE.Group, sharedGeometry: THREE.BufferGeometry): void {
+function disposeAnimatedDie(group: THREE.Group, d10Model: D10Model): void {
+  const sharedGeometries = new Set<THREE.BufferGeometry>([
+    d10Model.geometry,
+    d10Model.faceGeometry,
+    d10Model.edgeGeometry
+  ]);
+
   group.traverse((child: THREE.Object3D) => {
     const geometry = (child as { geometry?: THREE.BufferGeometry }).geometry;
-    if (geometry && geometry !== sharedGeometry) {
+    if (geometry && !sharedGeometries.has(geometry)) {
       geometry.dispose();
     }
 
