@@ -9,6 +9,7 @@ type DiceValue = {
   kind: "regular" | "hunger" | "unknown";
   value: number;
   sides?: number;
+  face?: "blank" | "success" | "critical" | "skull";
 };
 
 type PresencePlayer = {
@@ -411,13 +412,15 @@ function isDiceValue(value: unknown): value is DiceValue {
   const die = value as Partial<DiceValue>;
   const dieValue = die.value;
   const dieSides = die.sides;
+  const dieFace = die.face;
   return (
     (die.kind === "regular" || die.kind === "hunger" || die.kind === "unknown") &&
     typeof dieValue === "number" &&
     Number.isInteger(dieValue) &&
     dieValue >= 1 &&
     dieValue <= 100 &&
-    (dieSides === undefined || (typeof dieSides === "number" && Number.isInteger(dieSides) && dieSides >= 2 && dieSides <= 100))
+    (dieSides === undefined || (typeof dieSides === "number" && Number.isInteger(dieSides) && dieSides >= 2 && dieSides <= 100)) &&
+    (dieFace === undefined || dieFace === "blank" || dieFace === "success" || dieFace === "critical" || dieFace === "skull")
   );
 }
 

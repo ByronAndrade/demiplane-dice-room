@@ -380,9 +380,9 @@ function getRollOutcome(roll: RollEvent): RollOutcome | undefined {
     return undefined;
   }
 
-  const hungerOnes = roll.dice.filter((die) => die.kind === "hunger" && die.value === 1).length;
-  const tens = roll.dice.filter((die) => die.value === 10).length;
-  const hungerTens = roll.dice.filter((die) => die.kind === "hunger" && die.value === 10).length;
+  const hungerOnes = roll.dice.filter(isHungerSkull).length;
+  const tens = roll.dice.filter(isCriticalDie).length;
+  const hungerTens = roll.dice.filter((die) => die.kind === "hunger" && isCriticalDie(die)).length;
 
   if (roll.successes <= 0) {
     return hungerOnes > 0 ? "bestialFailure" : "failure";
@@ -393,6 +393,14 @@ function getRollOutcome(roll: RollEvent): RollOutcome | undefined {
   }
 
   return "success";
+}
+
+function isHungerSkull(die: RollEvent["dice"][number]): boolean {
+  return die.face === "skull" || (die.kind === "hunger" && die.value === 1);
+}
+
+function isCriticalDie(die: RollEvent["dice"][number]): boolean {
+  return die.face === "critical" || die.value === 10;
 }
 
 function outcomeLabel(outcome: RollOutcome): string {

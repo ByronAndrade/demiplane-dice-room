@@ -2,6 +2,7 @@ import type {
   BackgroundMessage,
   CapturedRoll,
   ConnectionState,
+  DiceFace,
   DiceValue,
   RollEvent,
   StoredRoll
@@ -24,7 +25,9 @@ const elementSignatures = new WeakMap<Element, string>();
 const rolls: Array<{ roll: RollEvent; origin: "local" | "remote"; delivery: string }> = [];
 const liveToastMs = 9600;
 const maxLiveToasts = 3;
-const diceAnimationMs = 6800;
+const diceAnimationMs = 8800;
+const diceFadeLeadMs = 420;
+const diceFadeMs = 360;
 const maxAnimatedDice = 20;
 const panelUiStorageKey = "diceRoomPanelUi";
 const defaultDiceAnimationScale = 0.75;
@@ -58,7 +61,6 @@ let currentConfig: ExtensionConfig | undefined;
 let diagnosticOpen = false;
 
 type UiLanguage = "pt-BR" | "en";
-type DiceFace = "blank" | "success" | "critical" | "skull";
 type RollOutcome = "bestialFailure" | "messyCritical" | "criticalSuccess" | "success" | "failure";
 
 const messages = {
@@ -695,58 +697,153 @@ function parseNumber(text: string, pattern: RegExp): number | null {
 }
 
 function parseDice(element: Element, lines: string[]): DiceValue[] {
-  const detailValues = parseDetailDiceValues(lines);
-  if (detailValues.length > 0) {
-    const domKinds = inferDiceKindsFromDom(element, detailValues.length);
-    return detailValues.map((value, index) => ({
-      kind: domKinds[index] ?? "unknown",
-      value,
-      sides: 10
-    }));
+  const detailDice = parseDetailDiceFromDom(element);
+  if (detailDice.length > 0) {
+    return detailDice;
   }
 
   return parseDiceFromText(lines);
 }
 
-function parseDetailDiceValues(lines: string[]): number[] {
-  const values: number[] = [];
-  let readingDetails = false;
+type VisibleNumberText = {
+  value: number;
+  rect: DOMRect;
+};
 
-  for (const line of lines) {
-    if (/^(details|detalhes)\b/i.test(line)) {
-      readingDetails = true;
-      const remainder = line.replace(/^(details|detalhes)\b[:\s-]*/i, "");
-      values.push(...parseDiceNumbers(remainder));
+function parseDetailDiceFromDom(element: Element): DiceValue[] {
+  const markers = collectDieMarkerElements(element);
+  if (markers.length === 0) {
+    return [];
+  }
+
+  const countTexts = collectVisibleNumberTexts(element);
+  if (countTexts.length === 0) {
+    return [];
+  }
+
+  const dice: DiceValue[] = [];
+  const usedCounts = new Set<VisibleNumberText>();
+
+  for (const marker of markers) {
+    const face = inferDieFaceFromElement(marker);
+    if (!face) {
       continue;
     }
 
-    if (!readingDetails) {
+    const countText = findNearestDieCount(marker, countTexts, usedCounts);
+    if (!countText) {
       continue;
     }
 
-    if (/(dice pool|add dice to roll|clear|successes|sucessos?|re-roll|reroll)/i.test(line)) {
+    usedCounts.add(countText);
+    const kind = normalizeKindForFace(inferDieKindFromElement(marker), face);
+    const count = clampNumber(countText.value, 1, 80 - dice.length);
+
+    for (let index = 0; index < count; index += 1) {
+      dice.push(createDiceValue(kind, face));
+    }
+
+    if (dice.length >= 80) {
+      return dice.slice(0, 80);
+    }
+  }
+
+  return dice;
+}
+
+function collectVisibleNumberTexts(root: Element): VisibleNumberText[] {
+  const values: VisibleNumberText[] = [];
+  const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+
+  while (walker.nextNode()) {
+    const node = walker.currentNode;
+    if (!(node instanceof Text) || !node.parentElement || !isVisibleElement(node.parentElement)) {
       continue;
     }
 
-    values.push(...parseDiceNumbers(line));
+    const text = node.textContent ?? "";
+    const matches = text.matchAll(/\b\d{1,2}\b/g);
 
-    if (values.length >= 80) {
-      return values.slice(0, 80);
+    for (const match of matches) {
+      const rawValue = match[0];
+      const start = match.index ?? -1;
+      if (start < 0) {
+        continue;
+      }
+
+      const value = Number.parseInt(rawValue, 10);
+      if (!Number.isFinite(value) || value < 1 || value > 80) {
+        continue;
+      }
+
+      const rect = getTextRangeRect(node, start, start + rawValue.length);
+      if (!rect || rect.width <= 0 || rect.height <= 0) {
+        continue;
+      }
+
+      values.push({ value, rect });
     }
   }
 
   return values;
 }
 
-function parseDiceNumbers(text: string): number[] {
-  const matches = text.match(/\b(?:10|[1-9])\b/g) ?? [];
-  return matches.map((match) => Number.parseInt(match, 10)).filter((value) => Number.isFinite(value));
+function getTextRangeRect(node: Text, start: number, end: number): DOMRect | undefined {
+  const range = document.createRange();
+  try {
+    range.setStart(node, start);
+    range.setEnd(node, end);
+    return range.getBoundingClientRect();
+  } catch {
+    return undefined;
+  } finally {
+    range.detach();
+  }
+}
+
+function findNearestDieCount(
+  marker: Element,
+  countTexts: VisibleNumberText[],
+  usedCounts: Set<VisibleNumberText>
+): VisibleNumberText | undefined {
+  const markerRect = marker.getBoundingClientRect();
+  const markerCenterY = markerRect.top + markerRect.height / 2;
+  const maxVerticalDistance = Math.max(10, markerRect.height * 0.8);
+  const maxHorizontalDistance = Math.max(40, markerRect.width * 2 + 28);
+  let best: VisibleNumberText | undefined;
+  let bestScore = Infinity;
+
+  for (const countText of countTexts) {
+    if (usedCounts.has(countText)) {
+      continue;
+    }
+
+    const countCenterY = countText.rect.top + countText.rect.height / 2;
+    const verticalDistance = Math.abs(countCenterY - markerCenterY);
+    const horizontalDistance = countText.rect.left - markerRect.right;
+
+    if (verticalDistance > maxVerticalDistance || horizontalDistance < -6 || horizontalDistance > maxHorizontalDistance) {
+      continue;
+    }
+
+    const score = horizontalDistance + verticalDistance * 2;
+    if (score < bestScore) {
+      best = countText;
+      bestScore = score;
+    }
+  }
+
+  return best;
 }
 
 function parseDiceFromText(lines: string[]): DiceValue[] {
   const dice: DiceValue[] = [];
 
   for (const line of lines) {
+    if (/(dice rolled|dados rolados|dados jogados|successes|sucessos?)/i.test(line)) {
+      continue;
+    }
+
     if (!/(dice|dado|dados|hunger|fome|regular)/i.test(line)) {
       continue;
     }
@@ -763,7 +860,8 @@ function parseDiceFromText(lines: string[]): DiceValue[] {
       dice.push({
         kind,
         value,
-        sides: value <= 10 ? 10 : undefined
+        sides: value <= 10 ? 10 : undefined,
+        face: getDieFaceFromValue(kind, value)
       });
 
       if (dice.length >= 80) {
@@ -773,15 +871,6 @@ function parseDiceFromText(lines: string[]): DiceValue[] {
   }
 
   return dice;
-}
-
-function inferDiceKindsFromDom(element: Element, expectedCount: number): DiceValue["kind"][] {
-  if (expectedCount <= 0) {
-    return [];
-  }
-
-  const markerElements = collectDieMarkerElements(element);
-  return markerElements.slice(0, expectedCount).map((marker) => inferDieKindFromElement(marker));
 }
 
 function collectDieMarkerElements(root: Element): Element[] {
@@ -810,7 +899,7 @@ function isLikelyDieMarkerElement(element: Element): boolean {
 
   const tagName = element.tagName.toLowerCase();
   const context = getElementContext(element);
-  const hasDiceContext = /(die|dice|dado|hunger|fome|regular|skull|ankh|blood|detail|result|icon)/i.test(context);
+  const hasDiceContext = /(die|dice|dado|hunger|fome|regular|skull|ankh|blood|blank|critical|success|failure|detail|result|icon)/i.test(context);
   const isMedia = tagName === "img" || tagName === "svg" || tagName === "path" || tagName === "use";
 
   if (!hasDiceContext && !isMedia) {
@@ -820,6 +909,38 @@ function isLikelyDieMarkerElement(element: Element): boolean {
   const rect = element.getBoundingClientRect();
   const hasSmallVisibleBox = rect.width >= 4 && rect.height >= 4 && rect.width <= 52 && rect.height <= 52;
   return hasSmallVisibleBox || isMedia;
+}
+
+function isVisibleElement(element: Element): boolean {
+  const rect = element.getBoundingClientRect();
+  if (rect.width <= 0 || rect.height <= 0) {
+    return false;
+  }
+
+  const style = window.getComputedStyle(element);
+  return style.display !== "none" && style.visibility !== "hidden" && style.opacity !== "0";
+}
+
+function inferDieFaceFromElement(element: Element): DiceFace | undefined {
+  const context = getElementContext(element);
+
+  if (/(skull|caveira|bestial|beast|hunger[-_\s]?1|blood[-_\s]?1)/i.test(context)) {
+    return "skull";
+  }
+
+  if (/(critical|crit|messy|special|double|two[-_\s]?ankh|double[-_\s]?ankh|regular[-_\s]?10|hunger[-_\s]?10|blood[-_\s]?10|face[-_\s]?10|result[-_\s]?10|d10[-_\s]?10)/i.test(context)) {
+    return "critical";
+  }
+
+  if (/(ankh|success|sucesso|win|regular[-_\s]?[6-9]|hunger[-_\s]?[6-9]|blood[-_\s]?[6-9]|face[-_\s]?[6-9]|result[-_\s]?[6-9]|d10[-_\s]?[6-9])/i.test(context)) {
+    return "success";
+  }
+
+  if (/(blank|fail|failure|asterisk|star|dot|empty|none|regular[-_\s]?[1-5]|hunger[-_\s]?[2-5]|blood[-_\s]?[2-5]|face[-_\s]?[1-5]|result[-_\s]?[1-5]|d10[-_\s]?[1-5])/i.test(context)) {
+    return "blank";
+  }
+
+  return undefined;
 }
 
 function inferDieKindFromElement(element: Element): DiceValue["kind"] {
@@ -843,19 +964,74 @@ function getElementContext(element: Element): string {
   let depth = 0;
 
   while (current && depth < 4) {
-    parts.push(
-      current.tagName,
-      current.getAttribute("class") ?? "",
-      current.getAttribute("aria-label") ?? "",
-      current.getAttribute("title") ?? "",
-      current.getAttribute("alt") ?? "",
-      current.getAttribute("src") ?? ""
-    );
+    parts.push(current.tagName);
+
+    for (const attribute of Array.from(current.attributes)) {
+      if (attribute.name === "style" || attribute.name === "d") {
+        continue;
+      }
+
+      parts.push(attribute.name, attribute.value);
+    }
+
     current = current.parentElement;
     depth += 1;
   }
 
   return parts.join(" ");
+}
+
+function normalizeKindForFace(kind: DiceValue["kind"], face: DiceFace): DiceValue["kind"] {
+  if (face === "skull") {
+    return "hunger";
+  }
+
+  return kind;
+}
+
+function createDiceValue(kind: DiceValue["kind"], face: DiceFace): DiceValue {
+  return {
+    kind,
+    value: representativeValueForFace(kind, face),
+    sides: 10,
+    face
+  };
+}
+
+function representativeValueForFace(kind: DiceValue["kind"], face: DiceFace): number {
+  if (face === "skull") {
+    return 1;
+  }
+
+  if (face === "critical") {
+    return 10;
+  }
+
+  if (face === "success") {
+    return 6;
+  }
+
+  return kind === "hunger" ? 2 : 1;
+}
+
+function getDieFaceFromValue(kind: DiceValue["kind"], value: number): DiceFace | undefined {
+  if (kind === "hunger" && value === 1) {
+    return "skull";
+  }
+
+  if (value === 10) {
+    return "critical";
+  }
+
+  if (value >= 6 && value <= 9) {
+    return "success";
+  }
+
+  if (value >= 1 && value <= 5) {
+    return "blank";
+  }
+
+  return undefined;
 }
 
 function inferKindFromComputedColors(element: Element): DiceValue["kind"] | undefined {
@@ -899,7 +1075,7 @@ function parseRgbColor(color: string): [number, number, number] | undefined {
 }
 
 function diceKey(dice: DiceValue[]): string {
-  return dice.map((die) => `${die.kind}:${die.value}`).join(",");
+  return dice.map((die) => `${die.kind}:${die.face ?? getDieFace(die)}:${die.value}`).join(",");
 }
 
 function wasRecentlySeen(signature: string): boolean {
@@ -2087,6 +2263,9 @@ type DiceAnimationLayer = {
   activeDice: Set<AnimatedDie>;
   d10Model: D10Model;
   desiredResultNormal: THREE.Vector3;
+  raycaster: THREE.Raycaster;
+  pointer: THREE.Vector2;
+  drag?: DiceDragState;
   animationFrame: number;
   lastFrame: number;
 };
@@ -2108,6 +2287,7 @@ type AnimatedDie = {
   group: THREE.Group;
   value: number;
   kind: DiceValue["kind"];
+  face: DiceFace;
   radius: number;
   x: number;
   y: number;
@@ -2126,6 +2306,18 @@ type AnimatedDie = {
   resultAnchor?: FaceAnchor;
   fadeStarted: boolean;
   fadeStart: number;
+  dragging: boolean;
+};
+
+type DiceDragState = {
+  die: AnimatedDie;
+  pointerId: number;
+  planeZ: number;
+  offsetX: number;
+  offsetY: number;
+  lastX: number;
+  lastY: number;
+  lastTime: number;
 };
 
 const resultLabelBaseOffset = 0.055;
@@ -2222,6 +2414,8 @@ function createDiceAnimationLayer(): DiceAnimationLayer {
     activeDice: new Set<AnimatedDie>(),
     d10Model,
     desiredResultNormal: new THREE.Vector3(0, -0.48, 0.88).normalize(),
+    raycaster: new THREE.Raycaster(),
+    pointer: new THREE.Vector2(),
     animationFrame: 0,
     lastFrame: performance.now()
   };
@@ -2230,6 +2424,7 @@ function createDiceAnimationLayer(): DiceAnimationLayer {
   window.addEventListener("resize", () => {
     resizeDiceAnimationLayer(layer);
   });
+  bindDiceDragEvents(layer);
 
   return layer;
 }
@@ -2298,6 +2493,7 @@ function createAnimatedDie(die: DiceValue, index: number, total: number, layer: 
     group,
     value: die.value,
     kind: die.kind,
+    face: getDieFace(die),
     x: startX,
     y: startY,
     z: startZ,
@@ -2312,7 +2508,8 @@ function createAnimatedDie(die: DiceValue, index: number, total: number, layer: 
     resultRevealed: false,
     revealStart: 0,
     fadeStarted: false,
-    fadeStart: 0
+    fadeStart: 0,
+    dragging: false
   };
 }
 
@@ -2426,7 +2623,7 @@ function updateAnimatedDice(layer: DiceAnimationLayer, now: number, dt: number):
 
     die.group.position.set(die.x, die.y, die.z);
 
-    if (!die.fadeStarted && now - die.birth > diceAnimationMs - 900) {
+    if (!die.fadeStarted && now - die.birth > diceAnimationMs - diceFadeLeadMs) {
       fadeAnimatedDie(die, now);
     }
 
@@ -2442,13 +2639,16 @@ function updateAnimatedDice(layer: DiceAnimationLayer, now: number, dt: number):
   }
 
   resolveDieCollisions(layer);
+  for (const die of layer.activeDice) {
+    die.group.position.set(die.x, die.y, die.z);
+  }
 }
 
 function createD10Geometry(): D10Model {
   const primalVertices: THREE.Vector3[] = [];
   const primalFaces: number[][] = [];
   const ringRadius = 1;
-  const ringHeight = 0.62;
+  const ringHeight = 0.72;
 
   for (let index = 0; index < 5; index += 1) {
     const angle = -Math.PI / 2 + (Math.PI * 2 * index) / 5;
@@ -2570,11 +2770,11 @@ function getFaceNormal(points: THREE.Vector3[]): THREE.Vector3 {
 }
 
 function createFaceLabel({
-  value,
+  face,
   color,
   glow
 }: {
-  value: number;
+  face: DiceFace;
   color: string;
   glow: string;
 }): THREE.Mesh {
@@ -2595,9 +2795,10 @@ function createFaceLabel({
   context.strokeStyle = "rgba(0, 0, 0, 0.72)";
   context.lineWidth = 8;
   context.fillStyle = color;
-  context.font = "900 118px Georgia, serif";
-  context.strokeText(String(value), 128, 90);
-  context.fillText(String(value), 128, 90);
+  context.font = face === "critical" ? "900 104px Georgia, serif" : "900 118px Georgia, serif";
+  const symbol = faceSymbolText(face);
+  context.strokeText(symbol, 128, 90);
+  context.fillText(symbol, 128, 90);
 
   const texture = new THREE.CanvasTexture(canvas);
   texture.colorSpace = THREE.SRGBColorSpace;
@@ -2624,7 +2825,7 @@ function revealDieResult(die: AnimatedDie, layer: DiceAnimationLayer, now: numbe
   const anchor = die.settleAnchor ?? getVisibleResultAnchor(die, layer);
   const palette = getDiePalette(die.kind);
   const label = createFaceLabel({
-    value: die.value,
+    face: die.face,
     color: palette.ink,
     glow: palette.inkGlow
   });
@@ -2780,7 +2981,8 @@ function fadeAnimatedDie(die: AnimatedDie, now: number): void {
 }
 
 function renderDieFade(die: AnimatedDie, now: number): void {
-  const opacity = 1 - clampNumber((now - die.fadeStart) / 700, 0, 1);
+  const progress = clampNumber((now - die.fadeStart) / diceFadeMs, 0, 1);
+  const opacity = Math.pow(1 - progress, 2.4);
   die.group.traverse((child: THREE.Object3D) => {
     const material = (child as { material?: THREE.Material | THREE.Material[] }).material;
     const materials = Array.isArray(material) ? material : material ? [material] : [];
@@ -2836,6 +3038,140 @@ function resizeDiceAnimationLayer(layer: DiceAnimationLayer): void {
   layer.camera.updateProjectionMatrix();
 }
 
+function bindDiceDragEvents(layer: DiceAnimationLayer): void {
+  window.addEventListener("pointerdown", (event) => {
+    const die = getPointerDie(layer, event);
+    if (!die) {
+      return;
+    }
+
+    const point = getPointerWorldPoint(layer, event, die.z);
+    if (!point) {
+      return;
+    }
+
+    event.preventDefault();
+    event.stopPropagation();
+    die.dragging = true;
+    die.vx = 0;
+    die.vy = 0;
+    die.vz = 0;
+    die.angularVelocity.set(0, 0, 0);
+    layer.drag = {
+      die,
+      pointerId: event.pointerId,
+      planeZ: die.z,
+      offsetX: die.x - point.x,
+      offsetY: die.y - point.y,
+      lastX: die.x,
+      lastY: die.y,
+      lastTime: performance.now()
+    };
+    ensureDiceAnimationLoop();
+  }, true);
+
+  window.addEventListener("pointermove", (event) => {
+    if (!layer.drag || layer.drag.pointerId !== event.pointerId) {
+      return;
+    }
+
+    const drag = layer.drag;
+    const point = getPointerWorldPoint(layer, event, drag.planeZ);
+    if (!point) {
+      return;
+    }
+
+    event.preventDefault();
+    event.stopPropagation();
+    const die = drag.die;
+    const bounds = getWorldBounds();
+    const now = performance.now();
+    const nextX = clampNumber(point.x + drag.offsetX, bounds.left + die.radius, bounds.right - die.radius);
+    const nextY = clampNumber(point.y + drag.offsetY, bounds.top + die.radius, bounds.bottom - die.radius);
+    const elapsed = Math.max(0.016, (now - drag.lastTime) / 1000);
+    die.x = nextX;
+    die.y = nextY;
+    die.z = drag.planeZ;
+    die.vx = clampNumber((nextX - drag.lastX) / elapsed, -900, 900);
+    die.vy = clampNumber((nextY - drag.lastY) / elapsed, -900, 900);
+    die.vz = 0;
+    die.angularVelocity.set(0, 0, 0);
+    die.group.position.set(die.x, die.y, die.z);
+    drag.lastX = nextX;
+    drag.lastY = nextY;
+    drag.lastTime = now;
+    resolveDieCollisions(layer);
+    for (const activeDie of layer.activeDice) {
+      activeDie.group.position.set(activeDie.x, activeDie.y, activeDie.z);
+    }
+  }, true);
+
+  window.addEventListener("pointerup", (event) => {
+    finishDiceDrag(layer, event);
+  }, true);
+  window.addEventListener("pointercancel", (event) => {
+    finishDiceDrag(layer, event);
+  }, true);
+}
+
+function finishDiceDrag(layer: DiceAnimationLayer, event: PointerEvent): void {
+  if (!layer.drag || layer.drag.pointerId !== event.pointerId) {
+    return;
+  }
+
+  event.preventDefault();
+  event.stopPropagation();
+  layer.drag.die.dragging = false;
+  layer.drag.die.vx *= 0.18;
+  layer.drag.die.vy *= 0.18;
+  layer.drag = undefined;
+}
+
+function getPointerDie(layer: DiceAnimationLayer, event: PointerEvent): AnimatedDie | undefined {
+  const dice = [...layer.activeDice].filter((die) => !die.fadeStarted && (die.settled || die.resultRevealed));
+  if (dice.length === 0) {
+    return undefined;
+  }
+
+  setRaycasterFromPointer(layer, event);
+  const intersections = layer.raycaster.intersectObjects(dice.map((die) => die.group), true);
+  for (const hit of intersections) {
+    const die = dice.find((candidate) => isObjectInsideGroup(hit.object, candidate.group));
+    if (die) {
+      return die;
+    }
+  }
+
+  return undefined;
+}
+
+function getPointerWorldPoint(layer: DiceAnimationLayer, event: PointerEvent, z: number): THREE.Vector3 | undefined {
+  setRaycasterFromPointer(layer, event);
+  const point = new THREE.Vector3();
+  const plane = new THREE.Plane(new THREE.Vector3(0, 0, 1), -z);
+  return layer.raycaster.ray.intersectPlane(plane, point) ?? undefined;
+}
+
+function setRaycasterFromPointer(layer: DiceAnimationLayer, event: PointerEvent): void {
+  const rect = layer.stage.getBoundingClientRect();
+  layer.pointer.set(
+    ((event.clientX - rect.left) / Math.max(1, rect.width)) * 2 - 1,
+    -((event.clientY - rect.top) / Math.max(1, rect.height)) * 2 + 1
+  );
+  layer.raycaster.setFromCamera(layer.pointer, layer.camera);
+}
+
+function isObjectInsideGroup(object: THREE.Object3D, group: THREE.Group): boolean {
+  let current: THREE.Object3D | null = object;
+  while (current) {
+    if (current === group) {
+      return true;
+    }
+    current = current.parent;
+  }
+  return false;
+}
+
 function resolveDieCollisions(layer: DiceAnimationLayer): void {
   const dice = [...layer.activeDice].filter((die) => !die.fadeStarted);
 
@@ -2843,14 +3179,14 @@ function resolveDieCollisions(layer: DiceAnimationLayer): void {
     for (let j = i + 1; j < dice.length; j += 1) {
       const first = dice[i];
       const second = dice[j];
-      if ((first.settled && second.settled) || Math.abs(first.z - second.z) > Math.max(first.radius, second.radius) * 2.05) {
+      if (Math.abs(first.z - second.z) > Math.max(first.radius, second.radius) * 2.45) {
         continue;
       }
 
       const dx = second.x - first.x;
       const dy = second.y - first.y;
       const distance = Math.hypot(dx, dy) || 1;
-      const minDistance = (first.radius + second.radius) * 0.96;
+      const minDistance = (first.radius + second.radius) * 1.06;
 
       if (distance >= minDistance) {
         continue;
@@ -2859,9 +3195,12 @@ function resolveDieCollisions(layer: DiceAnimationLayer): void {
       const nx = dx / distance;
       const ny = dy / distance;
       const overlap = minDistance - distance;
-      const firstMobility = first.settled ? 0.18 : 1;
-      const secondMobility = second.settled ? 0.18 : 1;
+      const firstMobility = first.dragging ? 0 : first.settled ? 0.22 : 1;
+      const secondMobility = second.dragging ? 0 : second.settled ? 0.22 : 1;
       const mobility = firstMobility + secondMobility;
+      if (mobility <= 0) {
+        continue;
+      }
       const firstShift = (overlap * firstMobility) / mobility;
       const secondShift = (overlap * secondMobility) / mobility;
       first.x -= nx * firstShift;
@@ -2871,7 +3210,7 @@ function resolveDieCollisions(layer: DiceAnimationLayer): void {
 
       const relativeVelocity = (second.vx - first.vx) * nx + (second.vy - first.vy) * ny;
       if (relativeVelocity < 0) {
-        const impulse = -(1.22 * relativeVelocity) / mobility;
+        const impulse = -(1.42 * relativeVelocity) / mobility;
         if (!first.settled) {
           first.vx -= impulse * nx * firstMobility;
           first.vy -= impulse * ny * firstMobility;
@@ -3114,7 +3453,7 @@ function renderRoll(item: { roll: RollEvent; origin: "local" | "remote"; deliver
   const resultParts = [
     typeof roll.successes === "number" ? `<span class="chip">${escapeHtml(formatSuccesses(roll.successes))}</span>` : "",
     typeof roll.total === "number" ? `<span class="chip">${escapeHtml(t("total"))} ${roll.total}</span>` : "",
-    roll.dice.length > 0 ? `<span class="chip">${roll.dice.map((die) => die.value).join(", ")}</span>` : ""
+    roll.dice.length > 0 ? `<span class="chip">${escapeHtml(formatDiceSummary(roll.dice))}</span>` : ""
   ].filter(Boolean);
 
   return `
@@ -3145,12 +3484,25 @@ function renderDie(die: DiceValue): string {
   const faceLabel = dieFaceLabel(face);
   const kindLabel = dieKindLabel(die.kind);
   return `
-    <span class="die ${kindClass} die-${face}" aria-label="${escapeHtml(`${kindLabel} ${die.value}: ${faceLabel}`)}">
+    <span class="die ${kindClass} die-${face}" aria-label="${escapeHtml(`${kindLabel}: ${faceLabel}`)}">
       <span class="die-gem" aria-hidden="true"></span>
-      <span>${die.value}</span>
+      <span>${escapeHtml(faceSymbolText(face))}</span>
       <span>${escapeHtml(faceLabel)}</span>
     </span>
   `;
+}
+
+function formatDiceSummary(dice: DiceValue[]): string {
+  const regular = dice.filter((die) => die.kind === "regular").length;
+  const hunger = dice.filter((die) => die.kind === "hunger").length;
+  const unknown = dice.length - regular - hunger;
+  const parts = [
+    regular > 0 ? `${regular} ${t("regularDie")}` : "",
+    hunger > 0 ? `${hunger} ${t("hungerDie")}` : "",
+    unknown > 0 ? `${unknown} ${t("unknownDie")}` : ""
+  ].filter(Boolean);
+
+  return `${dice.length}d10${parts.length > 0 ? ` (${parts.join(", ")})` : ""}`;
 }
 
 function renderOutcome(roll: RollEvent): string {
@@ -3202,19 +3554,7 @@ function deliveryLabel(delivery: string): string {
 }
 
 function getDieFace(die: DiceValue): DiceFace {
-  if (die.kind === "hunger" && die.value === 1) {
-    return "skull";
-  }
-
-  if (die.value === 10) {
-    return "critical";
-  }
-
-  if (die.value >= 6 && die.value <= 9) {
-    return "success";
-  }
-
-  return "blank";
+  return die.face ?? getDieFaceFromValue(die.kind, die.value) ?? "blank";
 }
 
 function dieFaceLabel(face: DiceFace): string {
@@ -3245,9 +3585,9 @@ function getRollOutcome(roll: RollEvent): RollOutcome | undefined {
     return undefined;
   }
 
-  const hungerOnes = roll.dice.filter((die) => die.kind === "hunger" && die.value === 1).length;
-  const tens = roll.dice.filter((die) => die.value === 10).length;
-  const hungerTens = roll.dice.filter((die) => die.kind === "hunger" && die.value === 10).length;
+  const hungerOnes = roll.dice.filter(isHungerSkull).length;
+  const tens = roll.dice.filter(isCriticalDie).length;
+  const hungerTens = roll.dice.filter((die) => die.kind === "hunger" && isCriticalDie(die)).length;
 
   if (roll.successes <= 0) {
     return hungerOnes > 0 ? "bestialFailure" : "failure";
@@ -3258,6 +3598,14 @@ function getRollOutcome(roll: RollEvent): RollOutcome | undefined {
   }
 
   return "success";
+}
+
+function isHungerSkull(die: DiceValue): boolean {
+  return die.face === "skull" || (die.kind === "hunger" && die.value === 1);
+}
+
+function isCriticalDie(die: DiceValue): boolean {
+  return die.face === "critical" || die.value === 10;
 }
 
 function outcomeLabel(outcome: RollOutcome): string {

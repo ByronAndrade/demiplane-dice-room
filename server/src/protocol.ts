@@ -15,7 +15,8 @@ export const helloMessageSchema = z.object({
 export const diceValueSchema = z.object({
   kind: z.enum(["regular", "hunger", "unknown"]).default("unknown"),
   value: z.number().int().min(1).max(100),
-  sides: z.number().int().min(2).max(100).optional()
+  sides: z.number().int().min(2).max(100).optional(),
+  face: z.enum(["blank", "success", "critical", "skull"]).optional()
 });
 
 export const rollEventSchema = z.object({

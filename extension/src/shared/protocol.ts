@@ -2,10 +2,13 @@ export const protocolVersion = 1;
 
 export type ConnectionStatus = "disconnected" | "connecting" | "connected" | "error";
 
+export type DiceFace = "blank" | "success" | "critical" | "skull";
+
 export type DiceValue = {
   kind: "regular" | "hunger" | "unknown";
   value: number;
   sides?: number;
+  face?: DiceFace;
 };
 
 export type PresencePlayer = {

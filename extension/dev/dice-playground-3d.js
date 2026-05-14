@@ -1,6 +1,8 @@
 import * as THREE from "https://unpkg.com/three@0.164.1/build/three.module.js";
 
-const diceAnimationMs = 7400;
+const diceAnimationMs = 8800;
+const diceFadeLeadMs = 420;
+const diceFadeMs = 360;
 const maxAnimatedDice = 20;
 const dieRadius = 42;
 const groundZ = dieRadius * 0.82;
@@ -56,8 +58,11 @@ scene.add(shadowPlane);
 
 const d10Model = createD10Geometry();
 const desiredResultNormal = new THREE.Vector3(0, -0.48, 0.88).normalize();
+const raycaster = new THREE.Raycaster();
+const pointer = new THREE.Vector2();
 const resultLabelBaseOffset = 0.055;
 const resultLabelRevealLift = 0.055;
+let dragState;
 
 document.getElementById("rollButton").addEventListener("click", () => playDiceAnimation(createRandomDice()));
 document.getElementById("criticalButton").addEventListener("click", () =>
@@ -79,6 +84,10 @@ document.getElementById("failureButton").addEventListener("click", () =>
 document.getElementById("clearButton").addEventListener("click", clearDice);
 autoButton.addEventListener("click", toggleAuto);
 document.addEventListener("pointerdown", unlockDiceAudio, { capture: true, once: true });
+window.addEventListener("pointerdown", handleDicePointerDown, true);
+window.addEventListener("pointermove", handleDicePointerMove, true);
+window.addEventListener("pointerup", finishDiceDrag, true);
+window.addEventListener("pointercancel", finishDiceDrag, true);
 
 for (const button of document.querySelectorAll("[data-step]")) {
   button.addEventListener("click", () => {
@@ -100,7 +109,7 @@ function createD10Geometry() {
   const primalVertices = [];
   const primalFaces = [];
   const ringRadius = 1;
-  const ringHeight = 0.62;
+  const ringHeight = 0.72;
 
   for (let index = 0; index < 5; index += 1) {
     const angle = -Math.PI / 2 + (Math.PI * 2 * index) / 5;
@@ -292,7 +301,9 @@ function createAnimatedDie(die, index, total) {
     revealStart: 0,
     resultLabel: undefined,
     resultAnchor: undefined,
-    fadeStarted: false
+    fadeStarted: false,
+    fadeStart: 0,
+    dragging: false
   };
 }
 
@@ -479,8 +490,9 @@ function updateAnimatedDice(now, dt) {
 
     die.group.position.set(die.x, die.y, die.z);
 
-    if (!die.fadeStarted && now - die.birth > diceAnimationMs - 900) {
+    if (!die.fadeStarted && now - die.birth > diceAnimationMs - diceFadeLeadMs) {
       die.fadeStarted = true;
+      die.fadeStart = now;
       fadeDie(die);
     }
 
@@ -492,6 +504,9 @@ function updateAnimatedDice(now, dt) {
   }
 
   resolveDieCollisions();
+  for (const die of activeDice) {
+    die.group.position.set(die.x, die.y, die.z);
+  }
 }
 
 function beginSettle(die, now) {
@@ -644,20 +659,143 @@ function setObjectOpacity(object, opacity) {
   });
 }
 
+function handleDicePointerDown(event) {
+  const die = getPointerDie(event);
+  if (!die) {
+    return;
+  }
+
+  const point = getPointerWorldPoint(event, die.z);
+  if (!point) {
+    return;
+  }
+
+  event.preventDefault();
+  event.stopPropagation();
+  die.dragging = true;
+  die.vx = 0;
+  die.vy = 0;
+  die.vz = 0;
+  die.angularVelocity.set(0, 0, 0);
+  dragState = {
+    die,
+    pointerId: event.pointerId,
+    planeZ: die.z,
+    offsetX: die.x - point.x,
+    offsetY: die.y - point.y,
+    lastX: die.x,
+    lastY: die.y,
+    lastTime: performance.now()
+  };
+}
+
+function handleDicePointerMove(event) {
+  if (!dragState || dragState.pointerId !== event.pointerId) {
+    return;
+  }
+
+  const point = getPointerWorldPoint(event, dragState.planeZ);
+  if (!point) {
+    return;
+  }
+
+  event.preventDefault();
+  event.stopPropagation();
+  const die = dragState.die;
+  const bounds = getWorldBounds();
+  const now = performance.now();
+  const nextX = clampNumber(point.x + dragState.offsetX, bounds.left + dieRadius, bounds.right - dieRadius);
+  const nextY = clampNumber(point.y + dragState.offsetY, bounds.top + dieRadius, bounds.bottom - dieRadius);
+  const elapsed = Math.max(0.016, (now - dragState.lastTime) / 1000);
+  die.x = nextX;
+  die.y = nextY;
+  die.z = dragState.planeZ;
+  die.vx = clampNumber((nextX - dragState.lastX) / elapsed, -900, 900);
+  die.vy = clampNumber((nextY - dragState.lastY) / elapsed, -900, 900);
+  die.vz = 0;
+  die.angularVelocity.set(0, 0, 0);
+  die.group.position.set(die.x, die.y, die.z);
+  dragState.lastX = nextX;
+  dragState.lastY = nextY;
+  dragState.lastTime = now;
+  resolveDieCollisions();
+  for (const activeDie of activeDice) {
+    activeDie.group.position.set(activeDie.x, activeDie.y, activeDie.z);
+  }
+}
+
+function finishDiceDrag(event) {
+  if (!dragState || dragState.pointerId !== event.pointerId) {
+    return;
+  }
+
+  event.preventDefault();
+  event.stopPropagation();
+  dragState.die.dragging = false;
+  dragState.die.vx *= 0.18;
+  dragState.die.vy *= 0.18;
+  dragState = undefined;
+}
+
+function getPointerDie(event) {
+  const dice = [...activeDice].filter((die) => !die.fadeStarted && (die.settled || die.resultRevealed));
+  if (dice.length === 0) {
+    return undefined;
+  }
+
+  setRaycasterFromPointer(event);
+  const intersections = raycaster.intersectObjects(dice.map((die) => die.group), true);
+  for (const hit of intersections) {
+    const die = dice.find((candidate) => isObjectInsideGroup(hit.object, candidate.group));
+    if (die) {
+      return die;
+    }
+  }
+
+  return undefined;
+}
+
+function getPointerWorldPoint(event, z) {
+  setRaycasterFromPointer(event);
+  const point = new THREE.Vector3();
+  const plane = new THREE.Plane(new THREE.Vector3(0, 0, 1), -z);
+  return raycaster.ray.intersectPlane(plane, point) ?? undefined;
+}
+
+function setRaycasterFromPointer(event) {
+  const rect = stage.getBoundingClientRect();
+  pointer.set(
+    ((event.clientX - rect.left) / Math.max(1, rect.width)) * 2 - 1,
+    -((event.clientY - rect.top) / Math.max(1, rect.height)) * 2 + 1
+  );
+  raycaster.setFromCamera(pointer, camera);
+}
+
+function isObjectInsideGroup(object, group) {
+  let current = object;
+  while (current) {
+    if (current === group) {
+      return true;
+    }
+    current = current.parent;
+  }
+  return false;
+}
+
 function resolveDieCollisions() {
   const dice = [...activeDice].filter((die) => !die.fadeStarted);
   for (let i = 0; i < dice.length; i += 1) {
     for (let j = i + 1; j < dice.length; j += 1) {
       const first = dice[i];
       const second = dice[j];
-      if ((first.settled && second.settled) || Math.abs(first.z - second.z) > dieRadius * 2.05) {
+      if (Math.abs(first.z - second.z) > dieRadius * 2.45) {
         continue;
       }
 
       const dx = second.x - first.x;
       const dy = second.y - first.y;
       const distance = Math.hypot(dx, dy) || 1;
-      const minDistance = dieRadius * 1.92;
+      const minDistance = dieRadius * 2.12;
       if (distance >= minDistance) {
         continue;
       }
@@ -665,9 +803,12 @@ function resolveDieCollisions() {
       const nx = dx / distance;
       const ny = dy / distance;
       const overlap = minDistance - distance;
-      const firstMobility = first.settled ? 0.18 : 1;
-      const secondMobility = second.settled ? 0.18 : 1;
+      const firstMobility = first.dragging ? 0 : first.settled ? 0.22 : 1;
+      const secondMobility = second.dragging ? 0 : second.settled ? 0.22 : 1;
       const mobility = firstMobility + secondMobility;
+      if (mobility <= 0) {
+        continue;
+      }
       const firstShift = (overlap * firstMobility) / mobility;
       const secondShift = (overlap * secondMobility) / mobility;
       first.x -= nx * firstShift;
@@ -677,7 +818,7 @@ function resolveDieCollisions() {
 
       const relativeVelocity = (second.vx - first.vx) * nx + (second.vy - first.vy) * ny;
       if (relativeVelocity < 0) {
-        const impulse = -(1.22 * relativeVelocity) / mobility;
+        const impulse = -(1.42 * relativeVelocity) / mobility;
         if (!first.settled) {
           first.vx -= impulse * nx * firstMobility;
           first.vy -= impulse * ny * firstMobility;
@@ -710,11 +851,12 @@ function fadeDie(die) {
     }
   });
 
-  const start = performance.now();
+  const start = die.fadeStart || performance.now();
   const step = () => {
-    const progress = clampNumber((performance.now() - start) / 700, 0, 1);
+    const progress = clampNumber((performance.now() - start) / diceFadeMs, 0, 1);
+    const opacity = Math.pow(1 - progress, 2.4);
     for (const material of fadeMaterials) {
-      material.opacity = 1 - progress;
+      material.opacity = opacity;
     }
     if (progress < 1 && activeDice.has(die)) {
       requestAnimationFrame(step);
@@ -783,6 +925,10 @@ function renderReadout(dice) {
 }
 
 function clearDice() {
+  if (dragState) {
+    dragState.die.dragging = false;
+    dragState = undefined;
+  }
   for (const die of [...activeDice]) {
     scene.remove(die.group);
     disposeObject(die.group);

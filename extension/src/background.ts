@@ -534,9 +534,9 @@ function createTestRoll(): CapturedRoll {
     successes: 2,
     total: null,
     dice: [
-      { kind: "regular", value: 8, sides: 10 },
-      { kind: "regular", value: 5, sides: 10 },
-      { kind: "hunger", value: 10, sides: 10 }
+      { kind: "regular", value: 8, sides: 10, face: "success" },
+      { kind: "regular", value: 5, sides: 10, face: "blank" },
+      { kind: "hunger", value: 10, sides: 10, face: "critical" }
     ],
     rawText: "STRENGTH + ATHLETICS\nSUCCESSES: 2\n8 5 10",
     createdAt,
