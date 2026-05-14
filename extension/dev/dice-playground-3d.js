@@ -4,9 +4,9 @@ const diceAnimationMs = 8800;
 const diceFadeLeadMs = 420;
 const diceFadeMs = 360;
 const stableFaceScore = 0.982;
-const diceSettleStartMs = 950;
-const diceSettleMotion = 58;
-const diceEdgeInstabilityTurnRate = 3.1;
+const diceSettleMotion = 34;
+const diceStableHoldMs = 260;
+const diceEdgeInstabilityTurnRate = 2.15;
 const maxAnimatedDice = 20;
 const dieRadius = 42;
 const groundZ = dieRadius * 0.82;
@@ -302,6 +302,7 @@ function createAnimatedDie(die, index, total, batchId) {
     birth: performance.now(),
     batchId,
     settled: false,
+    stableSince: 0,
     settleAnchor: undefined,
     supportAnchor: undefined,
     resultRevealed: false,
@@ -523,6 +524,7 @@ function beginSettle(die, now) {
     return;
   }
   if (!isDieFaceStable(die)) {
+    die.stableSince = 0;
     return;
   }
   die.settleAnchor = getVisibleResultAnchor(die);
@@ -531,11 +533,12 @@ function beginSettle(die, now) {
   if (motion > diceSettleMotion) {
     return;
   }
+  if (!die.stableSince || now - die.stableSince < diceStableHoldMs) {
+    return;
+  }
 
   die.settled = true;
-  die.x += die.vx * 0.016;
-  die.y += die.vy * 0.016;
-  die.z = getDieGroundZ(die);
+  die.z = Math.max(die.z, getDieGroundZ(die));
   die.vx = 0;
   die.vy = 0;
   die.vz = 0;
@@ -615,7 +618,7 @@ function getFaceAnchorScore(die, anchor, targetNormal) {
 
 function stabilizeDieOnGround(die, now, dt) {
   const currentGroundZ = getDieGroundZ(die);
-  if (die.dragging || die.z > currentGroundZ + 2 || now - die.birth < diceSettleStartMs) {
+  if (die.dragging || die.z > currentGroundZ + 2) {
     return;
   }
 
@@ -625,8 +628,12 @@ function stabilizeDieOnGround(die, now, dt) {
   const anchor = die.supportAnchor;
   const anchorScore = getFaceAnchorScore(die, anchor, supportNormal);
   if (anchorScore > stableFaceScore) {
+    if (!die.stableSince) {
+      die.stableSince = now;
+    }
     return;
   }
+  die.stableSince = 0;
 
   const currentNormal = anchor.normal.clone().applyQuaternion(die.group.quaternion).normalize();
   const rollAxis = currentNormal.clone().cross(supportNormal);
@@ -721,6 +728,7 @@ function handleDicePointerDown(event) {
   event.preventDefault();
   event.stopPropagation();
   die.dragging = true;
+  die.stableSince = 0;
   die.vx = 0;
   die.vy = 0;
   die.vz = 0;
@@ -780,6 +788,7 @@ function finishDiceDrag(event) {
   event.preventDefault();
   event.stopPropagation();
   dragState.die.dragging = false;
+  dragState.die.stableSince = 0;
   dragState.die.vx *= 0.18;
   dragState.die.vy *= 0.18;
   dragState = undefined;
@@ -872,12 +881,14 @@ function resolveDieCollisions() {
           first.vy -= impulse * ny * firstMobility;
           first.angularVelocity.z += impulse * 0.022;
           first.supportAnchor = undefined;
+          first.stableSince = 0;
         }
         if (!second.settled) {
           second.vx += impulse * nx * secondMobility;
           second.vy += impulse * ny * secondMobility;
           second.angularVelocity.z -= impulse * 0.022;
           second.supportAnchor = undefined;
+          second.stableSince = 0;
         }
         if (Math.abs(relativeVelocity) > 120) {
           playDiceImpactSound(clampNumber(Math.abs(relativeVelocity) / 3000, 0.04, 0.13));

@@ -29,9 +29,9 @@ const diceAnimationMs = 8800;
 const diceFadeLeadMs = 420;
 const diceFadeMs = 360;
 const stableFaceScore = 0.982;
-const diceSettleStartMs = 950;
-const diceSettleMotion = 58;
-const diceEdgeInstabilityTurnRate = 3.1;
+const diceSettleMotion = 34;
+const diceStableHoldMs = 260;
+const diceEdgeInstabilityTurnRate = 2.15;
 const maxAnimatedDice = 20;
 const panelUiStorageKey = "diceRoomPanelUi";
 const defaultDiceAnimationScale = 0.75;
@@ -2305,6 +2305,7 @@ type AnimatedDie = {
   birth: number;
   batchId: number;
   settled: boolean;
+  stableSince: number;
   settleAnchor?: FaceAnchor;
   supportAnchor?: FaceAnchor;
   resultRevealed: boolean;
@@ -2513,6 +2514,7 @@ function createAnimatedDie(die: DiceValue, index: number, total: number, batchId
     birth: performance.now(),
     batchId,
     settled: false,
+    stableSince: 0,
     supportAnchor: undefined,
     resultRevealed: false,
     revealStart: 0,
@@ -2878,7 +2880,7 @@ function getFaceAnchorScore(die: AnimatedDie, anchor: FaceAnchor, targetNormal: 
 
 function stabilizeDieOnGround(die: AnimatedDie, layer: DiceAnimationLayer, now: number, dt: number): void {
   const groundZ = getDieGroundZ(die, layer);
-  if (die.dragging || die.z > groundZ + 2 || now - die.birth < diceSettleStartMs) {
+  if (die.dragging || die.z > groundZ + 2) {
     return;
   }
 
@@ -2888,8 +2890,12 @@ function stabilizeDieOnGround(die: AnimatedDie, layer: DiceAnimationLayer, now: 
   const anchor = die.supportAnchor;
   const anchorScore = getFaceAnchorScore(die, anchor, supportNormal);
   if (anchorScore > stableFaceScore) {
+    if (!die.stableSince) {
+      die.stableSince = now;
+    }
     return;
   }
+  die.stableSince = 0;
 
   const currentNormal = anchor.normal.clone().applyQuaternion(die.group.quaternion).normalize();
   const rollAxis = currentNormal.clone().cross(supportNormal);
@@ -2974,6 +2980,7 @@ function beginSettleAnimatedDie(die: AnimatedDie, layer: DiceAnimationLayer, now
   }
 
   if (!isDieFaceStable(die, layer)) {
+    die.stableSince = 0;
     return;
   }
   die.settleAnchor = getVisibleResultAnchor(die, layer);
@@ -2982,11 +2989,12 @@ function beginSettleAnimatedDie(die: AnimatedDie, layer: DiceAnimationLayer, now
   if (motion > diceSettleMotion) {
     return;
   }
+  if (!die.stableSince || now - die.stableSince < diceStableHoldMs) {
+    return;
+  }
 
   die.settled = true;
-  die.x += die.vx * 0.016;
-  die.y += die.vy * 0.016;
-  die.z = getDieGroundZ(die, layer);
+  die.z = Math.max(die.z, getDieGroundZ(die, layer));
   die.vx = 0;
   die.vy = 0;
   die.vz = 0;
@@ -3100,6 +3108,7 @@ function bindDiceDragEvents(layer: DiceAnimationLayer): void {
     event.preventDefault();
     event.stopPropagation();
     die.dragging = true;
+    die.stableSince = 0;
     die.vx = 0;
     die.vy = 0;
     die.vz = 0;
@@ -3169,6 +3178,7 @@ function finishDiceDrag(layer: DiceAnimationLayer, event: PointerEvent): void {
   event.preventDefault();
   event.stopPropagation();
   layer.drag.die.dragging = false;
+  layer.drag.die.stableSince = 0;
   layer.drag.die.vx *= 0.18;
   layer.drag.die.vy *= 0.18;
   layer.drag = undefined;
@@ -3263,12 +3273,14 @@ function resolveDieCollisions(layer: DiceAnimationLayer): void {
           first.vy -= impulse * ny * firstMobility;
           first.angularVelocity.z += impulse * 0.022;
           first.supportAnchor = undefined;
+          first.stableSince = 0;
         }
         if (!second.settled) {
           second.vx += impulse * nx * secondMobility;
           second.vy += impulse * ny * secondMobility;
           second.angularVelocity.z -= impulse * 0.022;
           second.supportAnchor = undefined;
+          second.stableSince = 0;
         }
         if (Math.abs(relativeVelocity) > 120) {
           playDiceImpactSound(clampNumber(Math.abs(relativeVelocity) / 3000, 0.04, 0.13));
