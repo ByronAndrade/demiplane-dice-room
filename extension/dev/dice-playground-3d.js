@@ -4,8 +4,8 @@ const diceAnimationMs = 8800;
 const diceFadeLeadMs = 420;
 const diceFadeMs = 360;
 const stableFaceScore = 0.982;
-const diceSettleStartMs = 650;
-const diceSettleFreezeMs = 1350;
+const diceSettleStartMs = 950;
+const diceSettleFreezeMs = 1900;
 const diceSettleForceMs = 6200;
 const maxAnimatedDice = 20;
 const dieRadius = 42;
@@ -476,10 +476,10 @@ function updateAnimatedDice(now, dt) {
         die.angularVelocity.multiplyScalar(0.58);
       }
 
-      const drag = die.z <= groundZ + 1 ? Math.pow(0.18, dt) : Math.pow(0.58, dt);
+      const drag = die.z <= groundZ + 1 ? Math.pow(0.28, dt) : Math.pow(0.58, dt);
       die.vx *= drag;
       die.vy *= drag;
-      die.angularVelocity.multiplyScalar(Math.pow(die.z <= groundZ + 1 ? 0.44 : 0.72, dt));
+      die.angularVelocity.multiplyScalar(Math.pow(die.z <= groundZ + 1 ? 0.58 : 0.72, dt));
       stabilizeDieOnGround(die, now, dt);
 
       if (now - die.birth > diceSettleFreezeMs && die.z <= groundZ + 1 && Math.abs(die.vz) < 140) {
@@ -522,6 +522,11 @@ function beginSettle(die, now) {
   const anchor = die.settleAnchor ?? getVisibleResultAnchor(die);
   die.settleAnchor = anchor;
   if (!isDieFaceStable(die)) {
+    return;
+  }
+
+  const motion = Math.hypot(die.vx, die.vy) + Math.abs(die.vz) * 0.2 + die.angularVelocity.length() * 24;
+  if (motion > 118 && now - die.birth < diceSettleForceMs) {
     return;
   }
 
@@ -611,26 +616,27 @@ function stabilizeDieOnGround(die, now, dt) {
   correctionAxis.normalize();
   const settleAge = now - die.birth;
   const angle = Math.acos(clampNumber(anchorScore, -1, 1));
-  const settleProgress = clampNumber((settleAge - diceSettleStartMs) / 1450, 0, 1);
-  const urgency = clampNumber((settleAge - diceSettleStartMs) / 3200, 0, 1);
-  const momentumSpin = die.angularVelocity.length() * (0.82 + settleProgress * 0.18);
-  const desiredSpin = clampNumber(Math.max(momentumSpin, angle * (2.5 + urgency * 4.4) + 0.55), 1.35, 7.6);
+  const settleProgress = clampNumber((settleAge - diceSettleStartMs) / 1800, 0, 1);
+  const urgency = clampNumber((settleAge - diceSettleStartMs) / 3600, 0, 1);
   const currentSpin = die.angularVelocity.dot(correctionAxis);
-  const spinBlend = clampNumber(dt * (2.4 + settleProgress * 9 + urgency * 7), 0, 0.32);
+  const preservedSpin = Math.max(0, currentSpin);
+  const momentumSpin = die.angularVelocity.length() * (0.3 + urgency * 0.18);
+  const desiredSpin = clampNumber(Math.max(preservedSpin, momentumSpin, angle * (1.25 + urgency * 3.2) + 0.25), 0.45, 5.8);
+  const spinBlend = clampNumber(dt * (0.85 + settleProgress * 3.2 + urgency * 4.8), 0, 0.16);
   const lateralSpin = die.angularVelocity.clone().sub(correctionAxis.clone().multiplyScalar(currentSpin));
-  lateralSpin.multiplyScalar(Math.pow(0.84 - urgency * 0.36, dt));
+  lateralSpin.multiplyScalar(Math.pow(0.93 - urgency * 0.24, dt));
   die.angularVelocity.copy(lateralSpin).addScaledVector(correctionAxis, currentSpin + (desiredSpin - currentSpin) * spinBlend);
 
-  const maxSpin = 8.2;
+  const maxSpin = 7.2;
   const spin = die.angularVelocity.length();
   if (spin > maxSpin) {
     die.angularVelocity.multiplyScalar(maxSpin / spin);
   }
 
   const rollImpulse = clampNumber(angle / 0.9, 0.2, 1);
-  die.vx += correctionAxis.y * dieRadius * desiredSpin * 0.011 * rollImpulse * dt;
-  die.vy -= correctionAxis.x * dieRadius * desiredSpin * 0.011 * rollImpulse * dt;
-  const driftDrag = Math.pow(0.76 - urgency * 0.24, dt);
+  die.vx += correctionAxis.y * dieRadius * desiredSpin * 0.0055 * rollImpulse * dt;
+  die.vy -= correctionAxis.x * dieRadius * desiredSpin * 0.0055 * rollImpulse * dt;
+  const driftDrag = Math.pow(0.88 - urgency * 0.24, dt);
   die.vx *= driftDrag;
   die.vy *= driftDrag;
 }
