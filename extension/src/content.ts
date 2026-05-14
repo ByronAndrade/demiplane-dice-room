@@ -2116,10 +2116,6 @@ type AnimatedDie = {
   angularVelocity: THREE.Vector3;
   birth: number;
   settled: boolean;
-  settling: boolean;
-  settleStart: number;
-  settleFrom: THREE.Quaternion;
-  settleTo: THREE.Quaternion;
   settleAnchor?: FaceAnchor;
   resultRevealed: boolean;
   revealStart: number;
@@ -2309,10 +2305,6 @@ function createAnimatedDie(die: DiceValue, index: number, total: number, layer: 
     radius,
     birth: performance.now(),
     settled: false,
-    settling: false,
-    settleStart: 0,
-    settleFrom: new THREE.Quaternion(),
-    settleTo: new THREE.Quaternion(),
     resultRevealed: false,
     revealStart: 0,
     fadeStarted: false,
@@ -2356,7 +2348,7 @@ function updateAnimatedDice(layer: DiceAnimationLayer, now: number, dt: number):
   const bounds = getWorldBounds();
 
   for (const die of [...layer.activeDice]) {
-    if (!die.settled && !die.settling) {
+    if (!die.settled) {
       const groundZ = getGroundZ(die.radius);
       die.vz -= 2250 * dt;
       die.z += die.vz * dt;
@@ -2407,6 +2399,7 @@ function updateAnimatedDice(layer: DiceAnimationLayer, now: number, dt: number):
       die.vx *= planeDrag;
       die.vy *= planeDrag;
       die.angularVelocity.multiplyScalar(Math.pow(die.z <= groundZ + 1 ? 0.08 : 0.72, dt));
+      stabilizeDieOnGround(die, layer, now, dt);
 
       if (
         now - die.birth > 2300 &&
@@ -2418,32 +2411,8 @@ function updateAnimatedDice(layer: DiceAnimationLayer, now: number, dt: number):
         beginSettleAnimatedDie(die, layer, now);
       }
 
-      if (now - die.birth > 4200) {
+      if (now - die.birth > 5000) {
         beginSettleAnimatedDie(die, layer, now);
-      }
-    }
-
-    if (die.settling) {
-      const progress = clampNumber((now - die.settleStart) / 560, 0, 1);
-      const eased = 1 - Math.pow(1 - progress, 3);
-      die.group.quaternion.slerpQuaternions(die.settleFrom, die.settleTo, eased);
-      die.z = getGroundZ(die.radius) + Math.sin(progress * Math.PI) * 2.4;
-      die.vx *= Math.pow(0.04, dt);
-      die.vy *= Math.pow(0.04, dt);
-
-      if (!die.resultRevealed && progress >= 0.72) {
-        revealDieResult(die, layer, now);
-      }
-
-      if (progress >= 1) {
-        die.settling = false;
-        die.settled = true;
-        die.group.quaternion.copy(die.settleTo);
-        die.z = getGroundZ(die.radius);
-        if (!die.resultRevealed) {
-          revealDieResult(die, layer, now);
-        }
-        playDiceImpactSound(0.045);
       }
     }
 
@@ -2616,6 +2585,35 @@ function getVisibleResultAnchor(die: AnimatedDie, layer: DiceAnimationLayer): Fa
   return bestAnchor;
 }
 
+function stabilizeDieOnGround(die: AnimatedDie, layer: DiceAnimationLayer, now: number, dt: number): void {
+  const groundZ = getGroundZ(die.radius);
+  if (die.z > groundZ + 2 || now - die.birth < 900) {
+    return;
+  }
+
+  const motion = Math.hypot(die.vx, die.vy) + Math.abs(die.vz) * 0.2 + die.angularVelocity.length() * 24;
+  const candidateAnchor = getVisibleResultAnchor(die, layer);
+  if (!die.settleAnchor || motion > 160) {
+    die.settleAnchor = candidateAnchor;
+  }
+
+  const slowFactor = clampNumber((280 - motion) / 260, 0, 1);
+  const ageFactor = clampNumber((now - die.birth - 1100) / 2300, 0, 1);
+  const strength = clampNumber((0.016 + slowFactor * 0.15 + ageFactor * 0.08) * dt * 60, 0, 0.24);
+  if (strength <= 0) {
+    return;
+  }
+
+  die.group.quaternion.slerp(createFaceUpQuaternion(die, die.settleAnchor, layer), strength);
+  die.angularVelocity.multiplyScalar(1 - strength * 0.52);
+}
+
+function isDieFaceStable(die: AnimatedDie, layer: DiceAnimationLayer): boolean {
+  const anchor = die.settleAnchor ?? getVisibleResultAnchor(die, layer);
+  const normal = anchor.normal.clone().applyQuaternion(die.group.quaternion).normalize();
+  return normal.dot(getDieSettleNormal(die, layer)) > 0.965;
+}
+
 function getDieSettleNormal(die: AnimatedDie, layer: DiceAnimationLayer): THREE.Vector3 {
   const diePosition = new THREE.Vector3(die.x, die.y, die.z);
   return layer.camera.position.clone().sub(diePosition).normalize().lerp(layer.desiredResultNormal, 0.42).normalize();
@@ -2653,20 +2651,27 @@ function setObjectOpacity(object: THREE.Object3D, opacity: number): void {
 }
 
 function beginSettleAnimatedDie(die: AnimatedDie, layer: DiceAnimationLayer, now: number): void {
-  if (die.settled || die.settling) {
+  if (die.settled) {
     return;
   }
 
-  const anchor = getVisibleResultAnchor(die, layer);
-  die.settling = true;
-  die.settleStart = now;
+  const anchor = die.settleAnchor ?? getVisibleResultAnchor(die, layer);
   die.settleAnchor = anchor;
-  die.settleFrom.copy(die.group.quaternion);
-  die.settleTo.copy(createFaceUpQuaternion(die, anchor, layer));
-  die.vx *= 0.22;
-  die.vy *= 0.22;
+  if (!isDieFaceStable(die, layer) && now - die.birth < 6200) {
+    return;
+  }
+
+  die.group.quaternion.copy(createFaceUpQuaternion(die, anchor, layer));
+  die.settled = true;
+  die.x += die.vx * 0.016;
+  die.y += die.vy * 0.016;
+  die.z = getGroundZ(die.radius);
+  die.vx = 0;
+  die.vy = 0;
   die.vz = 0;
   die.angularVelocity.set(0, 0, 0);
+  revealDieResult(die, layer, now);
+  playDiceImpactSound(0.045);
 }
 
 function fadeAnimatedDie(die: AnimatedDie, now: number): void {
