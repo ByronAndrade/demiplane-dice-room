@@ -32,12 +32,13 @@ const resultLabelRevealMs = 860;
 const stableFaceScore = 0.972;
 const diceSettleMotion = 34;
 const diceStableHoldMs = 260;
+const diceSpentEnergySettleMotion = 76;
 const diceToppleEnergyCost = 0.9;
 const diceToppleImpulse = 5.8;
 const diceRollAxisXBias = 1.55;
 const diceRollAxisYBias = 0.14;
-const diceGroundRollSpeedFactor = 0.38;
-const diceSpinTurnLoss = 0.72;
+const diceGroundRollSpeedFactor = 0.78;
+const diceSpinTurnLoss = 0.52;
 const maxAnimatedDice = 20;
 const panelUiStorageKey = "diceRoomPanelUi";
 const defaultDiceAnimationScale = 0.75;
@@ -2519,7 +2520,7 @@ function createAnimatedDie(die: DiceValue, index: number, total: number, batchId
     vy: Math.sin(angle) * spread + (Math.random() - 0.5) * 90,
     vz: -430 - Math.random() * 260,
     angularVelocity: createBiasedInitialAngularVelocity(),
-    rollEnergy: 2.4 + Math.random() * 5.7,
+    rollEnergy: 1.8 + Math.random() * 3.8,
     rollEnergyLoss: 0.82 + Math.random() * 0.48,
     nextToppleAt: 0,
     radius,
@@ -2973,7 +2974,7 @@ function getToppleEnergyCost(die: AnimatedDie, anchorScore: number): number {
 }
 
 function canDieStopWithoutAnotherTopple(die: AnimatedDie, anchorScore: number): boolean {
-  return die.rollEnergy < getToppleEnergyCost(die, anchorScore) && getDieMotion(die) < 30;
+  return die.rollEnergy < getToppleEnergyCost(die, anchorScore) && getDieMotion(die) < diceSpentEnergySettleMotion;
 }
 
 function getEnergyToppleAxis(die: AnimatedDie, layer: DiceAnimationLayer): THREE.Vector3 | undefined {
@@ -3058,14 +3059,14 @@ function applyGroundSpinTranslation(die: AnimatedDie, groundZ: number, dt: numbe
 
   const rollSpin = new THREE.Vector3(die.angularVelocity.x, die.angularVelocity.y, 0);
   const spin = rollSpin.length();
-  die.angularVelocity.z *= Math.pow(0.16, dt);
+  die.angularVelocity.z *= Math.pow(0.025, dt);
   if (spin < 0.35) {
     return;
   }
 
   if (die.rollEnergy < diceToppleEnergyCost * 0.25) {
-    die.angularVelocity.x *= Math.pow(0.2, dt);
-    die.angularVelocity.y *= Math.pow(0.2, dt);
+    die.angularVelocity.x *= Math.pow(0.08, dt);
+    die.angularVelocity.y *= Math.pow(0.08, dt);
     return;
   }
 
@@ -3077,15 +3078,16 @@ function applyGroundSpinTranslation(die: AnimatedDie, groundZ: number, dt: numbe
   const travelSpeed = clampNumber(spin * die.radius * diceGroundRollSpeedFactor, 0, 270);
   const targetVx = -rollAxis.y * travelSpeed;
   const targetVy = rollAxis.x * travelSpeed;
-  const blend = clampNumber(dt * 4.8, 0, 0.18);
+  const blend = clampNumber(dt * 9.5, 0, 0.34);
   die.vx += (targetVx - die.vx) * blend;
   die.vy += (targetVy - die.vy) * blend;
 
   const angularTravel = spin * dt;
-  const spinLoss = Math.pow(diceSpinTurnLoss, angularTravel / (Math.PI * 2));
+  const skidding = Math.hypot(die.vx, die.vy) < travelSpeed * 0.35 ? 1.7 : 1;
+  const spinLoss = Math.pow(diceSpinTurnLoss, (angularTravel * skidding) / (Math.PI * 2));
   die.angularVelocity.x *= spinLoss;
   die.angularVelocity.y *= spinLoss;
-  die.rollEnergy = Math.max(0, die.rollEnergy - angularTravel * 0.075 * die.rollEnergyLoss);
+  die.rollEnergy = Math.max(0, die.rollEnergy - angularTravel * 0.13 * skidding * die.rollEnergyLoss);
 }
 
 function getDieMotion(die: AnimatedDie): number {
@@ -3161,7 +3163,9 @@ function beginSettleAnimatedDie(die: AnimatedDie, layer: DiceAnimationLayer, now
   die.settleAnchor = getVisibleResultAnchor(die, layer);
 
   const motion = getDieMotion(die);
-  const settleMotion = die.rollEnergy < getToppleEnergyCost(die, stableFaceScore) ? 82 : diceSettleMotion;
+  const settleMotion = die.rollEnergy < getToppleEnergyCost(die, stableFaceScore) ?
+    diceSpentEnergySettleMotion :
+    diceSettleMotion;
   if (motion > settleMotion) {
     return;
   }
