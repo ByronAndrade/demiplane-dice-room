@@ -2448,7 +2448,7 @@ function createD10Geometry(): D10Model {
   const primalVertices: THREE.Vector3[] = [];
   const primalFaces: number[][] = [];
   const ringRadius = 1;
-  const ringHeight = 0.42;
+  const ringHeight = 0.62;
 
   for (let index = 0; index < 5; index += 1) {
     const angle = -Math.PI / 2 + (Math.PI * 2 * index) / 5;

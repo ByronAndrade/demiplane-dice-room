@@ -100,7 +100,7 @@ function createD10Geometry() {
   const primalVertices = [];
   const primalFaces = [];
   const ringRadius = 1;
-  const ringHeight = 0.42;
+  const ringHeight = 0.62;
 
   for (let index = 0; index < 5; index += 1) {
     const angle = -Math.PI / 2 + (Math.PI * 2 * index) / 5;
