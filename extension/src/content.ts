@@ -34,7 +34,8 @@ const diceSettleFreezeMs = 1900;
 const diceSettleForceMs = 6200;
 const diceCollapseMotion = 142;
 const diceCollapseProjectionSeconds = 0.24;
-const diceCollapseTurnRate = 5.8;
+const diceCollapseTurnRate = 6.2;
+const diceEdgeInstabilityTurnRate = 2.4;
 const maxAnimatedDice = 20;
 const panelUiStorageKey = "diceRoomPanelUi";
 const defaultDiceAnimationScale = 0.75;
@@ -2281,6 +2282,7 @@ type D10Model = {
   geometry: THREE.BufferGeometry;
   edgeGeometry: THREE.BufferGeometry;
   faceAnchors: FaceAnchor[];
+  vertices: THREE.Vector3[];
 };
 
 type FaceAnchor = {
@@ -2306,6 +2308,7 @@ type AnimatedDie = {
   birth: number;
   settled: boolean;
   settleAnchor?: FaceAnchor;
+  supportAnchor?: FaceAnchor;
   settleAnchorLocked: boolean;
   resultRevealed: boolean;
   revealStart: number;
@@ -2511,6 +2514,7 @@ function createAnimatedDie(die: DiceValue, index: number, total: number, layer: 
     radius,
     birth: performance.now(),
     settled: false,
+    supportAnchor: undefined,
     settleAnchorLocked: false,
     resultRevealed: false,
     revealStart: 0,
@@ -2567,12 +2571,12 @@ function updateAnimatedDice(layer: DiceAnimationLayer, now: number, dt: number):
 
   for (const die of [...layer.activeDice]) {
     if (!die.settled) {
-      const groundZ = getGroundZ(die.radius);
       die.vz -= 2250 * dt;
       die.z += die.vz * dt;
       die.x += die.vx * dt;
       die.y += die.vy * dt;
       applyDieAngularVelocity(die, dt);
+      const groundZ = getDieGroundZ(die, layer);
 
       if (die.x < bounds.left + die.radius) {
         die.x = bounds.left + die.radius;
@@ -2758,7 +2762,7 @@ function createD10Geometry(): D10Model {
   const edgeGeometry = new THREE.BufferGeometry();
   edgeGeometry.setAttribute("position", new THREE.Float32BufferAttribute(edgeVertices, 3));
 
-  return { geometry, edgeGeometry, faceAnchors };
+  return { geometry, edgeGeometry, faceAnchors, vertices: dualFaces.flat().map((point) => point.clone()) };
 }
 
 function createDualVertex(face: number[], vertices: THREE.Vector3[]): THREE.Vector3 {
@@ -2877,70 +2881,77 @@ function getFaceAnchorScore(die: AnimatedDie, anchor: FaceAnchor, targetNormal: 
 }
 
 function stabilizeDieOnGround(die: AnimatedDie, layer: DiceAnimationLayer, now: number, dt: number): void {
-  const groundZ = getGroundZ(die.radius);
+  const groundZ = getDieGroundZ(die, layer);
   if (die.dragging || die.z > groundZ + 2 || now - die.birth < diceSettleStartMs) {
     return;
   }
 
-  const targetNormal = getDieSettleNormal(die, layer);
-  if (!die.settleAnchorLocked || !die.settleAnchor) {
-    die.settleAnchor = getCollapseResultAnchor(die, layer, targetNormal);
+  const supportNormal = getDieSupportNormal();
+  if (!die.settleAnchorLocked || !die.supportAnchor) {
+    die.supportAnchor = getCollapseSupportAnchor(die, layer, supportNormal);
   }
 
-  const anchor = die.settleAnchor ?? getVisibleResultAnchor(die, layer);
-  const anchorScore = getFaceAnchorScore(die, anchor, targetNormal);
+  die.settleAnchor = getVisibleResultAnchor(die, layer);
+  const anchor = die.supportAnchor ?? getCollapseSupportAnchor(die, layer, supportNormal);
+  const anchorScore = getFaceAnchorScore(die, anchor, supportNormal);
   if (anchorScore > stableFaceScore) {
+    if (die.settleAnchorLocked) {
+      die.angularVelocity.multiplyScalar(Math.pow(0.08, dt));
+      die.vx *= Math.pow(0.18, dt);
+      die.vy *= Math.pow(0.18, dt);
+    }
     return;
   }
 
   const currentNormal = anchor.normal.clone().applyQuaternion(die.group.quaternion).normalize();
-  const collapseAxis = currentNormal.clone().cross(targetNormal);
+  const collapseAxis = currentNormal.clone().cross(supportNormal);
   if (collapseAxis.lengthSq() < 0.0001) {
     return;
   }
 
+  collapseAxis.normalize();
   const settleAge = now - die.birth;
   const motion = getDieMotion(die);
   if (!die.settleAnchorLocked) {
     if (motion > diceCollapseMotion && settleAge < diceSettleForceMs) {
+      rollOffUnstableEdge(die, collapseAxis, anchorScore, dt);
       return;
     }
     die.settleAnchorLocked = true;
-    die.vx *= 0.08;
-    die.vy *= 0.08;
+    die.vx *= 0.16;
+    die.vy *= 0.16;
     die.vz = 0;
-    die.angularVelocity.multiplyScalar(0.08);
+    const spin = Math.max(0, die.angularVelocity.dot(collapseAxis));
+    die.angularVelocity.copy(collapseAxis).multiplyScalar(Math.max(spin, 1.8));
     playDiceImpactSound(0.035);
   }
 
-  collapseAxis.normalize();
   const angle = Math.acos(clampNumber(anchorScore, -1, 1));
-  const collapseStep = Math.min(angle, diceCollapseTurnRate * dt);
-  const rotation = new THREE.Quaternion().setFromAxisAngle(collapseAxis, collapseStep);
-  die.group.quaternion.premultiply(rotation).normalize();
-  die.angularVelocity.set(0, 0, 0);
-  die.vx *= Math.pow(0.05, dt);
-  die.vy *= Math.pow(0.05, dt);
-
-  if (angle <= collapseStep + 0.012) {
-    const finalNormal = anchor.normal.clone().applyQuaternion(die.group.quaternion).normalize();
-    const snapAxis = finalNormal.clone().cross(targetNormal);
-    if (snapAxis.lengthSq() > 0.0001) {
-      snapAxis.normalize();
-      const snapAngle = Math.acos(clampNumber(finalNormal.dot(targetNormal), -1, 1));
-      die.group.quaternion.premultiply(new THREE.Quaternion().setFromAxisAngle(snapAxis, snapAngle)).normalize();
-    }
-  }
+  const desiredSpin = clampNumber(angle * 7.5 + 0.9, 1.2, diceCollapseTurnRate);
+  const currentSpin = die.angularVelocity.dot(collapseAxis);
+  const spinBlend = clampNumber(dt * 12, 0, 0.38);
+  die.angularVelocity.copy(collapseAxis).multiplyScalar(currentSpin + (desiredSpin - currentSpin) * spinBlend);
+  die.vx *= Math.pow(0.08, dt);
+  die.vy *= Math.pow(0.08, dt);
 }
 
 function getDieMotion(die: AnimatedDie): number {
   return Math.hypot(die.vx, die.vy) + Math.abs(die.vz) * 0.2 + die.angularVelocity.length() * 24;
 }
 
-function getCollapseResultAnchor(die: AnimatedDie, layer: DiceAnimationLayer, targetNormal: THREE.Vector3): FaceAnchor {
+function rollOffUnstableEdge(die: AnimatedDie, collapseAxis: THREE.Vector3, anchorScore: number, dt: number): void {
+  const instability = clampNumber((stableFaceScore - anchorScore) / 0.55, 0, 1);
+  const currentSpin = die.angularVelocity.dot(collapseAxis);
+  const targetSpin = diceEdgeInstabilityTurnRate * instability;
+  if (currentSpin < targetSpin) {
+    die.angularVelocity.addScaledVector(collapseAxis, (targetSpin - currentSpin) * clampNumber(dt * 5, 0, 0.2));
+  }
+}
+
+function getCollapseSupportAnchor(die: AnimatedDie, layer: DiceAnimationLayer, targetNormal: THREE.Vector3): FaceAnchor {
   const momentum = getDieCollapseMomentum(die);
   if (momentum.lengthSq() < 0.01) {
-    return getVisibleResultAnchor(die, layer);
+    return getSupportAnchor(die, layer);
   }
 
   const projection = new THREE.Quaternion().setFromAxisAngle(
@@ -2978,14 +2989,34 @@ function getDieCollapseMomentum(die: AnimatedDie): THREE.Vector3 {
   return die.angularVelocity.clone().add(new THREE.Vector3(-die.vy / die.radius, die.vx / die.radius, 0).multiplyScalar(0.35));
 }
 
+function getSupportAnchor(die: AnimatedDie, layer: DiceAnimationLayer): FaceAnchor {
+  let bestAnchor = layer.d10Model.faceAnchors[0];
+  let bestScore = -Infinity;
+  const targetNormal = getDieSupportNormal();
+
+  for (const anchor of layer.d10Model.faceAnchors) {
+    const score = getFaceAnchorScore(die, anchor, targetNormal);
+    if (score > bestScore) {
+      bestScore = score;
+      bestAnchor = anchor;
+    }
+  }
+
+  return bestAnchor;
+}
+
 function isDieFaceStable(die: AnimatedDie, layer: DiceAnimationLayer): boolean {
-  const anchor = die.settleAnchor ?? getVisibleResultAnchor(die, layer);
+  const anchor = die.supportAnchor ?? getSupportAnchor(die, layer);
   const normal = anchor.normal.clone().applyQuaternion(die.group.quaternion).normalize();
-  return normal.dot(getDieSettleNormal(die, layer)) > stableFaceScore;
+  return normal.dot(getDieSupportNormal()) > stableFaceScore;
 }
 
 function getDieSettleNormal(die: AnimatedDie, layer: DiceAnimationLayer): THREE.Vector3 {
   return layer.desiredResultNormal.clone();
+}
+
+function getDieSupportNormal(): THREE.Vector3 {
+  return new THREE.Vector3(0, 0, -1);
 }
 
 function renderDieResultReveal(die: AnimatedDie, now: number): void {
@@ -3017,11 +3048,10 @@ function beginSettleAnimatedDie(die: AnimatedDie, layer: DiceAnimationLayer, now
     return;
   }
 
-  const anchor = die.settleAnchor ?? getVisibleResultAnchor(die, layer);
-  die.settleAnchor = anchor;
   if (!isDieFaceStable(die, layer)) {
     return;
   }
+  die.settleAnchor = getVisibleResultAnchor(die, layer);
 
   const motion = getDieMotion(die);
   if (motion > 118 && now - die.birth < diceSettleForceMs) {
@@ -3031,7 +3061,7 @@ function beginSettleAnimatedDie(die: AnimatedDie, layer: DiceAnimationLayer, now
   die.settled = true;
   die.x += die.vx * 0.016;
   die.y += die.vy * 0.016;
-  die.z = getGroundZ(die.radius);
+  die.z = getDieGroundZ(die, layer);
   die.vx = 0;
   die.vy = 0;
   die.vz = 0;
@@ -3288,12 +3318,14 @@ function resolveDieCollisions(layer: DiceAnimationLayer): void {
           first.vy -= impulse * ny * firstMobility;
           first.angularVelocity.z += impulse * 0.022;
           first.settleAnchorLocked = false;
+          first.supportAnchor = undefined;
         }
         if (!second.settled) {
           second.vx += impulse * nx * secondMobility;
           second.vy += impulse * ny * secondMobility;
           second.angularVelocity.z -= impulse * 0.022;
           second.settleAnchorLocked = false;
+          second.supportAnchor = undefined;
         }
         if (Math.abs(relativeVelocity) > 120) {
           playDiceImpactSound(clampNumber(Math.abs(relativeVelocity) / 3000, 0.04, 0.13));
@@ -3310,6 +3342,14 @@ function getAnimatedDieRadius(total: number): number {
 
 function getGroundZ(radius: number): number {
   return radius * 0.82;
+}
+
+function getDieGroundZ(die: AnimatedDie, layer: DiceAnimationLayer): number {
+  let lowest = Infinity;
+  for (const vertex of layer.d10Model.vertices) {
+    lowest = Math.min(lowest, vertex.clone().applyQuaternion(die.group.quaternion).z);
+  }
+  return -lowest * die.radius;
 }
 
 function getDiePalette(kind: DiceValue["kind"]): {
