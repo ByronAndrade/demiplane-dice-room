@@ -36,6 +36,8 @@ const diceToppleEnergyCost = 0.9;
 const diceToppleImpulse = 5.8;
 const diceRollAxisXBias = 1.55;
 const diceRollAxisYBias = 0.14;
+const diceGroundRollSpeedFactor = 0.38;
+const diceSpinTurnLoss = 0.72;
 const maxAnimatedDice = 20;
 const panelUiStorageKey = "diceRoomPanelUi";
 const defaultDiceAnimationScale = 0.75;
@@ -2626,6 +2628,7 @@ function updateAnimatedDice(layer: DiceAnimationLayer, now: number, dt: number):
       }
 
       applyGroundRollingVelocity(die, groundZ, dt);
+      applyGroundSpinTranslation(die, groundZ, dt);
       const stableOnGround = stabilizeDieOnGround(die, layer, now, dt);
       const isGrounded = die.z <= groundZ + 1;
       const planeDrag = isGrounded ? Math.pow(stableOnGround ? 0.28 : 0.62, dt) : Math.pow(0.58, dt);
@@ -3046,6 +3049,43 @@ function applyGroundRollingVelocity(die: AnimatedDie, groundZ: number, dt: numbe
   const spinDelta = (targetSpin - currentSpin) * blend;
   die.angularVelocity.addScaledVector(rollAxis, spinDelta);
   die.rollEnergy = Math.max(0, die.rollEnergy - Math.abs(spinDelta) * 0.018);
+}
+
+function applyGroundSpinTranslation(die: AnimatedDie, groundZ: number, dt: number): void {
+  if (die.dragging || die.z > groundZ + 1) {
+    return;
+  }
+
+  const rollSpin = new THREE.Vector3(die.angularVelocity.x, die.angularVelocity.y, 0);
+  const spin = rollSpin.length();
+  die.angularVelocity.z *= Math.pow(0.16, dt);
+  if (spin < 0.35) {
+    return;
+  }
+
+  if (die.rollEnergy < diceToppleEnergyCost * 0.25) {
+    die.angularVelocity.x *= Math.pow(0.2, dt);
+    die.angularVelocity.y *= Math.pow(0.2, dt);
+    return;
+  }
+
+  const rollAxis = biasDieRollAxis(rollSpin);
+  if (!rollAxis) {
+    return;
+  }
+
+  const travelSpeed = clampNumber(spin * die.radius * diceGroundRollSpeedFactor, 0, 270);
+  const targetVx = -rollAxis.y * travelSpeed;
+  const targetVy = rollAxis.x * travelSpeed;
+  const blend = clampNumber(dt * 4.8, 0, 0.18);
+  die.vx += (targetVx - die.vx) * blend;
+  die.vy += (targetVy - die.vy) * blend;
+
+  const angularTravel = spin * dt;
+  const spinLoss = Math.pow(diceSpinTurnLoss, angularTravel / (Math.PI * 2));
+  die.angularVelocity.x *= spinLoss;
+  die.angularVelocity.y *= spinLoss;
+  die.rollEnergy = Math.max(0, die.rollEnergy - angularTravel * 0.075 * die.rollEnergyLoss);
 }
 
 function getDieMotion(die: AnimatedDie): number {
