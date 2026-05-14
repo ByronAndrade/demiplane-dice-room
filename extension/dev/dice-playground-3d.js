@@ -3,6 +3,7 @@ import * as THREE from "https://unpkg.com/three@0.164.1/build/three.module.js";
 const diceAnimationMs = 8800;
 const diceFadeLeadMs = 420;
 const diceFadeMs = 360;
+const resultLabelRevealMs = 860;
 const stableFaceScore = 0.972;
 const diceSettleMotion = 34;
 const diceStableHoldMs = 260;
@@ -812,11 +813,13 @@ function renderDieResultReveal(die, now) {
     return;
   }
 
-  const progress = clampNumber((now - die.revealStart) / 460, 0, 1);
-  const eased = 1 - Math.pow(1 - progress, 3);
+  const progress = clampNumber((now - die.revealStart) / resultLabelRevealMs, 0, 1);
+  const eased = progress * progress * (3 - 2 * progress);
+  const labelScale = 0.74 + eased * 0.26;
   die.resultLabel.position
     .copy(die.resultAnchor.center)
     .addScaledVector(die.resultAnchor.normal, resultLabelBaseOffset + eased * resultLabelRevealLift);
+  die.resultLabel.scale.setScalar(labelScale);
   setObjectOpacity(die.resultLabel, eased);
 }
 
@@ -877,6 +880,7 @@ function handleDicePointerMove(event) {
   event.preventDefault();
   event.stopPropagation();
   const die = dragState.die;
+  const resultLocked = isDieResultLockedForDrag(die);
   const bounds = getWorldBounds();
   const now = performance.now();
   const nextX = clampNumber(point.x + dragState.offsetX, bounds.left + dieRadius, bounds.right - dieRadius);
@@ -885,9 +889,10 @@ function handleDicePointerMove(event) {
   die.x = nextX;
   die.y = nextY;
   die.z = dragState.planeZ;
-  die.vx = clampNumber((nextX - dragState.lastX) / elapsed, -900, 900);
-  die.vy = clampNumber((nextY - dragState.lastY) / elapsed, -900, 900);
+  die.vx = resultLocked ? 0 : clampNumber((nextX - dragState.lastX) / elapsed, -900, 900);
+  die.vy = resultLocked ? 0 : clampNumber((nextY - dragState.lastY) / elapsed, -900, 900);
   die.vz = 0;
+  die.rollEnergy = resultLocked ? 0 : die.rollEnergy;
   die.angularVelocity.set(0, 0, 0);
   die.group.position.set(die.x, die.y, die.z);
   dragState.lastX = nextX;
@@ -907,14 +912,27 @@ function finishDiceDrag(event) {
   event.preventDefault();
   event.stopPropagation();
   const die = dragState.die;
+  const resultLocked = isDieResultLockedForDrag(die);
   const dragSpeed = Math.hypot(die.vx, die.vy);
   die.dragging = false;
-  die.stableSince = 0;
-  die.rollEnergy = Math.max(die.rollEnergy, clampNumber(dragSpeed / 160, 0.8, 4.4));
-  die.nextToppleAt = performance.now() + 90;
-  die.vx *= 0.18;
-  die.vy *= 0.18;
+  die.stableSince = resultLocked ? performance.now() : 0;
+  if (resultLocked) {
+    die.vx = 0;
+    die.vy = 0;
+    die.vz = 0;
+    die.rollEnergy = 0;
+    die.angularVelocity.set(0, 0, 0);
+  } else {
+    die.rollEnergy = Math.max(die.rollEnergy, clampNumber(dragSpeed / 160, 0.8, 4.4));
+    die.nextToppleAt = performance.now() + 90;
+    die.vx *= 0.18;
+    die.vy *= 0.18;
+  }
   dragState = undefined;
+}
+
+function isDieResultLockedForDrag(die) {
+  return die.settled || die.resultRevealed;
 }
 
 function getPointerDie(event) {

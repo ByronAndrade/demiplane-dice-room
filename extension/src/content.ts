@@ -28,6 +28,7 @@ const maxLiveToasts = 3;
 const diceAnimationMs = 8800;
 const diceFadeLeadMs = 420;
 const diceFadeMs = 360;
+const resultLabelRevealMs = 860;
 const stableFaceScore = 0.972;
 const diceSettleMotion = 34;
 const diceStableHoldMs = 260;
@@ -3087,11 +3088,13 @@ function renderDieResultReveal(die: AnimatedDie, now: number): void {
     return;
   }
 
-  const progress = clampNumber((now - die.revealStart) / 460, 0, 1);
-  const eased = 1 - Math.pow(1 - progress, 3);
+  const progress = clampNumber((now - die.revealStart) / resultLabelRevealMs, 0, 1);
+  const eased = progress * progress * (3 - 2 * progress);
+  const labelScale = 0.74 + eased * 0.26;
   die.resultLabel.position
     .copy(die.resultAnchor.center)
     .addScaledVector(die.resultAnchor.normal, resultLabelBaseOffset + eased * resultLabelRevealLift);
+  die.resultLabel.scale.setScalar(labelScale);
   setObjectOpacity(die.resultLabel, eased);
 }
 
@@ -3274,6 +3277,7 @@ function bindDiceDragEvents(layer: DiceAnimationLayer): void {
     event.preventDefault();
     event.stopPropagation();
     const die = drag.die;
+    const resultLocked = isDieResultLockedForDrag(die);
     const bounds = getWorldBounds();
     const now = performance.now();
     const nextX = clampNumber(point.x + drag.offsetX, bounds.left + die.radius, bounds.right - die.radius);
@@ -3282,9 +3286,10 @@ function bindDiceDragEvents(layer: DiceAnimationLayer): void {
     die.x = nextX;
     die.y = nextY;
     die.z = drag.planeZ;
-    die.vx = clampNumber((nextX - drag.lastX) / elapsed, -900, 900);
-    die.vy = clampNumber((nextY - drag.lastY) / elapsed, -900, 900);
+    die.vx = resultLocked ? 0 : clampNumber((nextX - drag.lastX) / elapsed, -900, 900);
+    die.vy = resultLocked ? 0 : clampNumber((nextY - drag.lastY) / elapsed, -900, 900);
     die.vz = 0;
+    die.rollEnergy = resultLocked ? 0 : die.rollEnergy;
     die.angularVelocity.set(0, 0, 0);
     die.group.position.set(die.x, die.y, die.z);
     drag.lastX = nextX;
@@ -3312,14 +3317,27 @@ function finishDiceDrag(layer: DiceAnimationLayer, event: PointerEvent): void {
   event.preventDefault();
   event.stopPropagation();
   const die = layer.drag.die;
+  const resultLocked = isDieResultLockedForDrag(die);
   const dragSpeed = Math.hypot(die.vx, die.vy);
   die.dragging = false;
-  die.stableSince = 0;
-  die.rollEnergy = Math.max(die.rollEnergy, clampNumber(dragSpeed / 160, 0.8, 4.4));
-  die.nextToppleAt = performance.now() + 90;
-  die.vx *= 0.18;
-  die.vy *= 0.18;
+  die.stableSince = resultLocked ? performance.now() : 0;
+  if (resultLocked) {
+    die.vx = 0;
+    die.vy = 0;
+    die.vz = 0;
+    die.rollEnergy = 0;
+    die.angularVelocity.set(0, 0, 0);
+  } else {
+    die.rollEnergy = Math.max(die.rollEnergy, clampNumber(dragSpeed / 160, 0.8, 4.4));
+    die.nextToppleAt = performance.now() + 90;
+    die.vx *= 0.18;
+    die.vy *= 0.18;
+  }
   layer.drag = undefined;
+}
+
+function isDieResultLockedForDrag(die: AnimatedDie): boolean {
+  return die.settled || die.resultRevealed;
 }
 
 function getPointerDie(layer: DiceAnimationLayer, event: PointerEvent): AnimatedDie | undefined {
