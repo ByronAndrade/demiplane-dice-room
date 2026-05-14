@@ -33,6 +33,8 @@ const stableFaceScore = 0.972;
 const diceSettleMotion = 34;
 const diceStableHoldMs = 260;
 const diceSpentEnergySettleMotion = 76;
+const diceVisualSettleMs = 2200;
+const diceHardSettleMs = 4200;
 const diceToppleEnergyCost = 0.9;
 const diceToppleImpulse = 5.8;
 const diceRollAxisXBias = 1.55;
@@ -3078,12 +3080,15 @@ function applyGroundSpinTranslation(die: AnimatedDie, groundZ: number, dt: numbe
   const travelSpeed = clampNumber(spin * die.radius * diceGroundRollSpeedFactor, 0, 270);
   const targetVx = -rollAxis.y * travelSpeed;
   const targetVy = rollAxis.x * travelSpeed;
+  const previousSpeed = Math.hypot(die.vx, die.vy);
   const blend = clampNumber(dt * 9.5, 0, 0.34);
   die.vx += (targetVx - die.vx) * blend;
   die.vy += (targetVy - die.vy) * blend;
+  die.x += targetVx * dt * 0.45;
+  die.y += targetVy * dt * 0.45;
 
   const angularTravel = spin * dt;
-  const skidding = Math.hypot(die.vx, die.vy) < travelSpeed * 0.35 ? 1.7 : 1;
+  const skidding = previousSpeed < travelSpeed * 0.35 ? 1.9 : 1;
   const spinLoss = Math.pow(diceSpinTurnLoss, (angularTravel * skidding) / (Math.PI * 2));
   die.angularVelocity.x *= spinLoss;
   die.angularVelocity.y *= spinLoss;
@@ -3156,18 +3161,26 @@ function beginSettleAnimatedDie(die: AnimatedDie, layer: DiceAnimationLayer, now
     return;
   }
 
-  if (!isDieFaceStable(die, layer)) {
+  const age = now - die.birth;
+  const motion = getDieMotion(die);
+  const spentEnergy = die.rollEnergy < getToppleEnergyCost(die, stableFaceScore);
+  const visuallySpent = age > diceVisualSettleMs && spentEnergy && motion < diceSpentEnergySettleMotion;
+  const hardSettle = age > diceHardSettleMs;
+
+  if (!hardSettle && !visuallySpent && !isDieFaceStable(die, layer)) {
     die.stableSince = 0;
     return;
   }
   die.settleAnchor = getVisibleResultAnchor(die, layer);
 
-  const motion = getDieMotion(die);
-  const settleMotion = die.rollEnergy < getToppleEnergyCost(die, stableFaceScore) ?
+  const settleMotion = spentEnergy ?
     diceSpentEnergySettleMotion :
     diceSettleMotion;
-  if (motion > settleMotion) {
+  if (!hardSettle && motion > settleMotion) {
     return;
+  }
+  if ((hardSettle || visuallySpent) && !die.stableSince) {
+    die.stableSince = now - diceStableHoldMs;
   }
   if (!die.stableSince || now - die.stableSince < diceStableHoldMs) {
     return;
