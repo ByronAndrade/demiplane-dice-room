@@ -109,6 +109,7 @@ function createD10Geometry() {
   }
 
   const vertices = [];
+  const normals = [];
   const indices = [];
   const anchors = [];
 
@@ -128,6 +129,10 @@ function createD10Geometry() {
       normal.multiplyScalar(-1);
     }
 
+    for (let vertexIndex = 0; vertexIndex < 4; vertexIndex += 1) {
+      normals.push(normal.x, normal.y, normal.z);
+    }
+
     anchors.push({
       center,
       normal,
@@ -137,9 +142,8 @@ function createD10Geometry() {
 
   const geometry = new THREE.BufferGeometry();
   geometry.setAttribute("position", new THREE.Float32BufferAttribute(vertices, 3));
+  geometry.setAttribute("normal", new THREE.Float32BufferAttribute(normals, 3));
   geometry.setIndex(indices);
-  geometry.computeVertexNormals();
-  geometry.normalizeNormals();
 
   return { geometry, faceAnchors: anchors };
 }
@@ -230,7 +234,7 @@ function createDieMesh(die) {
     emissiveIntensity: palette.emissiveIntensity,
     roughness: 0.48,
     metalness: 0.16,
-    flatShading: true,
+    flatShading: false,
     side: THREE.DoubleSide
   });
 
@@ -251,7 +255,7 @@ function createDieMesh(die) {
   return group;
 }
 
-function createFaceLabel({ value, face, color, glow, scale = 1 }) {
+function createFaceLabel({ value, color, glow, scale = 1 }) {
   const canvas = document.createElement("canvas");
   canvas.width = 256;
   canvas.height = 180;
@@ -263,15 +267,11 @@ function createFaceLabel({ value, face, color, glow, scale = 1 }) {
   context.shadowColor = glow;
   context.shadowBlur = 12;
   context.strokeStyle = "rgba(0, 0, 0, 0.72)";
-  context.lineWidth = 9;
+  context.lineWidth = 8;
   context.fillStyle = color;
-  context.font = "900 124px Georgia, serif";
-  context.strokeText(String(value), 128, 92);
-  context.fillText(String(value), 128, 92);
-  context.font = "900 34px Georgia, serif";
-  context.lineWidth = 7;
-  context.strokeText(faceSymbol(face), 190, 132);
-  context.fillText(faceSymbol(face), 190, 132);
+  context.font = "900 118px Georgia, serif";
+  context.strokeText(String(value), 128, 90);
+  context.fillText(String(value), 128, 90);
 
   const texture = new THREE.CanvasTexture(canvas);
   texture.colorSpace = THREE.SRGBColorSpace;
@@ -452,7 +452,6 @@ function revealDieResult(die, now) {
   const palette = getDiePalette(die.kind);
   const label = createFaceLabel({
     value: die.value,
-    face: getDieFace({ kind: die.kind, value: die.value }),
     color: palette.ink,
     glow: palette.inkGlow
   });
@@ -569,19 +568,19 @@ function setObjectOpacity(object, opacity) {
 }
 
 function resolveDieCollisions() {
-  const dice = [...activeDice].filter((die) => !die.settled);
+  const dice = [...activeDice].filter((die) => !die.fadeStarted);
   for (let i = 0; i < dice.length; i += 1) {
     for (let j = i + 1; j < dice.length; j += 1) {
       const first = dice[i];
       const second = dice[j];
-      if (Math.abs(first.z - second.z) > dieRadius * 2.2) {
+      if ((first.settled && second.settled) || Math.abs(first.z - second.z) > dieRadius * 2.05) {
         continue;
       }
 
       const dx = second.x - first.x;
       const dy = second.y - first.y;
       const distance = Math.hypot(dx, dy) || 1;
-      const minDistance = dieRadius * 1.64;
+      const minDistance = dieRadius * 1.92;
       if (distance >= minDistance) {
         continue;
       }
@@ -589,20 +588,31 @@ function resolveDieCollisions() {
       const nx = dx / distance;
       const ny = dy / distance;
       const overlap = minDistance - distance;
-      first.x -= nx * overlap * 0.5;
-      first.y -= ny * overlap * 0.5;
-      second.x += nx * overlap * 0.5;
-      second.y += ny * overlap * 0.5;
+      const firstMobility = first.settled ? 0.18 : 1;
+      const secondMobility = second.settled ? 0.18 : 1;
+      const mobility = firstMobility + secondMobility;
+      const firstShift = (overlap * firstMobility) / mobility;
+      const secondShift = (overlap * secondMobility) / mobility;
+      first.x -= nx * firstShift;
+      first.y -= ny * firstShift;
+      second.x += nx * secondShift;
+      second.y += ny * secondShift;
 
       const relativeVelocity = (second.vx - first.vx) * nx + (second.vy - first.vy) * ny;
       if (relativeVelocity < 0) {
-        const impulse = -(1.1 * relativeVelocity) / 2;
-        first.vx -= impulse * nx;
-        first.vy -= impulse * ny;
-        second.vx += impulse * nx;
-        second.vy += impulse * ny;
-        first.angularVelocity.z += impulse * 0.018;
-        second.angularVelocity.z -= impulse * 0.018;
+        const impulse = -(1.22 * relativeVelocity) / mobility;
+        if (!first.settled) {
+          first.vx -= impulse * nx * firstMobility;
+          first.vy -= impulse * ny * firstMobility;
+          first.angularVelocity.z += impulse * 0.022;
+          first.settleAnchorLocked = false;
+        }
+        if (!second.settled) {
+          second.vx += impulse * nx * secondMobility;
+          second.vy += impulse * ny * secondMobility;
+          second.angularVelocity.z -= impulse * 0.022;
+          second.settleAnchorLocked = false;
+        }
         if (Math.abs(relativeVelocity) > 120) {
           playDiceImpactSound(clampNumber(Math.abs(relativeVelocity) / 3000, 0.04, 0.13));
         }
