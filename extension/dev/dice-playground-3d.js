@@ -8,7 +8,8 @@ const diceSettleStartMs = 950;
 const diceSettleFreezeMs = 1900;
 const diceSettleForceMs = 6200;
 const diceCollapseMotion = 142;
-const diceCollapseTurnRate = 13.5;
+const diceCollapseProjectionSeconds = 0.24;
+const diceCollapseTurnRate = 5.8;
 const maxAnimatedDice = 20;
 const dieRadius = 42;
 const groundZ = dieRadius * 0.82;
@@ -600,7 +601,7 @@ function stabilizeDieOnGround(die, now, dt) {
 
   const targetNormal = getDieSettleNormal(die);
   if (!die.settleAnchorLocked || !die.settleAnchor) {
-    die.settleAnchor = getVisibleResultAnchor(die);
+    die.settleAnchor = getCollapseResultAnchor(die, targetNormal);
   }
 
   const anchor = die.settleAnchor ?? getVisibleResultAnchor(die);
@@ -651,6 +652,47 @@ function stabilizeDieOnGround(die, now, dt) {
 
 function getDieMotion(die) {
   return Math.hypot(die.vx, die.vy) + Math.abs(die.vz) * 0.2 + die.angularVelocity.length() * 24;
+}
+
+function getCollapseResultAnchor(die, targetNormal) {
+  const momentum = getDieCollapseMomentum(die);
+  if (momentum.lengthSq() < 0.01) {
+    return getVisibleResultAnchor(die);
+  }
+
+  const projection = new THREE.Quaternion().setFromAxisAngle(
+    momentum.clone().normalize(),
+    clampNumber(momentum.length() * diceCollapseProjectionSeconds, 0, 0.92)
+  );
+  let fallbackAnchor = d10Model.faceAnchors[0];
+  let fallbackScore = -Infinity;
+  let bestAnchor = fallbackAnchor;
+  let bestScore = -Infinity;
+  let foundForwardAnchor = false;
+
+  for (const anchor of d10Model.faceAnchors) {
+    const currentNormal = anchor.normal.clone().applyQuaternion(die.group.quaternion).normalize();
+    const currentScore = currentNormal.dot(targetNormal);
+    if (currentScore > fallbackScore) {
+      fallbackScore = currentScore;
+      fallbackAnchor = anchor;
+    }
+
+    const approach = momentum.dot(currentNormal.clone().cross(targetNormal));
+    const projectedScore = currentNormal.clone().applyQuaternion(projection).dot(targetNormal);
+    const directionalScore = projectedScore + currentScore * 0.16 + Math.max(0, approach) * 0.05;
+    if (approach > 0.015 && directionalScore > bestScore) {
+      bestScore = directionalScore;
+      bestAnchor = anchor;
+      foundForwardAnchor = true;
+    }
+  }
+
+  return foundForwardAnchor ? bestAnchor : fallbackAnchor;
+}
+
+function getDieCollapseMomentum(die) {
+  return die.angularVelocity.clone().add(new THREE.Vector3(-die.vy / dieRadius, die.vx / dieRadius, 0).multiplyScalar(0.35));
 }
 
 function isDieFaceStable(die) {

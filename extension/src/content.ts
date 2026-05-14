@@ -33,7 +33,8 @@ const diceSettleStartMs = 950;
 const diceSettleFreezeMs = 1900;
 const diceSettleForceMs = 6200;
 const diceCollapseMotion = 142;
-const diceCollapseTurnRate = 13.5;
+const diceCollapseProjectionSeconds = 0.24;
+const diceCollapseTurnRate = 5.8;
 const maxAnimatedDice = 20;
 const panelUiStorageKey = "diceRoomPanelUi";
 const defaultDiceAnimationScale = 0.75;
@@ -2883,7 +2884,7 @@ function stabilizeDieOnGround(die: AnimatedDie, layer: DiceAnimationLayer, now: 
 
   const targetNormal = getDieSettleNormal(die, layer);
   if (!die.settleAnchorLocked || !die.settleAnchor) {
-    die.settleAnchor = getVisibleResultAnchor(die, layer);
+    die.settleAnchor = getCollapseResultAnchor(die, layer, targetNormal);
   }
 
   const anchor = die.settleAnchor ?? getVisibleResultAnchor(die, layer);
@@ -2934,6 +2935,47 @@ function stabilizeDieOnGround(die: AnimatedDie, layer: DiceAnimationLayer, now: 
 
 function getDieMotion(die: AnimatedDie): number {
   return Math.hypot(die.vx, die.vy) + Math.abs(die.vz) * 0.2 + die.angularVelocity.length() * 24;
+}
+
+function getCollapseResultAnchor(die: AnimatedDie, layer: DiceAnimationLayer, targetNormal: THREE.Vector3): FaceAnchor {
+  const momentum = getDieCollapseMomentum(die);
+  if (momentum.lengthSq() < 0.01) {
+    return getVisibleResultAnchor(die, layer);
+  }
+
+  const projection = new THREE.Quaternion().setFromAxisAngle(
+    momentum.clone().normalize(),
+    clampNumber(momentum.length() * diceCollapseProjectionSeconds, 0, 0.92)
+  );
+  let fallbackAnchor = layer.d10Model.faceAnchors[0];
+  let fallbackScore = -Infinity;
+  let bestAnchor = fallbackAnchor;
+  let bestScore = -Infinity;
+  let foundForwardAnchor = false;
+
+  for (const anchor of layer.d10Model.faceAnchors) {
+    const currentNormal = anchor.normal.clone().applyQuaternion(die.group.quaternion).normalize();
+    const currentScore = currentNormal.dot(targetNormal);
+    if (currentScore > fallbackScore) {
+      fallbackScore = currentScore;
+      fallbackAnchor = anchor;
+    }
+
+    const approach = momentum.dot(currentNormal.clone().cross(targetNormal));
+    const projectedScore = currentNormal.clone().applyQuaternion(projection).dot(targetNormal);
+    const directionalScore = projectedScore + currentScore * 0.16 + Math.max(0, approach) * 0.05;
+    if (approach > 0.015 && directionalScore > bestScore) {
+      bestScore = directionalScore;
+      bestAnchor = anchor;
+      foundForwardAnchor = true;
+    }
+  }
+
+  return foundForwardAnchor ? bestAnchor : fallbackAnchor;
+}
+
+function getDieCollapseMomentum(die: AnimatedDie): THREE.Vector3 {
+  return die.angularVelocity.clone().add(new THREE.Vector3(-die.vy / die.radius, die.vx / die.radius, 0).multiplyScalar(0.35));
 }
 
 function isDieFaceStable(die: AnimatedDie, layer: DiceAnimationLayer): boolean {
