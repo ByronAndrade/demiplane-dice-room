@@ -2608,20 +2608,14 @@ function updateAnimatedDice(layer: DiceAnimationLayer, now: number, dt: number):
       const planeDrag = die.z <= groundZ + 1 ? Math.pow(0.045, dt) : Math.pow(0.58, dt);
       die.vx *= planeDrag;
       die.vy *= planeDrag;
-      die.angularVelocity.multiplyScalar(Math.pow(die.z <= groundZ + 1 ? 0.08 : 0.72, dt));
+      die.angularVelocity.multiplyScalar(Math.pow(die.z <= groundZ + 1 ? 0.18 : 0.72, dt));
       stabilizeDieOnGround(die, layer, now, dt);
 
-      if (
-        now - die.birth > 2300 &&
-        die.z <= groundZ + 1 &&
-        Math.abs(die.vz) < 95 &&
-        Math.hypot(die.vx, die.vy) < 72 &&
-        die.angularVelocity.length() < 1.15
-      ) {
+      if (now - die.birth > 2300 && die.z <= groundZ + 1 && Math.abs(die.vz) < 95) {
         beginSettleAnimatedDie(die, layer, now);
       }
 
-      if (now - die.birth > 5000) {
+      if (now - die.birth > 5600 && die.z <= groundZ + 1) {
         beginSettleAnimatedDie(die, layer, now);
       }
     }
@@ -2878,35 +2872,23 @@ function getFaceAnchorScore(die: AnimatedDie, anchor: FaceAnchor, targetNormal: 
 
 function stabilizeDieOnGround(die: AnimatedDie, layer: DiceAnimationLayer, now: number, dt: number): void {
   const groundZ = getGroundZ(die.radius);
-  if (die.dragging || die.z > groundZ + 2 || now - die.birth < 900) {
+  if (die.dragging || die.z > groundZ + 2 || now - die.birth < 2300) {
     return;
   }
 
   const motion = Math.hypot(die.vx, die.vy) + Math.abs(die.vz) * 0.2 + die.angularVelocity.length() * 24;
   const candidateAnchor = getVisibleResultAnchor(die, layer);
   const targetNormal = getDieSettleNormal(die, layer);
-  const candidateScore = getFaceAnchorScore(die, candidateAnchor, targetNormal);
-  const currentScore = die.settleAnchor ? getFaceAnchorScore(die, die.settleAnchor, targetNormal) : -Infinity;
-
-  if (!die.settleAnchor || (!die.settleAnchorLocked && candidateScore > currentScore + 0.035)) {
-    die.settleAnchor = candidateAnchor;
-  }
-
-  if (motion < 150 || now - die.birth > 3200) {
-    die.settleAnchorLocked = true;
-  }
+  die.settleAnchor = candidateAnchor;
 
   const anchor = die.settleAnchor;
   const anchorScore = getFaceAnchorScore(die, anchor, targetNormal);
   if (anchorScore > stableFaceScore) {
     die.settleAnchorLocked = true;
-    die.vx *= Math.pow(0.018, dt);
-    die.vy *= Math.pow(0.018, dt);
-    die.angularVelocity.multiplyScalar(Math.pow(0.012, dt));
     return;
   }
 
-  if (anchorScore < 0.12) {
+  if (motion > 520 && now - die.birth < 3200) {
     return;
   }
 
@@ -2917,23 +2899,26 @@ function stabilizeDieOnGround(die: AnimatedDie, layer: DiceAnimationLayer, now: 
   }
 
   correctionAxis.normalize();
-  const ageFactor = clampNumber((now - die.birth - 1400) / 2800, 0, 1);
-  const correctionNeed = clampNumber((stableFaceScore - anchorScore) / 0.72, 0, 1);
-  const desiredSpin = (0.75 + ageFactor * 2.9 + correctionNeed * 1.7) * correctionNeed;
+  const settleAge = now - die.birth;
+  const angle = Math.acos(clampNumber(anchorScore, -1, 1));
+  const urgency = clampNumber((settleAge - 2400) / 1800, 0, 1);
+  const desiredSpin = clampNumber(angle * (4.8 + urgency * 2.2) + 0.85, 2.2, 7.2);
   const currentSpin = die.angularVelocity.dot(correctionAxis);
-  const spinBlend = clampNumber(dt * (4.2 + ageFactor * 10.5), 0, 0.32);
-  die.angularVelocity.addScaledVector(correctionAxis, (desiredSpin - currentSpin) * spinBlend);
+  const spinBlend = clampNumber(dt * (9.5 + urgency * 10), 0, 0.42);
+  const targetAngularVelocity = correctionAxis.clone().multiplyScalar(desiredSpin);
+  die.angularVelocity.lerp(targetAngularVelocity, spinBlend);
+  die.angularVelocity.addScaledVector(correctionAxis, (desiredSpin - currentSpin) * spinBlend * 0.35);
 
-  const maxSpin = 1.4 + ageFactor * 3.2;
+  const maxSpin = 7.8;
   const spin = die.angularVelocity.length();
   if (spin > maxSpin) {
     die.angularVelocity.multiplyScalar(maxSpin / spin);
   }
 
-  const balanceRoll = (0.35 + ageFactor * 0.55) * correctionNeed;
-  die.vx += correctionAxis.y * die.radius * balanceRoll * dt;
-  die.vy -= correctionAxis.x * die.radius * balanceRoll * dt;
-  const driftDrag = Math.pow(0.24 + (1 - ageFactor) * 0.2, dt);
+  const rollImpulse = clampNumber(angle / 0.9, 0.2, 1);
+  die.vx += correctionAxis.y * die.radius * desiredSpin * 0.018 * rollImpulse * dt;
+  die.vy -= correctionAxis.x * die.radius * desiredSpin * 0.018 * rollImpulse * dt;
+  const driftDrag = Math.pow(0.54 - urgency * 0.18, dt);
   die.vx *= driftDrag;
   die.vy *= driftDrag;
 }
