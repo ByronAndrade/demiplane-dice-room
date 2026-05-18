@@ -437,28 +437,20 @@ function createFaceLabel({ value, kind, color, glow, anchor }) {
 }
 
 function createFaceLabelGeometry(anchor) {
-  const inset = 0.985;
   const xs = anchor.labelCorners.map((corner) => corner.x);
   const ys = anchor.labelCorners.map((corner) => corner.y);
-  const minX = Math.min(...xs);
-  const maxX = Math.max(...xs);
-  const minY = Math.min(...ys);
-  const maxY = Math.max(...ys);
-  const width = Math.max(0.001, maxX - minX);
-  const height = Math.max(0.001, maxY - minY);
-  const positions = [];
-  const uvs = [];
+  const usableWidth = Math.max(0.001, (Math.max(...xs) - Math.min(...xs)) * 0.9);
+  const usableHeight = Math.max(0.001, (Math.max(...ys) - Math.min(...ys)) * 0.9);
+  const aspectRatio = resultLabelCanvasWidth / resultLabelCanvasHeight;
+  let height = Math.min(0.72, usableHeight);
+  let width = height * aspectRatio;
 
-  for (const corner of anchor.labelCorners) {
-    positions.push(corner.x * inset, corner.y * inset, 0);
-    uvs.push((corner.x - minX) / width, (corner.y - minY) / height);
+  if (width > usableWidth) {
+    width = usableWidth;
+    height = width / aspectRatio;
   }
 
-  const geometry = new THREE.BufferGeometry();
-  geometry.setAttribute("position", new THREE.Float32BufferAttribute(positions, 3));
-  geometry.setAttribute("uv", new THREE.Float32BufferAttribute(uvs, 2));
-  geometry.setIndex([0, 1, 2, 0, 2, 3]);
-  return geometry;
+  return new THREE.PlaneGeometry(width, height);
 }
 
 function createAnkhIconImage() {
