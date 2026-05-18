@@ -52,7 +52,7 @@ const panelUiStorageKey = "diceRoomPanelUi";
 const defaultDiceAnimationScale = 0.75;
 const minDiceAnimationScale = 0.45;
 const maxDiceAnimationScale = 1.15;
-const extensionUiVersion = "0.1.57";
+const extensionUiVersion = "0.1.58";
 const activeToastByActor = new Map<string, HTMLElement>();
 let collapsed = true;
 let settingsOpen = false;
@@ -772,10 +772,13 @@ function shouldPreferTextDetailDice(detailDice: DiceValue[], textDetailDice: Dic
     return false;
   }
 
-  return (
-    countDiceByFace(textDetailDice, "critical") > countDiceByFace(detailDice, "critical") ||
-    countDiceByFace(textDetailDice, "skull") > countDiceByFace(detailDice, "skull")
-  );
+  const textSkulls = countDiceByFace(textDetailDice, "skull");
+  const detailSkulls = countDiceByFace(detailDice, "skull");
+  if (textSkulls !== detailSkulls) {
+    return textSkulls > detailSkulls;
+  }
+
+  return countDiceByFace(textDetailDice, "critical") > countDiceByFace(detailDice, "critical");
 }
 
 function countDiceByFace(dice: DiceValue[], face: DiceFace): number {
