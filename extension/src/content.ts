@@ -2765,11 +2765,7 @@ function createD10Geometry(): D10Model {
       edgeVertices.push(start.x, start.y, start.z, end.x, end.y, end.z);
     }
 
-    const vertical = new THREE.Vector3(0, 0, 1).projectOnPlane(normal);
-    if (vertical.lengthSq() < 0.001) {
-      vertical.copy(face[0]).sub(face[2]).projectOnPlane(normal);
-    }
-    vertical.normalize();
+    const vertical = getFaceMiddleToPoleAxis(face, center, normal);
     const horizontal = new THREE.Vector3().crossVectors(vertical, normal).normalize();
     faceAnchors.push({
       center,
@@ -2805,6 +2801,25 @@ function getFaceNormal(points: THREE.Vector3[]): THREE.Vector3 {
   const normal = points[1].clone().sub(points[0]).cross(points[2].clone().sub(points[0])).normalize();
   const center = points.reduce((sum, point) => sum.add(point), new THREE.Vector3()).multiplyScalar(1 / points.length);
   return normal.dot(center) < 0 ? normal.multiplyScalar(-1) : normal;
+}
+
+function getFaceMiddleToPoleAxis(face: THREE.Vector3[], center: THREE.Vector3, normal: THREE.Vector3): THREE.Vector3 {
+  const topSign = center.z >= 0 ? 1 : -1;
+  let pole = face[0];
+  let poleScore = pole.z * topSign;
+  for (let index = 1; index < face.length; index += 1) {
+    const score = face[index].z * topSign;
+    if (score > poleScore) {
+      pole = face[index];
+      poleScore = score;
+    }
+  }
+
+  const axis = pole.clone().sub(center).projectOnPlane(normal);
+  if (axis.lengthSq() < 0.001) {
+    axis.copy(face[0]).sub(face[2]).projectOnPlane(normal);
+  }
+  return axis.normalize();
 }
 
 function createFaceLabel({
