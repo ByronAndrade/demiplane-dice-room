@@ -323,7 +323,7 @@ function handlePotentialRollAction(event: PointerEvent): void {
     return;
   }
 
-  if (!findRollActionElement(event.target) && !findDicePoolInteractionElement(event.target)) {
+  if (!findRollActionElement(event.target)) {
     return;
   }
 
@@ -350,7 +350,7 @@ function findRollActionElement(target: Element): Element | undefined {
       (current instanceof HTMLElement && window.getComputedStyle(current).cursor === "pointer");
     const isSmallRollLabel = label.length <= 40;
 
-    if ((isClickable || isSmallRollLabel) && /\b(re-roll|reroll|roll)\b/i.test(`${label} ${context}`)) {
+    if ((isClickable || isSmallRollLabel) && /\b(re-roll|reroll|roll)\b/i.test(label)) {
       return current;
     }
 
@@ -730,6 +730,14 @@ type VisibleNumberText = {
   rect: DOMRect;
 };
 
+type DetailDieCandidate = {
+  marker: Element;
+  countText: VisibleNumberText;
+  face?: DiceFace;
+  red: boolean;
+  rect: DOMRect;
+};
+
 function parseDetailDiceFromDom(element: Element): DiceValue[] {
   const markers = collectDieMarkerElements(element);
   if (markers.length === 0) {
@@ -742,8 +750,8 @@ function parseDetailDiceFromDom(element: Element): DiceValue[] {
   }
 
   const detailLabelRects = collectVisibleTextRects(element, /\b(details|detalhes)\b/i);
-  const dice: DiceValue[] = [];
   const usedCounts = new Set<VisibleNumberText>();
+  const candidates: DetailDieCandidate[] = [];
 
   for (const marker of markers) {
     const countText = findNearestDieCount(marker, countTexts, usedCounts);
@@ -752,16 +760,38 @@ function parseDetailDiceFromDom(element: Element): DiceValue[] {
     }
 
     const face = inferDieFaceFromElement(marker) ?? inferBlankDetailDieFace(marker, countText, detailLabelRects);
-    if (!face) {
+    const markerIsNearDetails = isNearDetailsRow(marker, countText, detailLabelRects);
+    if (!face && !markerIsNearDetails) {
       continue;
     }
 
     usedCounts.add(countText);
-    const kind = normalizeKindForFace(inferDieKindFromElement(marker), face);
-    const count = clampNumber(countText.value, 1, 80 - dice.length);
+    candidates.push({
+      marker,
+      countText,
+      face,
+      red: hasStrongRedMarkerColor(marker),
+      rect: marker.getBoundingClientRect()
+    });
+  }
+
+  if (candidates.length === 0) {
+    return [];
+  }
+
+  assignDetailFacesByRowOrder(candidates);
+
+  const dice: DiceValue[] = [];
+  for (const candidate of candidates) {
+    if (!candidate.face) {
+      continue;
+    }
+
+    const kind = inferDieKindFromDetailMarker(candidate.marker, candidate.face);
+    const count = clampNumber(candidate.countText.value, 1, 80 - dice.length);
 
     for (let index = 0; index < count; index += 1) {
-      dice.push(createDiceValue(kind, face));
+      dice.push(createDiceValue(kind, candidate.face));
     }
 
     if (dice.length >= 80) {
@@ -770,6 +800,36 @@ function parseDetailDiceFromDom(element: Element): DiceValue[] {
   }
 
   return dice;
+}
+
+function assignDetailFacesByRowOrder(candidates: DetailDieCandidate[]): void {
+  const sorted = [...candidates].sort((first, second) => {
+    const vertical = first.rect.top - second.rect.top;
+    return Math.abs(vertical) > 8 ? vertical : first.rect.left - second.rect.left;
+  });
+
+  for (const candidate of sorted) {
+    if (!candidate.face && !candidate.red) {
+      candidate.face = "blank";
+    }
+  }
+
+  const redCandidates = sorted.filter((candidate) => candidate.red && candidate.face !== "skull");
+  const needsOrderedRegularFaces = redCandidates.length >= 2;
+  redCandidates.forEach((candidate, index) => {
+    if (!candidate.face || (needsOrderedRegularFaces && candidate.face === "success")) {
+      candidate.face = needsOrderedRegularFaces && index === redCandidates.length - 1 ? "critical" : "success";
+    }
+  });
+}
+
+function inferDieKindFromDetailMarker(marker: Element, face: DiceFace): DiceValue["kind"] {
+  if (face === "skull") {
+    return "hunger";
+  }
+
+  const context = getElementContext(marker);
+  return /(hunger|fome|blood|skull|vermelh)/i.test(context) ? "hunger" : "regular";
 }
 
 function collectVisibleTextRects(root: Element, pattern: RegExp): DOMRect[] {
