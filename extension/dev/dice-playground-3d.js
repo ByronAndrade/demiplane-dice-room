@@ -4,6 +4,7 @@ const diceAnimationMs = 8800;
 const diceFadeLeadMs = 420;
 const diceFadeMs = 360;
 const resultLabelRevealMs = 860;
+const diceCameraWorldHeight = 560;
 const stableFaceScore = 0.972;
 const diceSettleMotion = 34;
 const diceStableHoldMs = 260;
@@ -35,9 +36,9 @@ let lastFrame = performance.now();
 let diceAnimationBatchSequence = 0;
 
 const scene = new THREE.Scene();
-const camera = new THREE.PerspectiveCamera(38, 1, 1, 2200);
-camera.position.set(0, -560, 430);
-camera.lookAt(0, 10, 0);
+const camera = new THREE.OrthographicCamera(-1, 1, 1, -1, 1, 2200);
+camera.position.set(0, -245, 760);
+camera.lookAt(0, 0, 0);
 
 const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
 renderer.setClearColor(0x000000, 0);
@@ -629,9 +630,10 @@ function getVisibleResultAnchor(die) {
   let bestAnchor = d10Model.faceAnchors[0];
   let bestScore = -Infinity;
   const targetNormal = getDieSettleNormal(die);
+  const cameraDirection = getDieCameraDirection(die);
 
   for (const anchor of d10Model.faceAnchors) {
-    const score = getFaceAnchorScore(die, anchor, targetNormal);
+    const score = getFaceRevealScore(die, anchor, targetNormal, cameraDirection);
     if (score > bestScore) {
       bestScore = score;
       bestAnchor = anchor;
@@ -643,6 +645,17 @@ function getVisibleResultAnchor(die) {
 
 function getFaceAnchorScore(die, anchor, targetNormal) {
   return anchor.normal.clone().applyQuaternion(die.group.quaternion).normalize().dot(targetNormal);
+}
+
+function getFaceRevealScore(die, anchor, targetNormal, cameraDirection) {
+  const normal = anchor.normal.clone().applyQuaternion(die.group.quaternion).normalize();
+  const topScore = normal.dot(targetNormal);
+  const cameraScore = normal.dot(cameraDirection);
+  return topScore + Math.max(0, cameraScore) * 0.22;
+}
+
+function getDieCameraDirection(die) {
+  return camera.position.clone().sub(die.group.position).normalize();
 }
 
 function stabilizeDieOnGround(die, now, dt) {
@@ -1186,9 +1199,14 @@ function getDieGroundZ(die) {
 function resizeRenderer() {
   const width = Math.max(1, stage.clientWidth);
   const height = Math.max(1, stage.clientHeight);
+  const worldHeight = diceCameraWorldHeight;
+  const worldWidth = worldHeight * (width / height);
   renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
   renderer.setSize(width, height, false);
-  camera.aspect = width / height;
+  camera.left = -worldWidth / 2;
+  camera.right = worldWidth / 2;
+  camera.top = worldHeight / 2;
+  camera.bottom = -worldHeight / 2;
   camera.updateProjectionMatrix();
 }
 
