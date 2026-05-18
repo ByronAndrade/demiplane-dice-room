@@ -31,6 +31,7 @@ const diceFadeMs = 360;
 const resultLabelRevealMs = 860;
 const diceCameraWorldHeight = 560;
 const stableFaceScore = 0.972;
+const diceRestFaceScore = 0.992;
 const diceSettleMotion = 34;
 const diceStableHoldMs = 260;
 const diceSpentEnergySettleMotion = 76;
@@ -44,6 +45,8 @@ const diceGroundRollSpeedFactor = 1.08;
 const diceSpinTurnLoss = 0.38;
 const diceLongAxisSpinDamping = 0.12;
 const diceSupportPivotSpinDamping = 0.02;
+const diceFaceCollapseSpeed = 14;
+const diceHardFaceCollapseSpeed = 28;
 const maxAnimatedDice = 20;
 const panelUiStorageKey = "diceRoomPanelUi";
 const defaultDiceAnimationScale = 0.75;
@@ -2931,7 +2934,7 @@ function stabilizeDieOnGround(die: AnimatedDie, layer: DiceAnimationLayer, now: 
   die.settleAnchor = getVisibleResultAnchor(die, layer);
   const anchor = die.supportAnchor;
   const anchorScore = getFaceAnchorScore(die, anchor, supportNormal);
-  if (anchorScore > stableFaceScore) {
+  if (anchorScore > diceRestFaceScore) {
     if (die.rollEnergy >= getToppleEnergyCost(die, anchorScore)) {
       die.stableSince = 0;
       maybeSpendEnergyForTopple(die, layer, anchorScore, now);
@@ -2943,12 +2946,8 @@ function stabilizeDieOnGround(die: AnimatedDie, layer: DiceAnimationLayer, now: 
     return true;
   }
   die.stableSince = 0;
-  if (
-    !maybeSpendEnergyForTopple(die, layer, anchorScore, now) &&
-    canDieStopWithoutAnotherTopple(die, anchorScore)
-  ) {
-    die.stableSince = die.stableSince || now;
-    return true;
+  if (!maybeSpendEnergyForTopple(die, layer, anchorScore, now) && canDieCollapseOntoFace(die, anchorScore, now)) {
+    collapseDieOntoSupportFace(die, layer, dt, false);
   }
   return false;
 }
@@ -2998,8 +2997,9 @@ function getToppleEnergyCost(die: AnimatedDie, anchorScore: number): number {
   return diceToppleEnergyCost * die.rollEnergyLoss * (1 - instabilityDiscount);
 }
 
-function canDieStopWithoutAnotherTopple(die: AnimatedDie, anchorScore: number): boolean {
-  return die.rollEnergy < getToppleEnergyCost(die, anchorScore) && getDieMotion(die) < diceSpentEnergySettleMotion;
+function canDieCollapseOntoFace(die: AnimatedDie, anchorScore: number, now: number): boolean {
+  const spentEnergy = die.rollEnergy < getToppleEnergyCost(die, anchorScore);
+  return spentEnergy && (getDieMotion(die) < diceSpentEnergySettleMotion || now - die.birth > diceVisualSettleMs);
 }
 
 function getEnergyToppleAxis(die: AnimatedDie, layer: DiceAnimationLayer): THREE.Vector3 | undefined {
@@ -3154,11 +3154,43 @@ function getSupportAnchor(die: AnimatedDie, layer: DiceAnimationLayer): FaceAnch
   return bestAnchor;
 }
 
+function collapseDieOntoSupportFace(
+  die: AnimatedDie,
+  layer: DiceAnimationLayer,
+  dt: number,
+  hard: boolean
+): boolean {
+  if (die.dragging) {
+    return false;
+  }
+
+  const anchor = die.supportAnchor ?? getSupportAnchor(die, layer);
+  const supportNormal = getDieSupportNormal();
+  const currentNormal = anchor.normal.clone().applyQuaternion(die.group.quaternion).normalize();
+  const anchorScore = currentNormal.dot(supportNormal);
+  if (anchorScore > diceRestFaceScore) {
+    return true;
+  }
+
+  const delta = new THREE.Quaternion().setFromUnitVectors(currentNormal, supportNormal);
+  const targetQuaternion = die.group.quaternion.clone().premultiply(delta).normalize();
+  const collapseAmount = clampNumber(dt * (hard ? diceHardFaceCollapseSpeed : diceFaceCollapseSpeed), 0, hard ? 0.85 : 0.42);
+  die.group.quaternion.slerp(targetQuaternion, collapseAmount).normalize();
+  die.z = getDieGroundZ(die, layer);
+  die.vx *= Math.pow(0.16, dt);
+  die.vy *= Math.pow(0.16, dt);
+  die.vz = 0;
+  die.angularVelocity.multiplyScalar(Math.pow(0.08, dt));
+  die.supportAnchor = anchor;
+  die.settleAnchor = getVisibleResultAnchor(die, layer);
+  return getFaceAnchorScore(die, anchor, supportNormal) > diceRestFaceScore;
+}
+
 function isDieFaceStable(die: AnimatedDie, layer: DiceAnimationLayer): boolean {
   const anchor = die.supportAnchor ?? getSupportAnchor(die, layer);
   const normal = anchor.normal.clone().applyQuaternion(die.group.quaternion).normalize();
   const anchorScore = normal.dot(getDieSupportNormal());
-  return anchorScore > stableFaceScore || canDieStopWithoutAnotherTopple(die, anchorScore);
+  return anchorScore > diceRestFaceScore;
 }
 
 function getDieSettleNormal(die: AnimatedDie, layer: DiceAnimationLayer): THREE.Vector3 {
@@ -3206,7 +3238,10 @@ function beginSettleAnimatedDie(die: AnimatedDie, layer: DiceAnimationLayer, now
   const visuallySpent = age > diceVisualSettleMs && spentEnergy && motion < diceSpentEnergySettleMotion;
   const hardSettle = age > diceHardSettleMs;
 
-  if (!hardSettle && !visuallySpent && !isDieFaceStable(die, layer)) {
+  if (!isDieFaceStable(die, layer)) {
+    if (hardSettle || visuallySpent) {
+      collapseDieOntoSupportFace(die, layer, 1 / 60, hardSettle);
+    }
     die.stableSince = 0;
     return;
   }
