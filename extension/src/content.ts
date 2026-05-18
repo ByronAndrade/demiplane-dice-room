@@ -52,7 +52,7 @@ const panelUiStorageKey = "diceRoomPanelUi";
 const defaultDiceAnimationScale = 0.75;
 const minDiceAnimationScale = 0.45;
 const maxDiceAnimationScale = 1.15;
-const extensionUiVersion = "0.1.53";
+const extensionUiVersion = "0.1.54";
 const activeToastByActor = new Map<string, HTMLElement>();
 let collapsed = true;
 let settingsOpen = false;
@@ -718,7 +718,7 @@ function parseNumber(text: string, pattern: RegExp): number | null {
 }
 
 function parseDice(element: Element, lines: string[], text?: string, successes?: number): DiceValue[] {
-  const detailDice = parseDetailDiceFromDom(element);
+  const detailDice = parseDetailDiceFromDom(element, successes);
   const textDetailDice =
     typeof text === "string" && typeof successes === "number" ? parseDetailDiceFromText(text, successes) : [];
 
@@ -903,10 +903,11 @@ type DetailDieCandidate = {
   countText: VisibleNumberText;
   face?: DiceFace;
   red: boolean;
+  filledRed: boolean;
   rect: DOMRect;
 };
 
-function parseDetailDiceFromDom(element: Element): DiceValue[] {
+function parseDetailDiceFromDom(element: Element, successes?: number): DiceValue[] {
   const markers = collectDieMarkerElements(element);
   if (markers.length === 0) {
     return [];
@@ -939,6 +940,7 @@ function parseDetailDiceFromDom(element: Element): DiceValue[] {
       countText,
       face,
       red: hasStrongRedMarkerColor(marker),
+      filledRed: hasDominantRedFillColor(marker),
       rect: marker.getBoundingClientRect()
     });
   }
@@ -947,7 +949,7 @@ function parseDetailDiceFromDom(element: Element): DiceValue[] {
     return [];
   }
 
-  assignDetailFacesByRowOrder(candidates);
+  assignDetailFacesByRowOrder(candidates, successes);
 
   const dice: DiceValue[] = [];
   for (const candidate of candidates) {
@@ -955,7 +957,7 @@ function parseDetailDiceFromDom(element: Element): DiceValue[] {
       continue;
     }
 
-    const kind = inferDieKindFromDetailMarker(candidate.marker, candidate.face);
+    const kind = candidate.filledRed ? "hunger" : inferDieKindFromDetailMarker(candidate.marker, candidate.face);
     const count = clampNumber(candidate.countText.value, 1, 80 - dice.length);
 
     for (let index = 0; index < count; index += 1) {
@@ -970,7 +972,7 @@ function parseDetailDiceFromDom(element: Element): DiceValue[] {
   return dice;
 }
 
-function assignDetailFacesByRowOrder(candidates: DetailDieCandidate[]): void {
+function assignDetailFacesByRowOrder(candidates: DetailDieCandidate[], successes?: number): void {
   const sorted = [...candidates].sort((first, second) => {
     const vertical = first.rect.top - second.rect.top;
     return Math.abs(vertical) > 8 ? vertical : first.rect.left - second.rect.left;
@@ -982,13 +984,50 @@ function assignDetailFacesByRowOrder(candidates: DetailDieCandidate[]): void {
     }
   }
 
-  const redCandidates = sorted.filter((candidate) => candidate.red && candidate.face !== "skull");
+  assignUnknownFacesBySuccessTotal(sorted, successes);
+
+  const redCandidates = sorted.filter((candidate) => candidate.red && !candidate.filledRed && candidate.face !== "skull");
   const needsOrderedRegularFaces = redCandidates.length >= 2;
   redCandidates.forEach((candidate, index) => {
     if (!candidate.face || (needsOrderedRegularFaces && candidate.face === "success")) {
       candidate.face = needsOrderedRegularFaces && index === redCandidates.length - 1 ? "critical" : "success";
     }
   });
+}
+
+function assignUnknownFacesBySuccessTotal(candidates: DetailDieCandidate[], successes?: number): void {
+  if (typeof successes !== "number" || successes < 0) {
+    return;
+  }
+
+  let remainingSuccesses =
+    successes -
+    candidates
+      .filter((candidate) => candidate.face === "success" || candidate.face === "critical")
+      .reduce((total, candidate) => total + candidate.countText.value, 0);
+
+  if (remainingSuccesses > 0) {
+    for (const candidate of [...candidates].reverse()) {
+      if (candidate.face || !candidate.red) {
+        continue;
+      }
+
+      if (candidate.countText.value <= remainingSuccesses) {
+        candidate.face = "success";
+        remainingSuccesses -= candidate.countText.value;
+      }
+
+      if (remainingSuccesses <= 0) {
+        break;
+      }
+    }
+  }
+
+  for (const candidate of candidates) {
+    if (!candidate.face && candidate.filledRed) {
+      candidate.face = "blank";
+    }
+  }
 }
 
 function inferDieKindFromDetailMarker(marker: Element, face: DiceFace): DiceValue["kind"] {
@@ -1157,6 +1196,41 @@ function hasStrongRedMarkerColor(element: Element): boolean {
       if (red > 120 && green < 95 && blue < 105 && red > green * 1.35 && red > blue * 1.35) {
         return true;
       }
+    }
+  }
+
+  return false;
+}
+
+function hasDominantRedFillColor(element: Element): boolean {
+  const markerRect = element.getBoundingClientRect();
+  const markerArea = Math.max(1, markerRect.width * markerRect.height);
+  const elements = [element, ...Array.from(element.querySelectorAll("*"))];
+
+  for (const current of elements) {
+    if (!(current instanceof Element)) {
+      continue;
+    }
+
+    const style = window.getComputedStyle(current);
+    const hasRedFill = [style.backgroundColor, style.fill].some((color) => {
+      const rgb = parseRgbColor(color);
+      if (!rgb) {
+        return false;
+      }
+
+      const [red, green, blue] = rgb;
+      return red > 120 && green < 95 && blue < 105 && red > green * 1.35 && red > blue * 1.35;
+    });
+
+    if (!hasRedFill) {
+      continue;
+    }
+
+    const rect = current.getBoundingClientRect();
+    const area = rect.width * rect.height;
+    if (area >= markerArea * 0.4) {
+      return true;
     }
   }
 
