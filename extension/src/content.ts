@@ -52,7 +52,7 @@ const panelUiStorageKey = "diceRoomPanelUi";
 const defaultDiceAnimationScale = 0.75;
 const minDiceAnimationScale = 0.45;
 const maxDiceAnimationScale = 1.15;
-const extensionUiVersion = "0.1.55";
+const extensionUiVersion = "0.1.56";
 const activeToastByActor = new Map<string, HTMLElement>();
 let collapsed = true;
 let settingsOpen = false;
@@ -850,6 +850,17 @@ function inferBucketsFromDetailCounts(
   }
 
   if (counts.length === 5) {
+    const markedSuccessDice = counts[2] + counts[3] + counts[4];
+    if (successes > markedSuccessDice) {
+      return [
+        { kind: "regular", face: "blank" },
+        { kind: "hunger", face: "blank" },
+        { kind: "regular", face: "success" },
+        { kind: "regular", face: "critical" },
+        { kind: "hunger", face: "critical" }
+      ];
+    }
+
     return [
       { kind: "regular", face: "blank" },
       { kind: "hunger", face: "blank" },
