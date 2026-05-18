@@ -52,7 +52,7 @@ const panelUiStorageKey = "diceRoomPanelUi";
 const defaultDiceAnimationScale = 0.75;
 const minDiceAnimationScale = 0.45;
 const maxDiceAnimationScale = 1.15;
-const extensionUiVersion = "0.1.51";
+const extensionUiVersion = "0.1.52";
 const activeToastByActor = new Map<string, HTMLElement>();
 let collapsed = true;
 let settingsOpen = false;
@@ -749,7 +749,7 @@ function parseDetailDiceFromText(text: string, successes: number): DiceValue[] {
   const counts = (detailsText.match(/\b\d{1,2}\b/g) ?? [])
     .map((value) => Number.parseInt(value, 10))
     .filter((value) => Number.isFinite(value) && value > 0 && value <= 80)
-    .slice(0, 6);
+    .slice(0, 7);
 
   if (counts.length === 0) {
     return [];
@@ -834,10 +834,44 @@ function inferBucketsFromDetailCounts(
     ];
   }
 
+  if (counts.length === 5) {
+    return [
+      { kind: "regular", face: "blank" },
+      { kind: "hunger", face: "blank" },
+      { kind: "regular", face: "success" },
+      { kind: "hunger", face: "success" },
+      { kind: "hunger", face: "critical" }
+    ];
+  }
+
+  if (counts.length === 6) {
+    const noSkullSuccesses = counts[2] + counts[3] + counts[4] + counts[5];
+    if (successes === noSkullSuccesses) {
+      return [
+        { kind: "regular", face: "blank" },
+        { kind: "hunger", face: "blank" },
+        { kind: "regular", face: "success" },
+        { kind: "regular", face: "critical" },
+        { kind: "hunger", face: "success" },
+        { kind: "hunger", face: "critical" }
+      ];
+    }
+
+    return [
+      { kind: "regular", face: "blank" },
+      { kind: "hunger", face: "blank" },
+      { kind: "regular", face: "success" },
+      { kind: "hunger", face: "success" },
+      { kind: "hunger", face: "critical" },
+      { kind: "hunger", face: "skull" }
+    ];
+  }
+
   return [
     { kind: "regular", face: "blank" },
     { kind: "hunger", face: "blank" },
     { kind: "regular", face: "success" },
+    { kind: "regular", face: "critical" },
     { kind: "hunger", face: "success" },
     { kind: "hunger", face: "critical" },
     { kind: "hunger", face: "skull" }
