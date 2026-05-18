@@ -118,7 +118,7 @@ const messages = {
     regularDie: "preto",
     hungerDie: "vermelho",
     unknownDie: "desconhecido",
-    blankFace: "asterisco",
+    blankFace: "vazio",
     successFace: "ankh",
     criticalFace: "ankh especial",
     skullFace: "caveira vampirica",
@@ -177,7 +177,7 @@ const messages = {
     regularDie: "black",
     hungerDie: "red",
     unknownDie: "unknown",
-    blankFace: "asterisk",
+    blankFace: "blank",
     successFace: "ankh",
     criticalFace: "special ankh",
     skullFace: "vampiric skull",
@@ -529,7 +529,7 @@ function extractRoll(element: Element): CapturedRoll | undefined {
   const sourceElement = enriched?.element ?? element;
   const sourceText = enriched?.rawText ?? rawText;
   const sourceLines = enriched?.lines ?? lines;
-  const dice = parseDice(sourceElement, sourceLines);
+  const dice = parseDice(sourceElement, sourceLines, sourceText, successes);
   const signature = hashText([rollTitle, successes, diceKey(dice), normalizeRollTextForSignature(sourceText, sourceLines)].join("|"));
 
   return {
@@ -571,7 +571,7 @@ function findRicherRollElement(
       .filter(Boolean);
 
     if (isSameSingleRollBlock(rawText, lines, rollTitle, successes)) {
-      const dice = parseDice(current, lines);
+      const dice = parseDice(current, lines, rawText, successes);
       const score = dice.length * 10 + lines.length + Math.min(rawText.length, 600) / 600;
       if (!best || score > best.score) {
         best = { element: current, rawText, lines, score };
@@ -716,13 +716,71 @@ function parseNumber(text: string, pattern: RegExp): number | null {
   return Number.isFinite(value) ? value : null;
 }
 
-function parseDice(element: Element, lines: string[]): DiceValue[] {
+function parseDice(element: Element, lines: string[], text?: string, successes?: number): DiceValue[] {
   const detailDice = parseDetailDiceFromDom(element);
+  const textDetailDice =
+    typeof text === "string" && typeof successes === "number" ? parseDetailDiceFromText(text, successes) : [];
+
+  if (textDetailDice.length > detailDice.length) {
+    return textDetailDice;
+  }
+
   if (detailDice.length > 0) {
     return detailDice;
   }
 
+  if (textDetailDice.length > 0) {
+    return textDetailDice;
+  }
+
   return parseDiceFromText(lines);
+}
+
+function parseDetailDiceFromText(text: string, successes: number): DiceValue[] {
+  const match = text.match(/\b(?:details|detalhes)\b([\s\S]{0,180})/i);
+  if (!match) {
+    return [];
+  }
+
+  const detailsText = match[1]
+    .split(/\n\s*(?:dice pool|add dice|clear|roll|re-roll|reroll)\b/i)[0]
+    .replace(/[^\d,\s]/g, " ");
+  const counts = (detailsText.match(/\b\d{1,2}\b/g) ?? [])
+    .map((value) => Number.parseInt(value, 10))
+    .filter((value) => Number.isFinite(value) && value > 0 && value <= 80)
+    .slice(0, 4);
+
+  if (counts.length === 0) {
+    return [];
+  }
+
+  const faces = inferFacesFromDetailCounts(counts, successes);
+  const dice: DiceValue[] = [];
+  for (let index = 0; index < counts.length && index < faces.length; index += 1) {
+    const face = faces[index];
+    const kind: DiceValue["kind"] = face === "skull" ? "hunger" : "regular";
+    for (let count = 0; count < counts[index] && dice.length < 80; count += 1) {
+      dice.push(createDiceValue(kind, face));
+    }
+  }
+
+  return dice;
+}
+
+function inferFacesFromDetailCounts(counts: number[], successes: number): DiceFace[] {
+  if (counts.length === 1) {
+    return successes > 0 ? ["success"] : ["blank"];
+  }
+
+  if (counts.length === 2) {
+    return ["blank", "success"];
+  }
+
+  if (counts.length === 3) {
+    return ["blank", "success", "critical"];
+  }
+
+  return ["blank", "success", "critical", "skull"];
 }
 
 type VisibleNumberText = {
@@ -3998,7 +4056,7 @@ function faceSymbolText(face: DiceFace): string {
   if (face === "success") {
     return "\u2625";
   }
-  return "\u2736";
+  return "";
 }
 
 function randomSigned(min: number, max: number): number {
