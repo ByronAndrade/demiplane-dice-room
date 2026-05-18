@@ -38,9 +38,11 @@ const diceHardSettleMs = 4200;
 const diceToppleEnergyCost = 0.9;
 const diceToppleImpulse = 5.8;
 const diceRollAxisXBias = 1.55;
-const diceRollAxisYBias = 0.14;
-const diceGroundRollSpeedFactor = 0.78;
-const diceSpinTurnLoss = 0.52;
+const diceRollAxisYBias = 0.08;
+const diceGroundRollSpeedFactor = 1.08;
+const diceSpinTurnLoss = 0.38;
+const diceLongAxisSpinDamping = 0.12;
+const diceSupportPivotSpinDamping = 0.02;
 const maxAnimatedDice = 20;
 const panelUiStorageKey = "diceRoomPanelUi";
 const defaultDiceAnimationScale = 0.75;
@@ -2634,12 +2636,15 @@ function updateAnimatedDice(layer: DiceAnimationLayer, now: number, dt: number):
       applyGroundSpinTranslation(die, groundZ, dt);
       const stableOnGround = stabilizeDieOnGround(die, layer, now, dt);
       const isGrounded = die.z <= groundZ + 1;
+      if (isGrounded) {
+        dampenGroundPivotSpin(die, layer, dt);
+      }
       const planeDrag = isGrounded ? Math.pow(stableOnGround ? 0.28 : 0.62, dt) : Math.pow(0.58, dt);
       die.vx *= planeDrag;
       die.vy *= planeDrag;
       die.angularVelocity.multiplyScalar(Math.pow(isGrounded ? stableOnGround ? 0.58 : 0.9 : 0.72, dt));
 
-      if (die.z <= groundZ + 1 && Math.abs(die.vz) < 90) {
+      if (die.z <= groundZ + 1 && (Math.abs(die.vz) < 90 || now - die.birth > diceHardSettleMs)) {
         beginSettleAnimatedDie(die, layer, now);
       }
     }
@@ -2677,7 +2682,7 @@ function createD10Geometry(): D10Model {
   const primalVertices: THREE.Vector3[] = [];
   const primalFaces: number[][] = [];
   const ringRadius = 1;
-  const ringHeight = 0.9;
+  const ringHeight = 0.78;
 
   for (let index = 0; index < 5; index += 1) {
     const angle = -Math.PI / 2 + (Math.PI * 2 * index) / 5;
@@ -2799,11 +2804,11 @@ function getFaceNormal(points: THREE.Vector3[]): THREE.Vector3 {
 }
 
 function createFaceLabel({
-  face,
+  value,
   color,
   glow
 }: {
-  face: DiceFace;
+  value: number;
   color: string;
   glow: string;
 }): THREE.Mesh {
@@ -2824,10 +2829,10 @@ function createFaceLabel({
   context.strokeStyle = "rgba(0, 0, 0, 0.72)";
   context.lineWidth = 8;
   context.fillStyle = color;
-  context.font = face === "critical" ? "900 104px Georgia, serif" : "900 118px Georgia, serif";
-  const symbol = faceSymbolText(face);
-  context.strokeText(symbol, 128, 90);
-  context.fillText(symbol, 128, 90);
+  context.font = value === 10 ? "900 104px Georgia, serif" : "900 118px Georgia, serif";
+  const text = String(value);
+  context.strokeText(text, 128, 90);
+  context.fillText(text, 128, 90);
 
   const texture = new THREE.CanvasTexture(canvas);
   texture.colorSpace = THREE.SRGBColorSpace;
@@ -2854,7 +2859,7 @@ function revealDieResult(die: AnimatedDie, layer: DiceAnimationLayer, now: numbe
   const anchor = die.settleAnchor ?? getVisibleResultAnchor(die, layer);
   const palette = getDiePalette(die.kind);
   const label = createFaceLabel({
-    face: die.face,
+    value: die.value,
     color: palette.ink,
     glow: palette.inkGlow
   });
@@ -3000,16 +3005,16 @@ function getEnergyToppleAxis(die: AnimatedDie, layer: DiceAnimationLayer): THREE
 
 function createBiasedInitialAngularVelocity(): THREE.Vector3 {
   return new THREE.Vector3(
-    randomSigned(7.4, 12.4),
-    randomSigned(0.25, 1.05),
-    randomSigned(2.8, 5.8)
+    randomSigned(7.8, 12.8),
+    randomSigned(0.08, 0.42),
+    randomSigned(1.4, 3.4)
   );
 }
 
 function biasDieRollAxis(axis: THREE.Vector3): THREE.Vector3 | undefined {
   axis.x *= diceRollAxisXBias;
   axis.y *= diceRollAxisYBias;
-  axis.z *= 0.48;
+  axis.z *= 0.28;
   if (axis.lengthSq() < 0.0001) {
     return undefined;
   }
@@ -3072,27 +3077,43 @@ function applyGroundSpinTranslation(die: AnimatedDie, groundZ: number, dt: numbe
     return;
   }
 
-  const rollAxis = biasDieRollAxis(rollSpin);
-  if (!rollAxis) {
+  const rollAxis = rollSpin.normalize();
+  if (rollAxis.lengthSq() < 0.0001) {
     return;
   }
 
-  const travelSpeed = clampNumber(spin * die.radius * diceGroundRollSpeedFactor, 0, 270);
+  const travelSpeed = clampNumber(spin * die.radius * diceGroundRollSpeedFactor, 0, 360);
   const targetVx = -rollAxis.y * travelSpeed;
   const targetVy = rollAxis.x * travelSpeed;
   const previousSpeed = Math.hypot(die.vx, die.vy);
-  const blend = clampNumber(dt * 9.5, 0, 0.34);
+  const blend = clampNumber(dt * 12.5, 0, 0.42);
   die.vx += (targetVx - die.vx) * blend;
   die.vy += (targetVy - die.vy) * blend;
-  die.x += targetVx * dt * 0.45;
-  die.y += targetVy * dt * 0.45;
+  die.x += targetVx * dt * 0.72;
+  die.y += targetVy * dt * 0.72;
 
   const angularTravel = spin * dt;
-  const skidding = previousSpeed < travelSpeed * 0.35 ? 1.9 : 1;
+  const skidding = previousSpeed < travelSpeed * 0.55 ? 2.6 : 1.1;
   const spinLoss = Math.pow(diceSpinTurnLoss, (angularTravel * skidding) / (Math.PI * 2));
   die.angularVelocity.x *= spinLoss;
-  die.angularVelocity.y *= spinLoss;
-  die.rollEnergy = Math.max(0, die.rollEnergy - angularTravel * 0.13 * skidding * die.rollEnergyLoss);
+  die.angularVelocity.y *= spinLoss * Math.pow(diceLongAxisSpinDamping, dt);
+  die.rollEnergy = Math.max(0, die.rollEnergy - angularTravel * 0.18 * skidding * die.rollEnergyLoss);
+}
+
+function dampenGroundPivotSpin(die: AnimatedDie, layer: DiceAnimationLayer, dt: number): void {
+  if (die.dragging) {
+    return;
+  }
+
+  const anchor = die.supportAnchor ?? getSupportAnchor(die, layer);
+  const supportNormal = anchor.normal.clone().applyQuaternion(die.group.quaternion).normalize();
+  const pivotSpin = die.angularVelocity.dot(supportNormal);
+  if (Math.abs(pivotSpin) < 0.001) {
+    return;
+  }
+
+  const keptSpin = pivotSpin * Math.pow(diceSupportPivotSpinDamping, dt);
+  die.angularVelocity.addScaledVector(supportNormal, keptSpin - pivotSpin);
 }
 
 function getDieMotion(die: AnimatedDie): number {
@@ -3179,7 +3200,7 @@ function beginSettleAnimatedDie(die: AnimatedDie, layer: DiceAnimationLayer, now
   if (!hardSettle && motion > settleMotion) {
     return;
   }
-  if ((hardSettle || visuallySpent) && !die.stableSince) {
+  if ((hardSettle || visuallySpent) && (!die.stableSince || now - die.stableSince < diceStableHoldMs)) {
     die.stableSince = now - diceStableHoldMs;
   }
   if (!die.stableSince || now - die.stableSince < diceStableHoldMs) {

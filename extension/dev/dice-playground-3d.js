@@ -13,9 +13,11 @@ const diceHardSettleMs = 4200;
 const diceToppleEnergyCost = 0.9;
 const diceToppleImpulse = 5.8;
 const diceRollAxisXBias = 1.55;
-const diceRollAxisYBias = 0.14;
-const diceGroundRollSpeedFactor = 0.78;
-const diceSpinTurnLoss = 0.52;
+const diceRollAxisYBias = 0.08;
+const diceGroundRollSpeedFactor = 1.08;
+const diceSpinTurnLoss = 0.38;
+const diceLongAxisSpinDamping = 0.12;
+const diceSupportPivotSpinDamping = 0.02;
 const maxAnimatedDice = 20;
 const dieRadius = 42;
 const groundZ = dieRadius * 0.82;
@@ -123,7 +125,7 @@ function createD10Geometry() {
   const primalVertices = [];
   const primalFaces = [];
   const ringRadius = 1;
-  const ringHeight = 0.9;
+  const ringHeight = 0.78;
 
   for (let index = 0; index < 5; index += 1) {
     const angle = -Math.PI / 2 + (Math.PI * 2 * index) / 5;
@@ -379,7 +381,7 @@ function createFaceLabel({ value, color, glow, scale = 1 }) {
   context.strokeStyle = "rgba(0, 0, 0, 0.72)";
   context.lineWidth = 8;
   context.fillStyle = color;
-  context.font = "900 118px Georgia, serif";
+  context.font = value === 10 ? "900 104px Georgia, serif" : "900 118px Georgia, serif";
   context.strokeText(String(value), 128, 90);
   context.fillText(String(value), 128, 90);
 
@@ -493,12 +495,15 @@ function updateAnimatedDice(now, dt) {
       applyGroundSpinTranslation(die, currentGroundZ, dt);
       const stableOnGround = stabilizeDieOnGround(die, now, dt);
       const isGrounded = die.z <= currentGroundZ + 1;
+      if (isGrounded) {
+        dampenGroundPivotSpin(die, dt);
+      }
       const drag = isGrounded ? Math.pow(stableOnGround ? 0.28 : 0.62, dt) : Math.pow(0.58, dt);
       die.vx *= drag;
       die.vy *= drag;
       die.angularVelocity.multiplyScalar(Math.pow(isGrounded ? stableOnGround ? 0.58 : 0.9 : 0.72, dt));
 
-      if (die.z <= currentGroundZ + 1 && Math.abs(die.vz) < 90) {
+      if (die.z <= currentGroundZ + 1 && (Math.abs(die.vz) < 90 || now - die.birth > diceHardSettleMs)) {
         beginSettle(die, now);
       }
     }
@@ -553,7 +558,7 @@ function beginSettle(die, now) {
   if (!hardSettle && motion > settleMotion) {
     return;
   }
-  if ((hardSettle || visuallySpent) && !die.stableSince) {
+  if ((hardSettle || visuallySpent) && (!die.stableSince || now - die.stableSince < diceStableHoldMs)) {
     die.stableSince = now - diceStableHoldMs;
   }
   if (!die.stableSince || now - die.stableSince < diceStableHoldMs) {
@@ -736,16 +741,16 @@ function getEnergyToppleAxis(die) {
 
 function createBiasedInitialAngularVelocity() {
   return new THREE.Vector3(
-    randomSigned(7.4, 12.4),
-    randomSigned(0.25, 1.05),
-    randomSigned(2.8, 5.8)
+    randomSigned(7.8, 12.8),
+    randomSigned(0.08, 0.42),
+    randomSigned(1.4, 3.4)
   );
 }
 
 function biasDieRollAxis(axis) {
   axis.x *= diceRollAxisXBias;
   axis.y *= diceRollAxisYBias;
-  axis.z *= 0.48;
+  axis.z *= 0.28;
   if (axis.lengthSq() < 0.0001) {
     return undefined;
   }
@@ -808,27 +813,43 @@ function applyGroundSpinTranslation(die, currentGroundZ, dt) {
     return;
   }
 
-  const rollAxis = biasDieRollAxis(rollSpin);
-  if (!rollAxis) {
+  const rollAxis = rollSpin.normalize();
+  if (rollAxis.lengthSq() < 0.0001) {
     return;
   }
 
-  const travelSpeed = clampNumber(spin * dieRadius * diceGroundRollSpeedFactor, 0, 270);
+  const travelSpeed = clampNumber(spin * dieRadius * diceGroundRollSpeedFactor, 0, 360);
   const targetVx = -rollAxis.y * travelSpeed;
   const targetVy = rollAxis.x * travelSpeed;
   const previousSpeed = Math.hypot(die.vx, die.vy);
-  const blend = clampNumber(dt * 9.5, 0, 0.34);
+  const blend = clampNumber(dt * 12.5, 0, 0.42);
   die.vx += (targetVx - die.vx) * blend;
   die.vy += (targetVy - die.vy) * blend;
-  die.x += targetVx * dt * 0.45;
-  die.y += targetVy * dt * 0.45;
+  die.x += targetVx * dt * 0.72;
+  die.y += targetVy * dt * 0.72;
 
   const angularTravel = spin * dt;
-  const skidding = previousSpeed < travelSpeed * 0.35 ? 1.9 : 1;
+  const skidding = previousSpeed < travelSpeed * 0.55 ? 2.6 : 1.1;
   const spinLoss = Math.pow(diceSpinTurnLoss, (angularTravel * skidding) / (Math.PI * 2));
   die.angularVelocity.x *= spinLoss;
-  die.angularVelocity.y *= spinLoss;
-  die.rollEnergy = Math.max(0, die.rollEnergy - angularTravel * 0.13 * skidding * die.rollEnergyLoss);
+  die.angularVelocity.y *= spinLoss * Math.pow(diceLongAxisSpinDamping, dt);
+  die.rollEnergy = Math.max(0, die.rollEnergy - angularTravel * 0.18 * skidding * die.rollEnergyLoss);
+}
+
+function dampenGroundPivotSpin(die, dt) {
+  if (die.dragging) {
+    return;
+  }
+
+  const anchor = die.supportAnchor ?? getSupportAnchor(die);
+  const supportNormal = anchor.normal.clone().applyQuaternion(die.group.quaternion).normalize();
+  const pivotSpin = die.angularVelocity.dot(supportNormal);
+  if (Math.abs(pivotSpin) < 0.001) {
+    return;
+  }
+
+  const keptSpin = pivotSpin * Math.pow(diceSupportPivotSpinDamping, dt);
+  die.angularVelocity.addScaledVector(supportNormal, keptSpin - pivotSpin);
 }
 
 function getDieMotion(die) {
