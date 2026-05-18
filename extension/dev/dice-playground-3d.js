@@ -84,14 +84,16 @@ const resultLabelBaseOffset = 0.055;
 const resultLabelRevealLift = 0.055;
 const resultLabelCanvasWidth = 384;
 const resultLabelCanvasHeight = 256;
-const ankhIconImage = createAnkhIconImage();
+const ankhIconImage = createAssetImage("/extension/public/assets/ankh.png");
+const skullIconImage = createAssetImage("/extension/public/assets/skull.png");
+const fangedAnkhIconImage = createAssetImage("/extension/public/assets/ankh-fangs.png");
 let dragState;
 
 document.getElementById("rollButton").addEventListener("click", () => playDiceAnimation(createRandomDice()));
 document.getElementById("criticalButton").addEventListener("click", () =>
   playDiceAnimation([
     { kind: "regular", value: 10, sides: 10 },
-    { kind: "regular", value: 10, sides: 10 },
+    { kind: "hunger", value: 10, sides: 10 },
     { kind: "hunger", value: 8, sides: 10 },
     { kind: "regular", value: 6, sides: 10 }
   ])
@@ -411,10 +413,10 @@ function createFaceLabel({ value, kind, color, glow, anchor }) {
   context.strokeStyle = "rgba(0, 0, 0, 0.72)";
   context.lineWidth = 8;
   context.fillStyle = color;
-  if (kind === "regular") {
-    drawRegularDieResult(context, value, color, glow);
+  if (kind === "hunger") {
+    drawHungerDieResult(context, value, color, glow);
   } else {
-    drawNumericDieResult(context, value, color);
+    drawRegularDieResult(context, value, color, glow);
   }
 
   const texture = new THREE.CanvasTexture(canvas);
@@ -453,10 +455,10 @@ function createFaceLabelGeometry(anchor) {
   return new THREE.PlaneGeometry(width, height);
 }
 
-function createAnkhIconImage() {
+function createAssetImage(path) {
   const image = new Image();
   image.decoding = "async";
-  image.src = "/extension/public/assets/ankh.png";
+  image.src = path;
   return image;
 }
 
@@ -468,39 +470,66 @@ function drawRegularDieResult(context, value, color, glow) {
   drawAnkhResult(context, color, glow, value === 10);
 }
 
-function drawNumericDieResult(context, value, color) {
-  context.font = value === 10 ? "900 148px Georgia, serif" : "900 168px Georgia, serif";
-  context.strokeText(String(value), resultLabelCanvasWidth / 2, resultLabelCanvasHeight / 2);
-  context.fillStyle = color;
-  context.fillText(String(value), resultLabelCanvasWidth / 2, resultLabelCanvasHeight / 2);
+function drawHungerDieResult(context, value, color, glow) {
+  if (value === 1) {
+    drawIconResult(context, skullIconImage, color, glow, {
+      maxWidth: 220,
+      maxHeight: 220,
+      fallback: () => drawSkullGlyphFallback(context, color)
+    });
+    return;
+  }
+
+  if (value >= 2 && value <= 5) {
+    return;
+  }
+
+  if (value >= 6 && value <= 9) {
+    drawAnkhResult(context, color, glow, false);
+    return;
+  }
+
+  if (value === 10) {
+    drawIconResult(context, fangedAnkhIconImage, color, glow, {
+      maxWidth: 238,
+      maxHeight: 238,
+      fallback: () => drawAnkhGlyphFallback(context, color)
+    });
+  }
 }
 
 function drawAnkhResult(context, color, glow, critical) {
-  if (ankhIconImage.complete && ankhIconImage.naturalWidth > 0) {
-    drawAnkhMaskResult(context, color, glow);
-  } else {
-    drawAnkhGlyphFallback(context, color);
-  }
+  drawIconResult(context, ankhIconImage, color, glow, {
+    maxWidth: 238,
+    maxHeight: 230,
+    fallback: () => drawAnkhGlyphFallback(context, color)
+  });
 
   if (critical) {
     drawCriticalAnkhStars(context, color, glow);
   }
 }
 
-function drawAnkhMaskResult(context, color, glow) {
-  const height = 230;
-  const width = height * (ankhIconImage.naturalWidth / Math.max(1, ankhIconImage.naturalHeight));
+function drawIconResult(context, image, color, glow, options) {
+  if (!image.complete || image.naturalWidth <= 0 || image.naturalHeight <= 0) {
+    options.fallback();
+    return;
+  }
+
+  const scale = Math.min(options.maxWidth / image.naturalWidth, options.maxHeight / image.naturalHeight);
+  const width = image.naturalWidth * scale;
+  const height = image.naturalHeight * scale;
   const x = (context.canvas.width - width) / 2;
   const y = (context.canvas.height - height) / 2;
 
   for (const [dx, dy] of [[-2, 0], [2, 0], [0, -2], [0, 2]]) {
-    drawTintedImage(context, ankhIconImage, x + dx, y + dy, width, height, "rgba(0, 0, 0, 0.72)");
+    drawTintedImage(context, image, x + dx, y + dy, width, height, "rgba(0, 0, 0, 0.72)");
   }
 
   context.save();
   context.shadowColor = glow;
   context.shadowBlur = 10;
-  drawTintedImage(context, ankhIconImage, x, y, width, height, color);
+  drawTintedImage(context, image, x, y, width, height, color);
   context.restore();
 }
 
@@ -514,6 +543,14 @@ function drawTintedImage(context, image, x, y, width, height, color) {
   }
 
   bufferContext.drawImage(image, x, y, width, height);
+  const imageData = bufferContext.getImageData(0, 0, buffer.width, buffer.height);
+  const pixels = imageData.data;
+  for (let index = 0; index < pixels.length; index += 4) {
+    const alpha = pixels[index + 3] / 255;
+    const darkness = 1 - (pixels[index] + pixels[index + 1] + pixels[index + 2]) / (255 * 3);
+    pixels[index + 3] = Math.round(255 * alpha * clampNumber(darkness * 1.35, 0, 1));
+  }
+  bufferContext.putImageData(imageData, 0, 0);
   bufferContext.globalCompositeOperation = "source-in";
   bufferContext.fillStyle = color;
   bufferContext.fillRect(0, 0, buffer.width, buffer.height);
@@ -525,6 +562,13 @@ function drawAnkhGlyphFallback(context, color) {
   context.strokeText("\u2625", resultLabelCanvasWidth / 2, resultLabelCanvasHeight / 2 + 8);
   context.fillStyle = color;
   context.fillText("\u2625", resultLabelCanvasWidth / 2, resultLabelCanvasHeight / 2 + 8);
+}
+
+function drawSkullGlyphFallback(context, color) {
+  context.font = "900 178px Georgia, serif";
+  context.strokeText("\u2620", resultLabelCanvasWidth / 2, resultLabelCanvasHeight / 2 + 3);
+  context.fillStyle = color;
+  context.fillText("\u2620", resultLabelCanvasWidth / 2, resultLabelCanvasHeight / 2 + 3);
 }
 
 function drawCriticalAnkhStars(context, color, glow) {

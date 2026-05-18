@@ -2,7 +2,7 @@
   "manifest_version": 3,
   "name": "Demiplane Dice Room",
   "description": "Compartilha rolagens do Demiplane com jogadores no mesmo canal de mesa.",
-  "version": "0.1.46",
+  "version": "0.1.47",
   "action": {
     "default_title": "Demiplane Dice Room",
     "default_popup": "popup.html"
@@ -29,7 +29,7 @@
   },
   "web_accessible_resources": [
     {
-      "resources": ["assets/ankh.png"],
+      "resources": ["assets/ankh.png", "assets/skull.png", "assets/ankh-fangs.png"],
       "matches": ["<all_urls>"]
     }
   ]
