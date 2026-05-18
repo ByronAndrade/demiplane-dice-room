@@ -52,7 +52,7 @@ const panelUiStorageKey = "diceRoomPanelUi";
 const defaultDiceAnimationScale = 0.75;
 const minDiceAnimationScale = 0.45;
 const maxDiceAnimationScale = 1.15;
-const extensionUiVersion = "0.1.52";
+const extensionUiVersion = "0.1.53";
 const activeToastByActor = new Map<string, HTMLElement>();
 let collapsed = true;
 let settingsOpen = false;
@@ -722,7 +722,7 @@ function parseDice(element: Element, lines: string[], text?: string, successes?:
   const textDetailDice =
     typeof text === "string" && typeof successes === "number" ? parseDetailDiceFromText(text, successes) : [];
 
-  if (textDetailDice.length > detailDice.length) {
+  if (textDetailDice.length > detailDice.length || shouldPreferTextDetailDice(detailDice, textDetailDice)) {
     return textDetailDice;
   }
 
@@ -765,6 +765,21 @@ function parseDetailDiceFromText(text: string, successes: number): DiceValue[] {
   }
 
   return dice;
+}
+
+function shouldPreferTextDetailDice(detailDice: DiceValue[], textDetailDice: DiceValue[]): boolean {
+  if (detailDice.length === 0 || textDetailDice.length === 0 || detailDice.length !== textDetailDice.length) {
+    return false;
+  }
+
+  return (
+    countDiceByFace(textDetailDice, "hunger", "critical") > countDiceByFace(detailDice, "hunger", "critical") ||
+    countDiceByFace(textDetailDice, "regular", "critical") > countDiceByFace(detailDice, "regular", "critical")
+  );
+}
+
+function countDiceByFace(dice: DiceValue[], kind: DiceValue["kind"], face: DiceFace): number {
+  return dice.filter((die) => die.kind === kind && die.face === face).length;
 }
 
 function inferBucketsFromDetailCounts(
@@ -813,7 +828,7 @@ function inferBucketsFromDetailCounts(
         { kind: "regular", face: "blank" },
         { kind: "hunger", face: "blank" },
         { kind: "regular", face: "success" },
-        { kind: "hunger", face: "success" }
+        { kind: "hunger", face: "critical" }
       ];
     }
 
