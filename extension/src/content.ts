@@ -52,7 +52,7 @@ const panelUiStorageKey = "diceRoomPanelUi";
 const defaultDiceAnimationScale = 0.75;
 const minDiceAnimationScale = 0.45;
 const maxDiceAnimationScale = 1.15;
-const extensionUiVersion = "0.1.54";
+const extensionUiVersion = "0.1.55";
 const activeToastByActor = new Map<string, HTMLElement>();
 let collapsed = true;
 let settingsOpen = false;
@@ -928,7 +928,12 @@ function parseDetailDiceFromDom(element: Element, successes?: number): DiceValue
       continue;
     }
 
-    const face = inferDieFaceFromElement(marker) ?? inferBlankDetailDieFace(marker, countText, detailLabelRects);
+    const red = hasStrongRedMarkerColor(marker);
+    const filledRed = hasDominantRedFillColor(marker);
+    const face =
+      inferDieFaceFromElement(marker) ??
+      inferGraphicDetailDieFace(marker, filledRed) ??
+      inferBlankDetailDieFace(marker, countText, detailLabelRects);
     const markerIsNearDetails = isNearDetailsRow(marker, countText, detailLabelRects);
     if (!face && !markerIsNearDetails) {
       continue;
@@ -939,8 +944,8 @@ function parseDetailDiceFromDom(element: Element, successes?: number): DiceValue
       marker,
       countText,
       face,
-      red: hasStrongRedMarkerColor(marker),
-      filledRed: hasDominantRedFillColor(marker),
+      red,
+      filledRed,
       rect: marker.getBoundingClientRect()
     });
   }
@@ -1164,6 +1169,14 @@ function inferBlankDetailDieFace(
   return "blank";
 }
 
+function inferGraphicDetailDieFace(marker: Element, filledRed: boolean): DiceFace | undefined {
+  if (filledRed && hasLargeLightInteriorShape(marker)) {
+    return "skull";
+  }
+
+  return undefined;
+}
+
 function isNearDetailsRow(marker: Element, countText: VisibleNumberText, detailLabelRects: DOMRect[]): boolean {
   const markerRect = marker.getBoundingClientRect();
   const markerCenterY = markerRect.top + markerRect.height / 2;
@@ -1230,6 +1243,46 @@ function hasDominantRedFillColor(element: Element): boolean {
     const rect = current.getBoundingClientRect();
     const area = rect.width * rect.height;
     if (area >= markerArea * 0.4) {
+      return true;
+    }
+  }
+
+  return false;
+}
+
+function hasLargeLightInteriorShape(element: Element): boolean {
+  const markerRect = element.getBoundingClientRect();
+  const markerArea = Math.max(1, markerRect.width * markerRect.height);
+  const elements = Array.from(element.querySelectorAll("*"));
+
+  for (const current of elements) {
+    if (!(current instanceof Element)) {
+      continue;
+    }
+
+    const style = window.getComputedStyle(current);
+    const hasLightInk = [style.color, style.backgroundColor, style.fill, style.stroke].some((color) => {
+      const rgb = parseRgbColor(color);
+      if (!rgb) {
+        return false;
+      }
+
+      const [red, green, blue] = rgb;
+      return red > 180 && green > 180 && blue > 180;
+    });
+
+    if (!hasLightInk) {
+      continue;
+    }
+
+    const rect = current.getBoundingClientRect();
+    const insideMarker =
+      rect.left >= markerRect.left - 1 &&
+      rect.right <= markerRect.right + 1 &&
+      rect.top >= markerRect.top - 1 &&
+      rect.bottom <= markerRect.bottom + 1;
+    const area = rect.width * rect.height;
+    if (insideMarker && area >= markerArea * 0.06) {
       return true;
     }
   }
