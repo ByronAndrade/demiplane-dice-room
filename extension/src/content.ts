@@ -741,17 +741,18 @@ function parseDetailDiceFromDom(element: Element): DiceValue[] {
     return [];
   }
 
+  const detailLabelRects = collectVisibleTextRects(element, /\b(details|detalhes)\b/i);
   const dice: DiceValue[] = [];
   const usedCounts = new Set<VisibleNumberText>();
 
   for (const marker of markers) {
-    const face = inferDieFaceFromElement(marker);
-    if (!face) {
+    const countText = findNearestDieCount(marker, countTexts, usedCounts);
+    if (!countText) {
       continue;
     }
 
-    const countText = findNearestDieCount(marker, countTexts, usedCounts);
-    if (!countText) {
+    const face = inferDieFaceFromElement(marker) ?? inferBlankDetailDieFace(marker, countText, detailLabelRects);
+    if (!face) {
       continue;
     }
 
@@ -769,6 +770,30 @@ function parseDetailDiceFromDom(element: Element): DiceValue[] {
   }
 
   return dice;
+}
+
+function collectVisibleTextRects(root: Element, pattern: RegExp): DOMRect[] {
+  const rects: DOMRect[] = [];
+  const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+
+  while (walker.nextNode()) {
+    const node = walker.currentNode;
+    if (!(node instanceof Text) || !node.parentElement || !isVisibleElement(node.parentElement)) {
+      continue;
+    }
+
+    const text = normalizeText(node.textContent ?? "");
+    if (!pattern.test(text)) {
+      continue;
+    }
+
+    const rect = getTextRangeRect(node, 0, node.length);
+    if (rect && rect.width > 0 && rect.height > 0) {
+      rects.push(rect);
+    }
+  }
+
+  return rects;
 }
 
 function collectVisibleNumberTexts(root: Element): VisibleNumberText[] {
@@ -854,6 +879,60 @@ function findNearestDieCount(
   }
 
   return best;
+}
+
+function inferBlankDetailDieFace(
+  marker: Element,
+  countText: VisibleNumberText,
+  detailLabelRects: DOMRect[]
+): DiceFace | undefined {
+  if (detailLabelRects.length === 0 || !isNearDetailsRow(marker, countText, detailLabelRects)) {
+    return undefined;
+  }
+
+  if (hasStrongRedMarkerColor(marker)) {
+    return undefined;
+  }
+
+  return "blank";
+}
+
+function isNearDetailsRow(marker: Element, countText: VisibleNumberText, detailLabelRects: DOMRect[]): boolean {
+  const markerRect = marker.getBoundingClientRect();
+  const markerCenterY = markerRect.top + markerRect.height / 2;
+
+  return detailLabelRects.some((labelRect) => {
+    const belowOrAligned = markerCenterY >= labelRect.top - 4;
+    const closeVertically = markerCenterY <= labelRect.bottom + 58;
+    const countAfterMarker = countText.rect.left >= markerRect.right - 6;
+    const markerAfterLabel = markerRect.left >= labelRect.left - 8;
+    return belowOrAligned && closeVertically && countAfterMarker && markerAfterLabel;
+  });
+}
+
+function hasStrongRedMarkerColor(element: Element): boolean {
+  const elements = [element, ...Array.from(element.querySelectorAll("*"))];
+
+  for (const current of elements) {
+    if (!(current instanceof Element)) {
+      continue;
+    }
+
+    const style = window.getComputedStyle(current);
+    for (const color of [style.color, style.backgroundColor, style.borderColor, style.fill, style.stroke]) {
+      const rgb = parseRgbColor(color);
+      if (!rgb) {
+        continue;
+      }
+
+      const [red, green, blue] = rgb;
+      if (red > 120 && green < 95 && blue < 105 && red > green * 1.35 && red > blue * 1.35) {
+        return true;
+      }
+    }
+  }
+
+  return false;
 }
 
 function parseDiceFromText(lines: string[]): DiceValue[] {
