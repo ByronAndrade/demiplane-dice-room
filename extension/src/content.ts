@@ -52,6 +52,7 @@ const panelUiStorageKey = "diceRoomPanelUi";
 const defaultDiceAnimationScale = 0.75;
 const minDiceAnimationScale = 0.45;
 const maxDiceAnimationScale = 1.15;
+const extensionUiVersion = "0.1.51";
 const activeToastByActor = new Map<string, HTMLElement>();
 let collapsed = true;
 let settingsOpen = false;
@@ -748,39 +749,99 @@ function parseDetailDiceFromText(text: string, successes: number): DiceValue[] {
   const counts = (detailsText.match(/\b\d{1,2}\b/g) ?? [])
     .map((value) => Number.parseInt(value, 10))
     .filter((value) => Number.isFinite(value) && value > 0 && value <= 80)
-    .slice(0, 4);
+    .slice(0, 6);
 
   if (counts.length === 0) {
     return [];
   }
 
-  const faces = inferFacesFromDetailCounts(counts, successes);
+  const buckets = inferBucketsFromDetailCounts(counts, successes);
   const dice: DiceValue[] = [];
-  for (let index = 0; index < counts.length && index < faces.length; index += 1) {
-    const face = faces[index];
-    const kind: DiceValue["kind"] = face === "skull" ? "hunger" : "regular";
+  for (let index = 0; index < counts.length && index < buckets.length; index += 1) {
+    const bucket = buckets[index];
     for (let count = 0; count < counts[index] && dice.length < 80; count += 1) {
-      dice.push(createDiceValue(kind, face));
+      dice.push(createDiceValue(bucket.kind, bucket.face));
     }
   }
 
   return dice;
 }
 
-function inferFacesFromDetailCounts(counts: number[], successes: number): DiceFace[] {
+function inferBucketsFromDetailCounts(
+  counts: number[],
+  successes: number
+): Array<{ kind: DiceValue["kind"]; face: DiceFace }> {
   if (counts.length === 1) {
-    return successes > 0 ? ["success"] : ["blank"];
+    return successes > 0 ? [{ kind: "regular", face: "success" }] : [{ kind: "regular", face: "blank" }];
   }
 
   if (counts.length === 2) {
-    return ["blank", "success"];
+    if (successes <= 0) {
+      return [
+        { kind: "regular", face: "blank" },
+        { kind: "hunger", face: "blank" }
+      ];
+    }
+
+    return [
+      { kind: "regular", face: "blank" },
+      { kind: "regular", face: "success" }
+    ];
   }
 
   if (counts.length === 3) {
-    return ["blank", "success", "critical"];
+    const thirdCount = counts[2];
+    if (successes === thirdCount) {
+      return [
+        { kind: "regular", face: "blank" },
+        { kind: "hunger", face: "blank" },
+        { kind: "regular", face: "success" }
+      ];
+    }
+
+    return [
+      { kind: "regular", face: "blank" },
+      { kind: "regular", face: "success" },
+      { kind: "regular", face: "critical" }
+    ];
   }
 
-  return ["blank", "success", "critical", "skull"];
+  if (counts.length === 4) {
+    const [, secondCount, thirdCount, fourthCount] = counts;
+    if (successes === thirdCount + fourthCount) {
+      return [
+        { kind: "regular", face: "blank" },
+        { kind: "hunger", face: "blank" },
+        { kind: "regular", face: "success" },
+        { kind: "hunger", face: "success" }
+      ];
+    }
+
+    if (successes === secondCount + thirdCount + fourthCount) {
+      return [
+        { kind: "regular", face: "blank" },
+        { kind: "regular", face: "success" },
+        { kind: "hunger", face: "success" },
+        { kind: "hunger", face: "critical" }
+      ];
+    }
+
+    return [
+      { kind: "regular", face: "blank" },
+      { kind: "regular", face: "success" },
+      { kind: "regular", face: "critical" },
+      { kind: "hunger", face: "skull" }
+    ];
+  }
+
+  return [
+    { kind: "regular", face: "blank" },
+    { kind: "hunger", face: "blank" },
+    { kind: "regular", face: "success" },
+    { kind: "hunger", face: "success" },
+    { kind: "hunger", face: "critical" },
+    { kind: "hunger", face: "skull" }
+  ];
 }
 
 type VisibleNumberText = {
@@ -1502,6 +1563,14 @@ function createPanel(): {
         position: relative;
       }
 
+      .version-chip {
+        color: #8e9aaa;
+        font-size: 10px;
+        font-weight: 800;
+        letter-spacing: 0;
+        white-space: nowrap;
+      }
+
       .status {
         border: 1px solid #343d4a;
         border-radius: 999px;
@@ -1836,6 +1905,7 @@ function createPanel(): {
         </div>
         <div class="header-actions">
           <button data-status class="status" type="button" title="Abrir diagnostico">Desconectado</button>
+          <span class="version-chip" title="Versao da extensao">v${extensionUiVersion}</span>
           <button data-settings-button class="icon-button" type="button" aria-label="Abrir configuracoes" data-tooltip="Abrir configuracoes">⚙</button>
           <button data-toggle class="toggle" type="button" aria-label="Abrir historico" data-tooltip="Abrir historico">^</button>
         </div>
