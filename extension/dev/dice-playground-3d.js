@@ -82,6 +82,8 @@ const raycaster = new THREE.Raycaster();
 const pointer = new THREE.Vector2();
 const resultLabelBaseOffset = 0.055;
 const resultLabelRevealLift = 0.055;
+const resultLabelCanvasWidth = 384;
+const resultLabelCanvasHeight = 256;
 const ankhIconImage = createAnkhIconImage();
 let dragState;
 
@@ -211,11 +213,19 @@ function createD10Geometry() {
 
     const vertical = getFaceMiddleToPoleAxis(face, center, normal);
     const horizontal = new THREE.Vector3().crossVectors(vertical, normal).normalize();
+    const labelCorners = face.map((point) => {
+      const delta = point.clone().sub(center);
+      return {
+        x: delta.dot(horizontal),
+        y: delta.dot(vertical)
+      };
+    });
     anchors.push({
       center,
       normal,
       horizontal,
-      vertical
+      vertical,
+      labelCorners
     });
   }
 
@@ -387,10 +397,10 @@ function applyDieAngularVelocity(die, dt) {
   die.group.quaternion.premultiply(rotation).normalize();
 }
 
-function createFaceLabel({ value, kind, color, glow, scale = 1 }) {
+function createFaceLabel({ value, kind, color, glow, anchor }) {
   const canvas = document.createElement("canvas");
-  canvas.width = 256;
-  canvas.height = 180;
+  canvas.width = resultLabelCanvasWidth;
+  canvas.height = resultLabelCanvasHeight;
   const context = canvas.getContext("2d");
   context.clearRect(0, 0, canvas.width, canvas.height);
   context.textAlign = "center";
@@ -412,7 +422,7 @@ function createFaceLabel({ value, kind, color, glow, scale = 1 }) {
   texture.anisotropy = 8;
 
   const label = new THREE.Mesh(
-    new THREE.PlaneGeometry(0.98 * scale, 0.66 * scale),
+    createFaceLabelGeometry(anchor),
     new THREE.MeshBasicMaterial({
       map: texture,
       transparent: true,
@@ -424,6 +434,31 @@ function createFaceLabel({ value, kind, color, glow, scale = 1 }) {
   );
   label.renderOrder = 8;
   return label;
+}
+
+function createFaceLabelGeometry(anchor) {
+  const inset = 0.985;
+  const xs = anchor.labelCorners.map((corner) => corner.x);
+  const ys = anchor.labelCorners.map((corner) => corner.y);
+  const minX = Math.min(...xs);
+  const maxX = Math.max(...xs);
+  const minY = Math.min(...ys);
+  const maxY = Math.max(...ys);
+  const width = Math.max(0.001, maxX - minX);
+  const height = Math.max(0.001, maxY - minY);
+  const positions = [];
+  const uvs = [];
+
+  for (const corner of anchor.labelCorners) {
+    positions.push(corner.x * inset, corner.y * inset, 0);
+    uvs.push((corner.x - minX) / width, (corner.y - minY) / height);
+  }
+
+  const geometry = new THREE.BufferGeometry();
+  geometry.setAttribute("position", new THREE.Float32BufferAttribute(positions, 3));
+  geometry.setAttribute("uv", new THREE.Float32BufferAttribute(uvs, 2));
+  geometry.setIndex([0, 1, 2, 0, 2, 3]);
+  return geometry;
 }
 
 function createAnkhIconImage() {
@@ -442,10 +477,10 @@ function drawRegularDieResult(context, value, color, glow) {
 }
 
 function drawNumericDieResult(context, value, color) {
-  context.font = value === 10 ? "900 104px Georgia, serif" : "900 118px Georgia, serif";
-  context.strokeText(String(value), 128, 90);
+  context.font = value === 10 ? "900 148px Georgia, serif" : "900 168px Georgia, serif";
+  context.strokeText(String(value), resultLabelCanvasWidth / 2, resultLabelCanvasHeight / 2);
   context.fillStyle = color;
-  context.fillText(String(value), 128, 90);
+  context.fillText(String(value), resultLabelCanvasWidth / 2, resultLabelCanvasHeight / 2);
 }
 
 function drawAnkhResult(context, color, glow, critical) {
@@ -461,10 +496,10 @@ function drawAnkhResult(context, color, glow, critical) {
 }
 
 function drawAnkhMaskResult(context, color, glow) {
-  const height = 208;
+  const height = 230;
   const width = height * (ankhIconImage.naturalWidth / Math.max(1, ankhIconImage.naturalHeight));
   const x = (context.canvas.width - width) / 2;
-  const y = -14;
+  const y = (context.canvas.height - height) / 2;
 
   for (const [dx, dy] of [[-2, 0], [2, 0], [0, -2], [0, 2]]) {
     drawTintedImage(context, ankhIconImage, x + dx, y + dy, width, height, "rgba(0, 0, 0, 0.72)");
@@ -494,23 +529,23 @@ function drawTintedImage(context, image, x, y, width, height, color) {
 }
 
 function drawAnkhGlyphFallback(context, color) {
-  context.font = "900 208px Georgia, serif";
-  context.strokeText("\u2625", 128, 96);
+  context.font = "900 230px Georgia, serif";
+  context.strokeText("\u2625", resultLabelCanvasWidth / 2, resultLabelCanvasHeight / 2 + 8);
   context.fillStyle = color;
-  context.fillText("\u2625", 128, 96);
+  context.fillText("\u2625", resultLabelCanvasWidth / 2, resultLabelCanvasHeight / 2 + 8);
 }
 
 function drawCriticalAnkhStars(context, color, glow) {
   context.save();
   context.shadowColor = glow;
   context.shadowBlur = 8;
-  context.font = "900 98px Georgia, serif";
+  context.font = "900 152px Georgia, serif";
   context.strokeStyle = "rgba(0, 0, 0, 0.72)";
-  context.lineWidth = 7;
+  context.lineWidth = 9;
   context.fillStyle = color;
-  for (const x of [68, 188]) {
-    context.strokeText("*", x, 118);
-    context.fillText("*", x, 118);
+  for (const x of [102, 282]) {
+    context.strokeText("*", x, 168);
+    context.fillText("*", x, 168);
   }
   context.restore();
 }
@@ -721,7 +756,8 @@ function revealDieResult(die, now) {
     value: die.value,
     kind: die.kind,
     color: palette.ink,
-    glow: palette.inkGlow
+    glow: palette.inkGlow,
+    anchor
   });
 
   label.position.copy(anchor.center).addScaledVector(anchor.normal, resultLabelBaseOffset);

@@ -2302,6 +2302,7 @@ type FaceAnchor = {
   normal: THREE.Vector3;
   horizontal: THREE.Vector3;
   vertical: THREE.Vector3;
+  labelCorners: Array<{ x: number; y: number }>;
 };
 
 type AnimatedDie = {
@@ -2348,6 +2349,8 @@ type DiceDragState = {
 
 const resultLabelBaseOffset = 0.055;
 const resultLabelRevealLift = 0.055;
+const resultLabelCanvasWidth = 384;
+const resultLabelCanvasHeight = 256;
 const ankhIconImage = createAnkhIconImage();
 
 function createDiceAnimationLayer(): DiceAnimationLayer {
@@ -2768,11 +2771,19 @@ function createD10Geometry(): D10Model {
 
     const vertical = getFaceMiddleToPoleAxis(face, center, normal);
     const horizontal = new THREE.Vector3().crossVectors(vertical, normal).normalize();
+    const labelCorners = face.map((point) => {
+      const delta = point.clone().sub(center);
+      return {
+        x: delta.dot(horizontal),
+        y: delta.dot(vertical)
+      };
+    });
     faceAnchors.push({
       center,
       normal,
       horizontal,
-      vertical
+      vertical,
+      labelCorners
     });
   }
 
@@ -2827,16 +2838,18 @@ function createFaceLabel({
   value,
   kind,
   color,
-  glow
+  glow,
+  anchor
 }: {
   value: number;
   kind: DiceValue["kind"];
   color: string;
   glow: string;
+  anchor: FaceAnchor;
 }): THREE.Mesh {
   const canvas = document.createElement("canvas");
-  canvas.width = 256;
-  canvas.height = 180;
+  canvas.width = resultLabelCanvasWidth;
+  canvas.height = resultLabelCanvasHeight;
   const context = canvas.getContext("2d");
   if (!context) {
     throw new Error("Nao foi possivel criar textura dos dados.");
@@ -2862,7 +2875,7 @@ function createFaceLabel({
   texture.anisotropy = 8;
 
   return new THREE.Mesh(
-    new THREE.PlaneGeometry(0.98, 0.66),
+    createFaceLabelGeometry(anchor),
     new THREE.MeshBasicMaterial({
       map: texture,
       transparent: true,
@@ -2872,6 +2885,31 @@ function createFaceLabel({
       side: THREE.DoubleSide
     })
   );
+}
+
+function createFaceLabelGeometry(anchor: FaceAnchor): THREE.BufferGeometry {
+  const inset = 0.985;
+  const xs = anchor.labelCorners.map((corner) => corner.x);
+  const ys = anchor.labelCorners.map((corner) => corner.y);
+  const minX = Math.min(...xs);
+  const maxX = Math.max(...xs);
+  const minY = Math.min(...ys);
+  const maxY = Math.max(...ys);
+  const width = Math.max(0.001, maxX - minX);
+  const height = Math.max(0.001, maxY - minY);
+  const positions: number[] = [];
+  const uvs: number[] = [];
+
+  for (const corner of anchor.labelCorners) {
+    positions.push(corner.x * inset, corner.y * inset, 0);
+    uvs.push((corner.x - minX) / width, (corner.y - minY) / height);
+  }
+
+  const geometry = new THREE.BufferGeometry();
+  geometry.setAttribute("position", new THREE.Float32BufferAttribute(positions, 3));
+  geometry.setAttribute("uv", new THREE.Float32BufferAttribute(uvs, 2));
+  geometry.setIndex([0, 1, 2, 0, 2, 3]);
+  return geometry;
 }
 
 function createAnkhIconImage(): HTMLImageElement {
@@ -2895,11 +2933,11 @@ function drawRegularDieResult(
 }
 
 function drawNumericDieResult(context: CanvasRenderingContext2D, value: number, color: string): void {
-  context.font = value === 10 ? "900 104px Georgia, serif" : "900 118px Georgia, serif";
+  context.font = value === 10 ? "900 148px Georgia, serif" : "900 168px Georgia, serif";
   const text = String(value);
-  context.strokeText(text, 128, 90);
+  context.strokeText(text, resultLabelCanvasWidth / 2, resultLabelCanvasHeight / 2);
   context.fillStyle = color;
-  context.fillText(text, 128, 90);
+  context.fillText(text, resultLabelCanvasWidth / 2, resultLabelCanvasHeight / 2);
 }
 
 function drawAnkhResult(
@@ -2920,10 +2958,10 @@ function drawAnkhResult(
 }
 
 function drawAnkhMaskResult(context: CanvasRenderingContext2D, color: string, glow: string): void {
-  const height = 208;
+  const height = 230;
   const width = height * (ankhIconImage.naturalWidth / Math.max(1, ankhIconImage.naturalHeight));
   const x = (context.canvas.width - width) / 2;
-  const y = -14;
+  const y = (context.canvas.height - height) / 2;
 
   for (const [dx, dy] of [[-2, 0], [2, 0], [0, -2], [0, 2]]) {
     drawTintedImage(context, ankhIconImage, x + dx, y + dy, width, height, "rgba(0, 0, 0, 0.72)");
@@ -2961,10 +2999,10 @@ function drawTintedImage(
 }
 
 function drawAnkhGlyphFallback(context: CanvasRenderingContext2D, color: string): void {
-  context.font = "900 208px Georgia, serif";
-  context.strokeText("\u2625", 128, 96);
+  context.font = "900 230px Georgia, serif";
+  context.strokeText("\u2625", resultLabelCanvasWidth / 2, resultLabelCanvasHeight / 2 + 8);
   context.fillStyle = color;
-  context.fillText("\u2625", 128, 96);
+  context.fillText("\u2625", resultLabelCanvasWidth / 2, resultLabelCanvasHeight / 2 + 8);
 }
 
 function drawCriticalAnkhStars(
@@ -2975,13 +3013,13 @@ function drawCriticalAnkhStars(
   context.save();
   context.shadowColor = glow;
   context.shadowBlur = 8;
-  context.font = "900 98px Georgia, serif";
+  context.font = "900 152px Georgia, serif";
   context.strokeStyle = "rgba(0, 0, 0, 0.72)";
-  context.lineWidth = 7;
+  context.lineWidth = 9;
   context.fillStyle = color;
-  for (const x of [68, 188]) {
-    context.strokeText("*", x, 118);
-    context.fillText("*", x, 118);
+  for (const x of [102, 282]) {
+    context.strokeText("*", x, 168);
+    context.fillText("*", x, 168);
   }
   context.restore();
 }
@@ -2997,7 +3035,8 @@ function revealDieResult(die: AnimatedDie, layer: DiceAnimationLayer, now: numbe
     value: die.value,
     kind: die.kind,
     color: palette.ink,
-    glow: palette.inkGlow
+    glow: palette.inkGlow,
+    anchor
   });
 
   label.renderOrder = 8;
