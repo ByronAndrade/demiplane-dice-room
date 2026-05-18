@@ -461,10 +461,10 @@ function drawAnkhResult(context, color, glow, critical) {
 }
 
 function drawAnkhMaskResult(context, color, glow) {
-  const height = 148;
+  const height = 160;
   const width = height * (ankhIconImage.naturalWidth / Math.max(1, ankhIconImage.naturalHeight));
   const x = (context.canvas.width - width) / 2;
-  const y = 9;
+  const y = 2;
 
   for (const [dx, dy] of [[-2, 0], [2, 0], [0, -2], [0, 2]]) {
     drawTintedImage(context, ankhIconImage, x + dx, y + dy, width, height, "rgba(0, 0, 0, 0.72)");
@@ -494,7 +494,7 @@ function drawTintedImage(context, image, x, y, width, height, color) {
 }
 
 function drawAnkhGlyphFallback(context, color) {
-  context.font = "900 148px Georgia, serif";
+  context.font = "900 160px Georgia, serif";
   context.strokeText("\u2625", 128, 90);
   context.fillStyle = color;
   context.fillText("\u2625", 128, 90);
@@ -509,8 +509,8 @@ function drawCriticalAnkhStars(context, color, glow) {
   context.lineWidth = 7;
   context.fillStyle = color;
   for (const x of [78, 178]) {
-    context.strokeText("*", x, 132);
-    context.fillText("*", x, 132);
+    context.strokeText("*", x, 122);
+    context.fillText("*", x, 122);
   }
   context.restore();
 }
