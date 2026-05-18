@@ -52,7 +52,7 @@ const panelUiStorageKey = "diceRoomPanelUi";
 const defaultDiceAnimationScale = 0.75;
 const minDiceAnimationScale = 0.45;
 const maxDiceAnimationScale = 1.15;
-const extensionUiVersion = "0.1.56";
+const extensionUiVersion = "0.1.57";
 const activeToastByActor = new Map<string, HTMLElement>();
 let collapsed = true;
 let settingsOpen = false;
@@ -773,13 +773,13 @@ function shouldPreferTextDetailDice(detailDice: DiceValue[], textDetailDice: Dic
   }
 
   return (
-    countDiceByFace(textDetailDice, "hunger", "critical") > countDiceByFace(detailDice, "hunger", "critical") ||
-    countDiceByFace(textDetailDice, "regular", "critical") > countDiceByFace(detailDice, "regular", "critical")
+    countDiceByFace(textDetailDice, "critical") > countDiceByFace(detailDice, "critical") ||
+    countDiceByFace(textDetailDice, "skull") > countDiceByFace(detailDice, "skull")
   );
 }
 
-function countDiceByFace(dice: DiceValue[], kind: DiceValue["kind"], face: DiceFace): number {
-  return dice.filter((die) => die.kind === kind && die.face === face).length;
+function countDiceByFace(dice: DiceValue[], face: DiceFace): number {
+  return dice.filter((die) => die.face === face).length;
 }
 
 function inferBucketsFromDetailCounts(
