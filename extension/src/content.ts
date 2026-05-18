@@ -2348,6 +2348,7 @@ type DiceDragState = {
 
 const resultLabelBaseOffset = 0.055;
 const resultLabelRevealLift = 0.055;
+const ankhIconImage = createAnkhIconImage();
 
 function createDiceAnimationLayer(): DiceAnimationLayer {
   const host = document.createElement("div");
@@ -2824,10 +2825,12 @@ function getFaceMiddleToPoleAxis(face: THREE.Vector3[], center: THREE.Vector3, n
 
 function createFaceLabel({
   value,
+  kind,
   color,
   glow
 }: {
   value: number;
+  kind: DiceValue["kind"];
   color: string;
   glow: string;
 }): THREE.Mesh {
@@ -2848,10 +2851,11 @@ function createFaceLabel({
   context.strokeStyle = "rgba(0, 0, 0, 0.72)";
   context.lineWidth = 8;
   context.fillStyle = color;
-  context.font = value === 10 ? "900 104px Georgia, serif" : "900 118px Georgia, serif";
-  const text = String(value);
-  context.strokeText(text, 128, 90);
-  context.fillText(text, 128, 90);
+  if (kind === "regular") {
+    drawRegularDieResult(context, value, color, glow);
+  } else {
+    drawNumericDieResult(context, value, color);
+  }
 
   const texture = new THREE.CanvasTexture(canvas);
   texture.colorSpace = THREE.SRGBColorSpace;
@@ -2870,6 +2874,118 @@ function createFaceLabel({
   );
 }
 
+function createAnkhIconImage(): HTMLImageElement {
+  const image = new Image();
+  image.decoding = "async";
+  image.src = chrome.runtime.getURL("assets/ankh.png");
+  return image;
+}
+
+function drawRegularDieResult(
+  context: CanvasRenderingContext2D,
+  value: number,
+  color: string,
+  glow: string
+): void {
+  if (value < 6) {
+    return;
+  }
+
+  drawAnkhResult(context, color, glow, value === 10);
+}
+
+function drawNumericDieResult(context: CanvasRenderingContext2D, value: number, color: string): void {
+  context.font = value === 10 ? "900 104px Georgia, serif" : "900 118px Georgia, serif";
+  const text = String(value);
+  context.strokeText(text, 128, 90);
+  context.fillStyle = color;
+  context.fillText(text, 128, 90);
+}
+
+function drawAnkhResult(
+  context: CanvasRenderingContext2D,
+  color: string,
+  glow: string,
+  critical: boolean
+): void {
+  if (ankhIconImage.complete && ankhIconImage.naturalWidth > 0) {
+    drawAnkhMaskResult(context, color, glow);
+  } else {
+    drawAnkhGlyphFallback(context, color);
+  }
+
+  if (critical) {
+    drawCriticalAnkhStars(context, color, glow);
+  }
+}
+
+function drawAnkhMaskResult(context: CanvasRenderingContext2D, color: string, glow: string): void {
+  const height = 132;
+  const width = height * (ankhIconImage.naturalWidth / Math.max(1, ankhIconImage.naturalHeight));
+  const x = (context.canvas.width - width) / 2;
+  const y = 18;
+
+  for (const [dx, dy] of [[-2, 0], [2, 0], [0, -2], [0, 2]]) {
+    drawTintedImage(context, ankhIconImage, x + dx, y + dy, width, height, "rgba(0, 0, 0, 0.72)");
+  }
+
+  context.save();
+  context.shadowColor = glow;
+  context.shadowBlur = 10;
+  drawTintedImage(context, ankhIconImage, x, y, width, height, color);
+  context.restore();
+}
+
+function drawTintedImage(
+  context: CanvasRenderingContext2D,
+  image: HTMLImageElement,
+  x: number,
+  y: number,
+  width: number,
+  height: number,
+  color: string
+): void {
+  const buffer = document.createElement("canvas");
+  buffer.width = context.canvas.width;
+  buffer.height = context.canvas.height;
+  const bufferContext = buffer.getContext("2d");
+  if (!bufferContext) {
+    return;
+  }
+
+  bufferContext.drawImage(image, x, y, width, height);
+  bufferContext.globalCompositeOperation = "source-in";
+  bufferContext.fillStyle = color;
+  bufferContext.fillRect(0, 0, buffer.width, buffer.height);
+  context.drawImage(buffer, 0, 0);
+}
+
+function drawAnkhGlyphFallback(context: CanvasRenderingContext2D, color: string): void {
+  context.font = "900 132px Georgia, serif";
+  context.strokeText("\u2625", 128, 90);
+  context.fillStyle = color;
+  context.fillText("\u2625", 128, 90);
+}
+
+function drawCriticalAnkhStars(
+  context: CanvasRenderingContext2D,
+  color: string,
+  glow: string
+): void {
+  context.save();
+  context.shadowColor = glow;
+  context.shadowBlur = 8;
+  context.font = "900 38px Georgia, serif";
+  context.strokeStyle = "rgba(0, 0, 0, 0.72)";
+  context.lineWidth = 5;
+  context.fillStyle = color;
+  for (const x of [83, 173]) {
+    context.strokeText("*", x, 141);
+    context.fillText("*", x, 141);
+  }
+  context.restore();
+}
+
 function revealDieResult(die: AnimatedDie, layer: DiceAnimationLayer, now: number): void {
   if (die.resultRevealed) {
     return;
@@ -2879,6 +2995,7 @@ function revealDieResult(die: AnimatedDie, layer: DiceAnimationLayer, now: numbe
   const palette = getDiePalette(die.kind);
   const label = createFaceLabel({
     value: die.value,
+    kind: die.kind,
     color: palette.ink,
     glow: palette.inkGlow
   });

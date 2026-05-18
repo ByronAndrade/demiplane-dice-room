@@ -82,6 +82,7 @@ const raycaster = new THREE.Raycaster();
 const pointer = new THREE.Vector2();
 const resultLabelBaseOffset = 0.055;
 const resultLabelRevealLift = 0.055;
+const ankhIconImage = createAnkhIconImage();
 let dragState;
 
 document.getElementById("rollButton").addEventListener("click", () => playDiceAnimation(createRandomDice()));
@@ -386,7 +387,7 @@ function applyDieAngularVelocity(die, dt) {
   die.group.quaternion.premultiply(rotation).normalize();
 }
 
-function createFaceLabel({ value, color, glow, scale = 1 }) {
+function createFaceLabel({ value, kind, color, glow, scale = 1 }) {
   const canvas = document.createElement("canvas");
   canvas.width = 256;
   canvas.height = 180;
@@ -400,9 +401,11 @@ function createFaceLabel({ value, color, glow, scale = 1 }) {
   context.strokeStyle = "rgba(0, 0, 0, 0.72)";
   context.lineWidth = 8;
   context.fillStyle = color;
-  context.font = value === 10 ? "900 104px Georgia, serif" : "900 118px Georgia, serif";
-  context.strokeText(String(value), 128, 90);
-  context.fillText(String(value), 128, 90);
+  if (kind === "regular") {
+    drawRegularDieResult(context, value, color, glow);
+  } else {
+    drawNumericDieResult(context, value, color);
+  }
 
   const texture = new THREE.CanvasTexture(canvas);
   texture.colorSpace = THREE.SRGBColorSpace;
@@ -421,6 +424,95 @@ function createFaceLabel({ value, color, glow, scale = 1 }) {
   );
   label.renderOrder = 8;
   return label;
+}
+
+function createAnkhIconImage() {
+  const image = new Image();
+  image.decoding = "async";
+  image.src = "/extension/public/assets/ankh.png";
+  return image;
+}
+
+function drawRegularDieResult(context, value, color, glow) {
+  if (value < 6) {
+    return;
+  }
+
+  drawAnkhResult(context, color, glow, value === 10);
+}
+
+function drawNumericDieResult(context, value, color) {
+  context.font = value === 10 ? "900 104px Georgia, serif" : "900 118px Georgia, serif";
+  context.strokeText(String(value), 128, 90);
+  context.fillStyle = color;
+  context.fillText(String(value), 128, 90);
+}
+
+function drawAnkhResult(context, color, glow, critical) {
+  if (ankhIconImage.complete && ankhIconImage.naturalWidth > 0) {
+    drawAnkhMaskResult(context, color, glow);
+  } else {
+    drawAnkhGlyphFallback(context, color);
+  }
+
+  if (critical) {
+    drawCriticalAnkhStars(context, color, glow);
+  }
+}
+
+function drawAnkhMaskResult(context, color, glow) {
+  const height = 132;
+  const width = height * (ankhIconImage.naturalWidth / Math.max(1, ankhIconImage.naturalHeight));
+  const x = (context.canvas.width - width) / 2;
+  const y = 18;
+
+  for (const [dx, dy] of [[-2, 0], [2, 0], [0, -2], [0, 2]]) {
+    drawTintedImage(context, ankhIconImage, x + dx, y + dy, width, height, "rgba(0, 0, 0, 0.72)");
+  }
+
+  context.save();
+  context.shadowColor = glow;
+  context.shadowBlur = 10;
+  drawTintedImage(context, ankhIconImage, x, y, width, height, color);
+  context.restore();
+}
+
+function drawTintedImage(context, image, x, y, width, height, color) {
+  const buffer = document.createElement("canvas");
+  buffer.width = context.canvas.width;
+  buffer.height = context.canvas.height;
+  const bufferContext = buffer.getContext("2d");
+  if (!bufferContext) {
+    return;
+  }
+
+  bufferContext.drawImage(image, x, y, width, height);
+  bufferContext.globalCompositeOperation = "source-in";
+  bufferContext.fillStyle = color;
+  bufferContext.fillRect(0, 0, buffer.width, buffer.height);
+  context.drawImage(buffer, 0, 0);
+}
+
+function drawAnkhGlyphFallback(context, color) {
+  context.font = "900 132px Georgia, serif";
+  context.strokeText("\u2625", 128, 90);
+  context.fillStyle = color;
+  context.fillText("\u2625", 128, 90);
+}
+
+function drawCriticalAnkhStars(context, color, glow) {
+  context.save();
+  context.shadowColor = glow;
+  context.shadowBlur = 8;
+  context.font = "900 38px Georgia, serif";
+  context.strokeStyle = "rgba(0, 0, 0, 0.72)";
+  context.lineWidth = 5;
+  context.fillStyle = color;
+  for (const x of [83, 173]) {
+    context.strokeText("*", x, 141);
+    context.fillText("*", x, 141);
+  }
+  context.restore();
 }
 
 function tick(now) {
@@ -627,6 +719,7 @@ function revealDieResult(die, now) {
   const palette = getDiePalette(die.kind);
   const label = createFaceLabel({
     value: die.value,
+    kind: die.kind,
     color: palette.ink,
     glow: palette.inkGlow
   });

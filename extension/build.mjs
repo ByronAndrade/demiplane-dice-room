@@ -1,4 +1,4 @@
-import { copyFile, mkdir, rm } from "node:fs/promises";
+import { copyFile, cp, mkdir, rm } from "node:fs/promises";
 import esbuild from "esbuild";
 
 await rm("dist", { recursive: true, force: true });
@@ -7,7 +7,8 @@ await mkdir("dist", { recursive: true });
 await Promise.all([
   copyFile("public/manifest.json", "dist/manifest.json"),
   copyFile("public/popup.html", "dist/popup.html"),
-  copyFile("public/popup.css", "dist/popup.css")
+  copyFile("public/popup.css", "dist/popup.css"),
+  cp("public/assets", "dist/assets", { recursive: true, force: true })
 ]);
 
 const common = {
