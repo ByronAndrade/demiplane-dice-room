@@ -53,7 +53,7 @@ const panelUiStorageKey = "diceRoomPanelUi";
 const defaultDiceAnimationScale = 0.75;
 const minDiceAnimationScale = 0.45;
 const maxDiceAnimationScale = 1.15;
-const extensionUiVersion = "0.1.67";
+const extensionUiVersion = "0.1.68";
 const pageBridgeMessageSource = "demiplane-dice-room-page";
 const pageDiceRollResponseWaitMs = 1400;
 const pageDiceRollResponseTtlMs = 8_000;
@@ -960,34 +960,53 @@ function findTitle(lines: string[]): string | undefined {
 function parseRollTitle(text: string, lines: string[]): string | undefined {
   const lineTitle = lines.find((line) => isAttributeSkillTitle(line));
   if (lineTitle) {
-    return lineTitle.replace(/\s+/g, " ").trim();
+    return normalizeRollTitle(lineTitle);
   }
 
-  const customLine = lines.find((line) => /^custom$/i.test(line));
+  const customLine = lines.find((line) => isCustomRollTitle(line));
   if (customLine) {
-    return "CUSTOM";
+    return normalizeRollTitle(customLine);
   }
 
   const simpleLine = lines.find((line) => isSingleTraitRollTitle(line));
   if (simpleLine) {
-    return simpleLine.replace(/\s+/g, " ").trim();
+    return normalizeRollTitle(simpleLine);
   }
 
-  const match = text.match(/\b([A-Z][A-Z '-]{2,50})[ \t]*\+[ \t]*([A-Z][A-Z '-]{2,50})\b/);
+  const rolledMatch = text.match(
+    /\brolled[ \t]+([A-Z][A-Z '-]{1,50})(?:[ \t]*\+[ \t]*([A-Z][A-Z '-]{1,50}))?([ \t]*\([ \t]*re-?roll[ \t]*\))?(?=$|\s|[.:])/i
+  );
+  if (rolledMatch) {
+    const title = rolledMatch[2]
+      ? `${rolledMatch[1].trim()} + ${rolledMatch[2].trim()}${rolledMatch[3] ?? ""}`
+      : `${rolledMatch[1].trim()}${rolledMatch[3] ?? ""}`;
+    if (isAttributeSkillTitle(title) || isSingleTraitRollTitle(title) || isCustomRollTitle(title)) {
+      return normalizeRollTitle(title);
+    }
+  }
+
+  const match = text.match(
+    /(?:^|\n)[ \t]*([A-Z][A-Z '-]{2,50})[ \t]*\+[ \t]*([A-Z][A-Z '-]{2,50})([ \t]*\([ \t]*re-?roll[ \t]*\))?(?=$|\s|[.:])/i
+  );
   if (!match) {
     return undefined;
   }
 
-  return `${match[1].trim()} + ${match[2].trim()}`;
+  return normalizeRollTitle(`${match[1].trim()} + ${match[2].trim()}${match[3] ?? ""}`);
 }
 
 function isAttributeSkillTitle(value: string): boolean {
-  return /^[A-Z][A-Z '-]{2,50}[ \t]*\+[ \t]*[A-Z][A-Z '-]{2,50}$/.test(value.trim());
+  const title = stripRerollTitleSuffix(value);
+  return /^[A-Z][A-Z '-]{2,50}[ \t]*\+[ \t]*[A-Z][A-Z '-]{2,50}$/i.test(title);
+}
+
+function isCustomRollTitle(value: string): boolean {
+  return /^custom(?:[ \t]*\([ \t]*re-?roll[ \t]*\))?$/i.test(value.trim());
 }
 
 function isSingleTraitRollTitle(value: string): boolean {
-  const title = value.replace(/\s+/g, " ").trim();
-  if (!/^[A-Z][A-Z '-]{1,50}$/.test(title) || isAttributeSkillTitle(title)) {
+  const title = stripRerollTitleSuffix(value);
+  if (!/^[A-Z][A-Z '-]{1,50}$/i.test(title) || isAttributeSkillTitle(title) || isCustomRollTitle(title)) {
     return false;
   }
 
@@ -998,12 +1017,40 @@ function isSingleTraitRollTitle(value: string): boolean {
 
 function isUsefulRollTitle(value: string): boolean {
   const title = value.trim();
-  return isAttributeSkillTitle(title) || isSingleTraitRollTitle(title) || /^custom$/i.test(title);
+  return isAttributeSkillTitle(title) || isSingleTraitRollTitle(title) || isCustomRollTitle(title);
 }
 
 function getUniqueRollTitles(text: string): string[] {
-  const matches = text.match(/\b[A-Z][A-Z '-]{2,50}[ \t]*\+[ \t]*[A-Z][A-Z '-]{2,50}\b/g) ?? [];
-  return [...new Set(matches.map((match) => match.replace(/\s+/g, " ").trim()))];
+  const titles: string[] = [];
+  for (const line of text.split("\n")) {
+    const lineMatch = line.match(
+      /^[ \t]*([A-Z][A-Z '-]{2,50})[ \t]*\+[ \t]*([A-Z][A-Z '-]{2,50})([ \t]*\([ \t]*re-?roll[ \t]*\))?(?=$|\s|[.:])/i
+    );
+    if (lineMatch) {
+      titles.push(normalizeRollTitle(`${lineMatch[1].trim()} + ${lineMatch[2].trim()}${lineMatch[3] ?? ""}`));
+    }
+  }
+
+  for (const match of text.matchAll(
+    /\brolled[ \t]+([A-Z][A-Z '-]{2,50})[ \t]*\+[ \t]*([A-Z][A-Z '-]{2,50})([ \t]*\([ \t]*re-?roll[ \t]*\))?(?=$|\s|[.:])/gi
+  )) {
+    titles.push(normalizeRollTitle(`${match[1].trim()} + ${match[2].trim()}${match[3] ?? ""}`));
+  }
+
+  return [...new Set(titles)];
+}
+
+function normalizeRollTitle(value: string): string {
+  const title = value.replace(/\s+/g, " ").trim();
+  return hasRerollTitleSuffix(title) ? `${stripRerollTitleSuffix(title)} (REROLL)` : title;
+}
+
+function stripRerollTitleSuffix(value: string): string {
+  return value.replace(/\s+/g, " ").trim().replace(/[ \t]*\([ \t]*re-?roll[ \t]*\)$/i, "").trim();
+}
+
+function hasRerollTitleSuffix(value: string): boolean {
+  return /[ \t]*\([ \t]*re-?roll[ \t]*\)$/i.test(value.trim());
 }
 
 function getSuccessValues(text: string): string[] {
