@@ -52,7 +52,7 @@ const panelUiStorageKey = "diceRoomPanelUi";
 const defaultDiceAnimationScale = 0.75;
 const minDiceAnimationScale = 0.45;
 const maxDiceAnimationScale = 1.15;
-const extensionUiVersion = "0.1.59";
+const extensionUiVersion = "0.1.60";
 const activeToastByActor = new Map<string, HTMLElement>();
 let collapsed = true;
 let settingsOpen = false;
@@ -722,6 +722,10 @@ function parseDice(element: Element, lines: string[], text?: string, successes?:
   const textDetailDice =
     typeof text === "string" && typeof successes === "number" ? parseDetailDiceFromText(text, successes) : [];
 
+  if (typeof successes === "number" && shouldPreferScoredTextDetailDice(detailDice, textDetailDice, successes)) {
+    return textDetailDice;
+  }
+
   if (textDetailDice.length > detailDice.length) {
     return textDetailDice;
   }
@@ -767,6 +771,24 @@ function parseDetailDiceFromText(text: string, successes: number): DiceValue[] {
   return dice;
 }
 
+function shouldPreferScoredTextDetailDice(
+  detailDice: DiceValue[],
+  textDetailDice: DiceValue[],
+  successes: number
+): boolean {
+  if (detailDice.length === 0 || textDetailDice.length === 0 || detailDice.length !== textDetailDice.length) {
+    return false;
+  }
+
+  return calculateDiceSuccesses(detailDice) !== successes && calculateDiceSuccesses(textDetailDice) === successes;
+}
+
+function calculateDiceSuccesses(dice: DiceValue[]): number {
+  const successCount = dice.filter((die) => die.face === "success").length;
+  const criticalCount = dice.filter((die) => die.face === "critical").length;
+  return successCount + criticalCount + Math.floor(criticalCount / 2) * 2;
+}
+
 function inferBucketsFromDetailCounts(
   counts: number[],
   successes: number
@@ -790,6 +812,15 @@ function inferBucketsFromDetailCounts(
   }
 
   if (counts.length === 3) {
+    const totalDice = counts[0] + counts[1] + counts[2];
+    if (successes > totalDice) {
+      return [
+        { kind: "regular", face: "success" },
+        { kind: "regular", face: "critical" },
+        { kind: "hunger", face: "success" }
+      ];
+    }
+
     const thirdCount = counts[2];
     if (successes === thirdCount) {
       return [
@@ -924,12 +955,15 @@ function parseDetailDiceFromDom(element: Element, successes?: number): DiceValue
       continue;
     }
 
-    const red = hasStrongRedMarkerColor(marker);
-    const filledRed = hasDominantRedFillColor(marker);
+    const markerParts = collectDetailMarkerParts(element, marker);
+    const red = hasStrongRedMarkerColor(marker, markerParts);
+    const filledRed = hasDominantRedFillColor(marker, markerParts);
+    const inferredFace = inferDieFaceFromElement(marker);
+    const graphicFace = inferGraphicDetailDieFace(marker, red, filledRed, markerParts);
     const face =
-      inferDieFaceFromElement(marker) ??
-      inferGraphicDetailDieFace(marker, filledRed) ??
-      inferBlankDetailDieFace(marker, countText, detailLabelRects);
+      inferredFace === "critical" || inferredFace === "skull"
+        ? inferredFace
+        : graphicFace ?? inferredFace ?? inferBlankDetailDieFace(marker, countText, detailLabelRects);
     const markerIsNearDetails = isNearDetailsRow(marker, countText, detailLabelRects);
     if (!face && !markerIsNearDetails) {
       continue;
@@ -1165,20 +1199,25 @@ function inferBlankDetailDieFace(
   return "blank";
 }
 
-function inferGraphicDetailDieFace(marker: Element, filledRed: boolean): DiceFace | undefined {
-  if (!filledRed) {
-    return undefined;
-  }
-
-  if (hasLargeLightInteriorShape(marker)) {
+function inferGraphicDetailDieFace(
+  marker: Element,
+  red: boolean,
+  filledRed: boolean,
+  markerParts: Element[]
+): DiceFace | undefined {
+  if (filledRed && hasLargeLightInteriorShape(marker, markerParts)) {
     return "skull";
   }
 
-  if (hasInteriorInkShape(marker)) {
+  if (filledRed && hasInteriorInkShape(marker, markerParts, false)) {
     return "success";
   }
 
-  return "blank";
+  if (!filledRed && red && hasInteriorInkShape(marker, markerParts, true)) {
+    return "success";
+  }
+
+  return filledRed ? "blank" : undefined;
 }
 
 function isNearDetailsRow(marker: Element, countText: VisibleNumberText, detailLabelRects: DOMRect[]): boolean {
@@ -1194,8 +1233,47 @@ function isNearDetailsRow(marker: Element, countText: VisibleNumberText, detailL
   });
 }
 
-function hasStrongRedMarkerColor(element: Element): boolean {
-  const elements = [element, ...Array.from(element.querySelectorAll("*"))];
+function collectDetailMarkerParts(root: Element, marker: Element): Element[] {
+  const markerRect = marker.getBoundingClientRect();
+  const markerArea = Math.max(1, markerRect.width * markerRect.height);
+  const elements = new Set<Element>([marker, ...Array.from(marker.querySelectorAll("*"))]);
+
+  for (const current of Array.from(root.querySelectorAll("*"))) {
+    if (!(current instanceof Element) || elements.has(current)) {
+      continue;
+    }
+
+    const rect = current.getBoundingClientRect();
+    if (rect.width <= 0 || rect.height <= 0) {
+      continue;
+    }
+
+    const area = rect.width * rect.height;
+    if (area > markerArea * 1.8) {
+      continue;
+    }
+
+    const centerInside =
+      rect.left + rect.width / 2 >= markerRect.left - 2 &&
+      rect.left + rect.width / 2 <= markerRect.right + 2 &&
+      rect.top + rect.height / 2 >= markerRect.top - 2 &&
+      rect.top + rect.height / 2 <= markerRect.bottom + 2;
+    const mostlyInside =
+      rect.left >= markerRect.left - 2 &&
+      rect.right <= markerRect.right + 2 &&
+      rect.top >= markerRect.top - 2 &&
+      rect.bottom <= markerRect.bottom + 2;
+
+    if (centerInside || mostlyInside) {
+      elements.add(current);
+    }
+  }
+
+  return [...elements];
+}
+
+function hasStrongRedMarkerColor(element: Element, markerParts?: Element[]): boolean {
+  const elements = markerParts ?? [element, ...Array.from(element.querySelectorAll("*"))];
 
   for (const current of elements) {
     if (!(current instanceof Element)) {
@@ -1219,10 +1297,10 @@ function hasStrongRedMarkerColor(element: Element): boolean {
   return false;
 }
 
-function hasDominantRedFillColor(element: Element): boolean {
+function hasDominantRedFillColor(element: Element, markerParts?: Element[]): boolean {
   const markerRect = element.getBoundingClientRect();
   const markerArea = Math.max(1, markerRect.width * markerRect.height);
-  const elements = [element, ...Array.from(element.querySelectorAll("*"))];
+  const elements = markerParts ?? [element, ...Array.from(element.querySelectorAll("*"))];
 
   for (const current of elements) {
     if (!(current instanceof Element)) {
@@ -1254,10 +1332,10 @@ function hasDominantRedFillColor(element: Element): boolean {
   return false;
 }
 
-function hasLargeLightInteriorShape(element: Element): boolean {
+function hasLargeLightInteriorShape(element: Element, markerParts?: Element[]): boolean {
   const markerRect = element.getBoundingClientRect();
   const markerArea = Math.max(1, markerRect.width * markerRect.height);
-  const elements = Array.from(element.querySelectorAll("*"));
+  const elements = markerParts ?? Array.from(element.querySelectorAll("*"));
 
   for (const current of elements) {
     if (!(current instanceof Element)) {
@@ -1294,10 +1372,10 @@ function hasLargeLightInteriorShape(element: Element): boolean {
   return false;
 }
 
-function hasInteriorInkShape(element: Element): boolean {
+function hasInteriorInkShape(element: Element, markerParts?: Element[], includeRedInk = false): boolean {
   const markerRect = element.getBoundingClientRect();
   const markerArea = Math.max(1, markerRect.width * markerRect.height);
-  const elements = Array.from(element.querySelectorAll("*"));
+  const elements = markerParts ?? Array.from(element.querySelectorAll("*"));
 
   for (const current of elements) {
     if (!(current instanceof Element)) {
@@ -1312,9 +1390,10 @@ function hasInteriorInkShape(element: Element): boolean {
       }
 
       const [red, green, blue] = rgb;
+      const isRed = red > 120 && green < 95 && blue < 105 && red > green * 1.35 && red > blue * 1.35;
       const isDark = red < 90 && green < 90 && blue < 90;
       const isLight = red > 180 && green > 180 && blue > 180;
-      return isDark || isLight;
+      return isDark || isLight || (includeRedInk && isRed);
     });
 
     if (!hasInk) {
