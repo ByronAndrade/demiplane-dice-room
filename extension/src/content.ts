@@ -50,11 +50,12 @@ const diceHardFaceCollapseSpeed = 28;
 const maxAnimatedDice = 20;
 const maxSeenRollIds = 200;
 const panelUiStorageKey = "diceRoomPanelUi";
+const minPanelOpacity = 0.3;
 const defaultDiceAnimationScale = 0.75;
 const minDiceAnimationScale = 0.45;
 const maxDiceAnimationScale = 1.15;
 const defaultRelayUrl = "wss://demiplane-dice-room-relay.foxbyron.workers.dev";
-const extensionUiVersion = "0.1.76";
+const extensionUiVersion = "0.1.77";
 const pageBridgeMessageSource = "demiplane-dice-room-page";
 const pageDiceRollResponseWaitMs = 1400;
 const pageDiceRollResponseTtlMs = 8_000;
@@ -2488,7 +2489,7 @@ function createPanel(): {
             <span data-settings-opacity-label>Opacidade</span>
             <span data-opacity-value></span>
           </label>
-          <input data-opacity type="range" min="0.45" max="1" step="0.05" />
+          <input data-opacity type="range" min="0.30" max="1" step="0.05" />
         </div>
         <div class="settings-row">
           <label for="dice-room-language">
@@ -2704,6 +2705,7 @@ function renderPanel(): void {
   panel.status.title = t("openDiagnostic");
   panel.count.textContent = String(unreadRolls.length);
   panel.countLabel.textContent = t("unreadCount", unreadRolls.length);
+  panel.countLabel.hidden = unreadRolls.length === 0;
   panel.countLabel.title = t("historyCount", visibleRolls.length);
   panel.host.dataset.collapsed = String(collapsed);
   panel.host.dataset.diagnostic = String(diagnosticOpen);
@@ -2962,7 +2964,7 @@ async function loadPanelUiState(): Promise<void> {
 
   collapsed = value?.collapsed !== false;
   settingsOpen = value?.settingsOpen === true;
-  panelOpacity = typeof value?.opacity === "number" ? clampNumber(value.opacity, 0.45, 1) : 0.94;
+  panelOpacity = typeof value?.opacity === "number" ? clampNumber(value.opacity, minPanelOpacity, 1) : 0.94;
   diceAnimationScale =
     typeof value?.diceAnimationScale === "number"
       ? clampNumber(value.diceAnimationScale, minDiceAnimationScale, maxDiceAnimationScale)
