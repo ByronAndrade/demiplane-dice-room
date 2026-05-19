@@ -25,6 +25,7 @@ const messages = {
   "pt-BR": {
     playerNameLabel: "Nome do jogador",
     characterNameLabel: "Personagem",
+    hideCharacterNameLabel: "Ocultar personagem como Narrador",
     channelLabel: "Canal da mesa",
     passwordLabel: "Senha da sala",
     relayLabel: "Relay",
@@ -72,6 +73,7 @@ const messages = {
   en: {
     playerNameLabel: "Player name",
     characterNameLabel: "Character",
+    hideCharacterNameLabel: "Hide character as Storyteller",
     channelLabel: "Table channel",
     passwordLabel: "Room password",
     relayLabel: "Relay",
@@ -127,6 +129,7 @@ const inputs = {
   serverUrl: requireElement("#serverUrl", HTMLInputElement),
   playerName: requireElement("#playerName", HTMLInputElement),
   characterName: requireElement("#characterName", HTMLInputElement),
+  hideCharacterName: requireElement("#hideCharacterName", HTMLInputElement),
   channel: requireElement("#channel", HTMLInputElement),
   password: requireElement("#password", HTMLInputElement),
   showOwnRolls: requireElement("#showOwnRolls", HTMLInputElement),
@@ -236,6 +239,7 @@ function fillConfig(config: ExtensionConfig): void {
   inputs.serverUrl.value = config.serverUrl;
   inputs.playerName.value = config.playerName;
   inputs.characterName.value = config.characterName;
+  inputs.hideCharacterName.checked = config.hideCharacterName;
   inputs.channel.value = config.channel;
   inputs.password.value = config.password;
   inputs.showOwnRolls.checked = config.showOwnRolls;
@@ -247,6 +251,7 @@ function readConfig(): ExtensionConfig {
     serverUrl: inputs.serverUrl.value.trim(),
     playerName: inputs.playerName.value.trim(),
     characterName: inputs.characterName.value.trim(),
+    hideCharacterName: inputs.hideCharacterName.checked,
     channel: inputs.channel.value.trim(),
     password: inputs.password.value,
     autoConnect: false,

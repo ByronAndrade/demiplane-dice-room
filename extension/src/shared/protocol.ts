@@ -15,6 +15,7 @@ export type PresencePlayer = {
   clientId: string;
   playerName: string;
   characterName?: string;
+  hideCharacterName?: boolean;
   joinedAt: string;
 };
 

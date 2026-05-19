@@ -24,6 +24,7 @@ type RuntimeRequest =
 
 const localHistoryVersion = 7;
 const liveRollStorageKey = "lastLiveRoll";
+const panelUiStorageKey = "diceRoomPanelUi";
 
 let socket: WebSocket | undefined;
 let reconnectTimer: number | undefined;
@@ -128,6 +129,7 @@ async function connect(): Promise<void> {
   });
 
   const clientId = await getClientId();
+  const publicCharacterName = await getPublicCharacterName(config);
   let socketUrl: string;
   try {
     socketUrl = createRoomSocketUrl(config.serverUrl, await createRoomId(config.channel, config.password));
@@ -151,7 +153,7 @@ async function connect(): Promise<void> {
       version: protocolVersion,
       clientId,
       playerName: config.playerName,
-      characterName: config.characterName,
+      characterName: publicCharacterName,
       channel: config.channel,
       password: config.password
     });
@@ -241,6 +243,7 @@ async function publishCapturedRoll(captured: CapturedRoll): Promise<{ ok: true; 
   const config = await getConfig();
   const clientId = await getClientId();
   const createdAt = captured.createdAt || new Date().toISOString();
+  const publicCharacterName = await getPublicCharacterName(config);
 
   const roll: RollEvent = {
     type: "roll",
@@ -248,7 +251,7 @@ async function publishCapturedRoll(captured: CapturedRoll): Promise<{ ok: true; 
     id: createRollId(clientId, captured.signature, createdAt),
     clientId,
     playerName: config.playerName || "Jogador",
-    characterName: config.characterName || undefined,
+    characterName: publicCharacterName,
     source: "demiplane",
     system: "vampire",
     rollTitle: captured.rollTitle || "Rolagem",
@@ -280,6 +283,20 @@ async function publishCapturedRoll(captured: CapturedRoll): Promise<{ ok: true; 
   }
 
   return { ok: true, delivered: delivery, roll };
+}
+
+async function getPublicCharacterName(config: ExtensionConfig): Promise<string | undefined> {
+  if (!config.hideCharacterName) {
+    return config.characterName || undefined;
+  }
+
+  const stored = await chrome.storage.local.get({
+    [panelUiStorageKey]: {
+      language: "pt-BR"
+    }
+  });
+  const value = stored[panelUiStorageKey] as { language?: unknown } | undefined;
+  return value?.language === "en" ? "Storyteller" : "Narrador";
 }
 
 function handleServerMessage(message: ServerMessage): void {

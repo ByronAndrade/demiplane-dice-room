@@ -54,7 +54,7 @@ const defaultDiceAnimationScale = 0.75;
 const minDiceAnimationScale = 0.45;
 const maxDiceAnimationScale = 1.15;
 const defaultRelayUrl = "wss://demiplane-dice-room-relay.foxbyron.workers.dev";
-const extensionUiVersion = "0.1.75";
+const extensionUiVersion = "0.1.76";
 const pageBridgeMessageSource = "demiplane-dice-room-page";
 const pageDiceRollResponseWaitMs = 1400;
 const pageDiceRollResponseTtlMs = 8_000;
@@ -132,6 +132,15 @@ const messages = {
     closeSettings: "Fechar configuracoes do painel",
     openDiagnostic: "Abrir diagnostico de conexao",
     waiting: "Aguardando rolagens",
+    roomSettings: "Sala da mesa",
+    playerName: "Nome do jogador",
+    characterName: "Personagem",
+    hideCharacterName: "Ocultar personagem como Narrador",
+    channel: "Canal",
+    password: "Senha",
+    save: "Salvar",
+    connect: "Conectar",
+    disconnect: "Desconectar",
     opacity: "Opacidade",
     language: "Idioma",
     showOwnRolls: "Mostrar minhas rolagens",
@@ -192,6 +201,15 @@ const messages = {
     closeSettings: "Close panel settings",
     openDiagnostic: "Open connection diagnostics",
     waiting: "Waiting for rolls",
+    roomSettings: "Table room",
+    playerName: "Player name",
+    characterName: "Character",
+    hideCharacterName: "Hide character as Storyteller",
+    channel: "Channel",
+    password: "Password",
+    save: "Save",
+    connect: "Connect",
+    disconnect: "Disconnect",
     opacity: "Opacity",
     language: "Language",
     showOwnRolls: "Show my own rolls",
@@ -308,16 +326,38 @@ async function initializeContentScript(): Promise<void> {
   });
 
   chrome.storage.onChanged.addListener((changes, areaName) => {
-    if (areaName !== "local" || (!changes.showOwnRolls && !changes.enableDiceAnimation)) {
+    if (areaName !== "local") {
       return;
     }
 
+    const configKeys: Array<keyof ExtensionConfig> = [
+      "serverUrl",
+      "playerName",
+      "characterName",
+      "hideCharacterName",
+      "channel",
+      "password",
+      "showOwnRolls",
+      "enableDiceAnimation"
+    ];
+
+    if (!configKeys.some((key) => changes[key])) {
+      return;
+    }
+
+    const previousConfig = currentConfig ?? defaultConfig;
     currentConfig = {
-      ...(currentConfig ?? defaultConfig),
-      showOwnRolls: changes.showOwnRolls ? changes.showOwnRolls.newValue === true : currentConfig?.showOwnRolls === true,
+      ...previousConfig,
+      serverUrl: changes.serverUrl ? String(changes.serverUrl.newValue ?? "") : previousConfig.serverUrl,
+      playerName: changes.playerName ? String(changes.playerName.newValue ?? "") : previousConfig.playerName,
+      characterName: changes.characterName ? String(changes.characterName.newValue ?? "") : previousConfig.characterName,
+      hideCharacterName: changes.hideCharacterName ? changes.hideCharacterName.newValue === true : previousConfig.hideCharacterName,
+      channel: changes.channel ? String(changes.channel.newValue ?? "") : previousConfig.channel,
+      password: changes.password ? String(changes.password.newValue ?? "") : previousConfig.password,
+      showOwnRolls: changes.showOwnRolls ? changes.showOwnRolls.newValue === true : previousConfig.showOwnRolls,
       enableDiceAnimation: changes.enableDiceAnimation
         ? changes.enableDiceAnimation.newValue !== false
-        : currentConfig?.enableDiceAnimation !== false
+        : previousConfig.enableDiceAnimation
     };
     renderPanel();
   });
@@ -1879,6 +1919,15 @@ function createPanel(): {
   header: HTMLElement;
   settings: HTMLButtonElement;
   settingsPanel: HTMLDivElement;
+  playerNameInput: HTMLInputElement;
+  characterNameInput: HTMLInputElement;
+  hideCharacterNameInput: HTMLInputElement;
+  channelInput: HTMLInputElement;
+  passwordInput: HTMLInputElement;
+  relayInput: HTMLInputElement;
+  saveRoomButton: HTMLButtonElement;
+  connectRoomButton: HTMLButtonElement;
+  disconnectRoomButton: HTMLButtonElement;
   opacityInput: HTMLInputElement;
   languageSelect: HTMLSelectElement;
   showOwnRollsInput: HTMLInputElement;
@@ -2135,6 +2184,20 @@ function createPanel(): {
         margin-top: 10px;
       }
 
+      .settings-title {
+        margin: 0 0 8px;
+        color: #f1f4f8;
+        font-size: 11px;
+        font-weight: 850;
+        text-transform: uppercase;
+      }
+
+      .settings-divider {
+        margin-top: 12px;
+        border-top: 1px solid rgba(190, 202, 220, 0.12);
+        padding-top: 10px;
+      }
+
       .settings-row label {
         display: flex;
         align-items: center;
@@ -2145,6 +2208,25 @@ function createPanel(): {
 
       .settings-row input {
         width: 100%;
+      }
+
+      .settings-row input[type="text"],
+      .settings-row input[type="password"],
+      .settings-row input[type="url"] {
+        border: 1px solid #343d4a;
+        border-radius: 6px;
+        padding: 6px 8px;
+        color: #f4f6fa;
+        background: #202730;
+        font: inherit;
+        outline: none;
+      }
+
+      .settings-row input[type="text"]:focus,
+      .settings-row input[type="password"]:focus,
+      .settings-row input[type="url"]:focus {
+        border-color: #6da0ff;
+        box-shadow: 0 0 0 2px rgba(109, 160, 255, 0.18);
       }
 
       .settings-row input[type="checkbox"] {
@@ -2170,6 +2252,34 @@ function createPanel(): {
         color: #f4f6fa;
         background: #202730;
         font: inherit;
+      }
+
+      .settings-actions {
+        display: grid;
+        grid-template-columns: 1fr 1fr 1fr;
+        gap: 7px;
+        margin-top: 10px;
+      }
+
+      .settings-actions button {
+        min-height: 30px;
+        border: 1px solid #384251;
+        border-radius: 6px;
+        padding: 6px 8px;
+        color: #f3f6fb;
+        background: #252c36;
+        font: inherit;
+        font-weight: 800;
+        cursor: pointer;
+      }
+
+      .settings-actions button:hover {
+        background: #303847;
+      }
+
+      .settings-actions button:disabled {
+        cursor: default;
+        opacity: 0.55;
       }
 
       .empty {
@@ -2330,6 +2440,49 @@ function createPanel(): {
       </header>
       <div data-diagnostic class="diagnostic"></div>
       <div data-settings-panel class="settings-panel">
+        <p data-settings-room-label class="settings-title">Sala da mesa</p>
+        <div class="settings-row">
+          <label for="dice-room-player-name">
+            <span data-settings-player-label>Nome do jogador</span>
+          </label>
+          <input id="dice-room-player-name" data-player-name type="text" autocomplete="name" />
+        </div>
+        <div class="settings-row">
+          <label for="dice-room-character-name">
+            <span data-settings-character-label>Personagem</span>
+          </label>
+          <input id="dice-room-character-name" data-character-name type="text" autocomplete="off" />
+        </div>
+        <div class="settings-row">
+          <label class="checkbox-row">
+            <input data-hide-character-name type="checkbox" />
+            <span data-settings-hide-character-label>Ocultar personagem como Narrador</span>
+          </label>
+        </div>
+        <div class="settings-row">
+          <label for="dice-room-channel">
+            <span data-settings-channel-label>Canal</span>
+          </label>
+          <input id="dice-room-channel" data-channel type="text" autocomplete="off" />
+        </div>
+        <div class="settings-row">
+          <label for="dice-room-password">
+            <span data-settings-password-label>Senha</span>
+          </label>
+          <input id="dice-room-password" data-password type="password" autocomplete="current-password" />
+        </div>
+        <div class="settings-row">
+          <label for="dice-room-relay">
+            <span data-settings-relay-label>Relay</span>
+          </label>
+          <input id="dice-room-relay" data-relay type="url" autocomplete="off" />
+        </div>
+        <div class="settings-actions">
+          <button data-save-room type="button">Salvar</button>
+          <button data-connect-room type="button">Conectar</button>
+          <button data-disconnect-room type="button">Desconectar</button>
+        </div>
+        <div class="settings-divider">
         <div class="settings-row">
           <label>
             <span data-settings-opacity-label>Opacidade</span>
@@ -2367,6 +2520,7 @@ function createPanel(): {
           </label>
           <input data-dice-size type="range" min="0.45" max="1.15" step="0.05" />
         </div>
+        </div>
       </div>
       <ol data-list class="list"></ol>
     </section>
@@ -2383,6 +2537,15 @@ function createPanel(): {
   const settings = shadow.querySelector("[data-settings-button]");
   const settingsPanel = shadow.querySelector("[data-settings-panel]");
   const opacityInput = shadow.querySelector("[data-opacity]");
+  const playerNameInput = shadow.querySelector("[data-player-name]");
+  const characterNameInput = shadow.querySelector("[data-character-name]");
+  const hideCharacterNameInput = shadow.querySelector("[data-hide-character-name]");
+  const channelInput = shadow.querySelector("[data-channel]");
+  const passwordInput = shadow.querySelector("[data-password]");
+  const relayInput = shadow.querySelector("[data-relay]");
+  const saveRoomButton = shadow.querySelector("[data-save-room]");
+  const connectRoomButton = shadow.querySelector("[data-connect-room]");
+  const disconnectRoomButton = shadow.querySelector("[data-disconnect-room]");
   const languageSelect = shadow.querySelector("[data-language]");
   const showOwnRollsInput = shadow.querySelector("[data-show-own-rolls]");
   const diceAnimationInput = shadow.querySelector("[data-dice-animation]");
@@ -2401,6 +2564,15 @@ function createPanel(): {
     !(settings instanceof HTMLButtonElement) ||
     !(settingsPanel instanceof HTMLDivElement) ||
     !(opacityInput instanceof HTMLInputElement) ||
+    !(playerNameInput instanceof HTMLInputElement) ||
+    !(characterNameInput instanceof HTMLInputElement) ||
+    !(hideCharacterNameInput instanceof HTMLInputElement) ||
+    !(channelInput instanceof HTMLInputElement) ||
+    !(passwordInput instanceof HTMLInputElement) ||
+    !(relayInput instanceof HTMLInputElement) ||
+    !(saveRoomButton instanceof HTMLButtonElement) ||
+    !(connectRoomButton instanceof HTMLButtonElement) ||
+    !(disconnectRoomButton instanceof HTMLButtonElement) ||
     !(languageSelect instanceof HTMLSelectElement) ||
     !(showOwnRollsInput instanceof HTMLInputElement) ||
     !(diceAnimationInput instanceof HTMLInputElement) ||
@@ -2428,6 +2600,18 @@ function createPanel(): {
     settingsOpen = !settingsOpen;
     renderPanel();
     void savePanelUiState();
+  });
+
+  saveRoomButton.addEventListener("click", () => {
+    void savePanelRoomConfig();
+  });
+
+  connectRoomButton.addEventListener("click", () => {
+    void savePanelRoomConfig().then(() => sendRuntimeMessage({ kind: "popup:connect" }));
+  });
+
+  disconnectRoomButton.addEventListener("click", () => {
+    void sendRuntimeMessage({ kind: "popup:disconnect" });
   });
 
   opacityInput.addEventListener("input", () => {
@@ -2488,6 +2672,15 @@ function createPanel(): {
     settings,
     settingsPanel,
     opacityInput,
+    playerNameInput,
+    characterNameInput,
+    hideCharacterNameInput,
+    channelInput,
+    passwordInput,
+    relayInput,
+    saveRoomButton,
+    connectRoomButton,
+    disconnectRoomButton,
     languageSelect,
     showOwnRollsInput,
     diceAnimationInput,
@@ -2517,6 +2710,26 @@ function renderPanel(): void {
   panel.host.dataset.settings = String(settingsOpen);
   panel.host.dataset.positioned = String(Boolean(panelPosition));
   panel.host.style.setProperty("--panel-opacity", String(panelOpacity));
+  const config = currentConfig ?? defaultConfig;
+  const activePanelElement = panel.host.shadowRoot?.activeElement;
+  if (activePanelElement !== panel.playerNameInput) {
+    panel.playerNameInput.value = config.playerName;
+  }
+  if (activePanelElement !== panel.characterNameInput) {
+    panel.characterNameInput.value = config.characterName;
+  }
+  if (activePanelElement !== panel.channelInput) {
+    panel.channelInput.value = config.channel;
+  }
+  if (activePanelElement !== panel.passwordInput) {
+    panel.passwordInput.value = config.password;
+  }
+  if (activePanelElement !== panel.relayInput) {
+    panel.relayInput.value = config.serverUrl;
+  }
+  panel.hideCharacterNameInput.checked = config.hideCharacterName;
+  panel.connectRoomButton.disabled = connectionState.status === "connecting" || connectionState.status === "connected";
+  panel.disconnectRoomButton.disabled = connectionState.status === "disconnected";
   panel.opacityInput.value = String(panelOpacity);
   panel.languageSelect.value = uiLanguage;
   panel.showOwnRollsInput.checked = shouldShowOwnRolls();
@@ -2530,6 +2743,37 @@ function renderPanel(): void {
   panel.settings.dataset.tooltip = settingsOpen ? t("closeSettings") : t("openSettings");
   panel.settings.setAttribute("aria-label", settingsOpen ? t("closeSettings") : t("openSettings"));
   panel.diagnostic.innerHTML = renderDiagnostic();
+  const roomLabel = panel.host.shadowRoot?.querySelector("[data-settings-room-label]");
+  if (roomLabel instanceof HTMLParagraphElement) {
+    roomLabel.textContent = t("roomSettings");
+  }
+  const playerLabel = panel.host.shadowRoot?.querySelector("[data-settings-player-label]");
+  if (playerLabel instanceof HTMLSpanElement) {
+    playerLabel.textContent = t("playerName");
+  }
+  const characterLabel = panel.host.shadowRoot?.querySelector("[data-settings-character-label]");
+  if (characterLabel instanceof HTMLSpanElement) {
+    characterLabel.textContent = t("characterName");
+  }
+  const hideCharacterLabel = panel.host.shadowRoot?.querySelector("[data-settings-hide-character-label]");
+  if (hideCharacterLabel instanceof HTMLSpanElement) {
+    hideCharacterLabel.textContent = t("hideCharacterName");
+  }
+  const channelLabel = panel.host.shadowRoot?.querySelector("[data-settings-channel-label]");
+  if (channelLabel instanceof HTMLSpanElement) {
+    channelLabel.textContent = t("channel");
+  }
+  const passwordLabel = panel.host.shadowRoot?.querySelector("[data-settings-password-label]");
+  if (passwordLabel instanceof HTMLSpanElement) {
+    passwordLabel.textContent = t("password");
+  }
+  const relayLabel = panel.host.shadowRoot?.querySelector("[data-settings-relay-label]");
+  if (relayLabel instanceof HTMLSpanElement) {
+    relayLabel.textContent = t("relay");
+  }
+  panel.saveRoomButton.textContent = t("save");
+  panel.connectRoomButton.textContent = t("connect");
+  panel.disconnectRoomButton.textContent = t("disconnect");
   const opacityValue = panel.host.shadowRoot?.querySelector("[data-opacity-value]");
   if (opacityValue instanceof HTMLSpanElement) {
     opacityValue.textContent = `${Math.round(panelOpacity * 100)}%`;
@@ -2583,6 +2827,42 @@ function renderPanel(): void {
   }
 
   panel.list.innerHTML = visibleRolls.map(renderRoll).join("");
+}
+
+async function savePanelRoomConfig(): Promise<void> {
+  if (!panel) {
+    return;
+  }
+
+  const nextConfig: ExtensionConfig = {
+    ...(currentConfig ?? defaultConfig),
+    serverUrl: panel.relayInput.value.trim(),
+    playerName: panel.playerNameInput.value.trim(),
+    characterName: panel.characterNameInput.value.trim(),
+    hideCharacterName: panel.hideCharacterNameInput.checked,
+    channel: panel.channelInput.value.trim(),
+    password: panel.passwordInput.value,
+    showOwnRolls: panel.showOwnRollsInput.checked,
+    enableDiceAnimation: panel.diceAnimationInput.checked
+  };
+
+  currentConfig = nextConfig;
+  renderPanel();
+
+  const response = await sendRuntimeMessage<{ ok: true; config?: ExtensionConfig; state?: ConnectionState }>({
+    kind: "popup:save-config",
+    config: nextConfig
+  });
+
+  if (response?.config) {
+    currentConfig = response.config;
+  }
+
+  if (response?.state) {
+    connectionState = response.state;
+  }
+
+  renderPanel();
 }
 
 function installPanelDrag(host: HTMLDivElement, handle: HTMLElement): void {

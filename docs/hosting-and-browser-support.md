@@ -134,7 +134,22 @@ artifacts/demiplane-dice-room-<versao>-chromium.zip
 artifacts/demiplane-dice-room-<versao>-firefox.zip
 ```
 
-Para instalar em modo desenvolvedor, extraia o zip e carregue a pasta extraida que contem `manifest.json`.
+## Instalar em Edge, Opera e Chromium
+
+Para Edge, Opera e outros navegadores Chromium, use o pacote `chromium.zip`.
+
+1. Extraia o ZIP em uma pasta fixa, por exemplo `Demiplane Dice Room`.
+2. Abra a pagina de extensoes do navegador: `edge://extensions` no Edge, `opera://extensions` no Opera ou `chrome://extensions` no Chrome.
+3. Ative o modo de desenvolvedor.
+4. Clique em `Load unpacked` / `Carregar sem compactacao`.
+5. Selecione a pasta extraida que contem o `manifest.json`.
+6. Abra uma ficha do Demiplane, clique no painel `Dice Room`, abra a engrenagem e informe jogador, canal e senha.
+
+Todos os jogadores de uma mesa devem usar o mesmo canal e a mesma senha. O relay padrao do pacote ja aponta para:
+
+```text
+wss://demiplane-dice-room-relay.foxbyron.workers.dev
+```
 
 ## Navegadores
 

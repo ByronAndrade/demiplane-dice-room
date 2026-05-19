@@ -11,6 +11,7 @@ export type ExtensionConfig = {
   autoConnect: boolean;
   showOwnRolls: boolean;
   enableDiceAnimation: boolean;
+  hideCharacterName: boolean;
 };
 
 export const defaultConfig: ExtensionConfig = {
@@ -21,7 +22,8 @@ export const defaultConfig: ExtensionConfig = {
   password: "",
   autoConnect: false,
   showOwnRolls: false,
-  enableDiceAnimation: true
+  enableDiceAnimation: true,
+  hideCharacterName: false
 };
 
 function getDefaultRelayUrl(): string {
@@ -60,7 +62,8 @@ function normalizeConfig(value: Partial<ExtensionConfig>): ExtensionConfig {
     password: typeof value.password === "string" ? value.password : "",
     autoConnect: value.autoConnect === true,
     showOwnRolls: value.showOwnRolls === true,
-    enableDiceAnimation: value.enableDiceAnimation !== false
+    enableDiceAnimation: value.enableDiceAnimation !== false,
+    hideCharacterName: value.hideCharacterName === true
   };
 }
 
