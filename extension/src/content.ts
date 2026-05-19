@@ -53,7 +53,7 @@ const panelUiStorageKey = "diceRoomPanelUi";
 const defaultDiceAnimationScale = 0.75;
 const minDiceAnimationScale = 0.45;
 const maxDiceAnimationScale = 1.15;
-const extensionUiVersion = "0.1.66";
+const extensionUiVersion = "0.1.67";
 const pageBridgeMessageSource = "demiplane-dice-room-page";
 const pageDiceRollResponseWaitMs = 1400;
 const pageDiceRollResponseTtlMs = 8_000;
@@ -72,6 +72,7 @@ let pendingDicePoolHint: DicePoolHint | undefined;
 let pendingPageDiceRollStartedAt = 0;
 let pendingPageDiceRollResponses: PageDiceRollResponse[] = [];
 let seenRollIds = new Set<string>();
+let initialSeenMigrationCutoff = 0;
 const publishedElements = new WeakSet<Element>();
 
 declare global {
@@ -2480,6 +2481,19 @@ function replaceRolls(nextRolls: StoredRoll[]): void {
   }
 
   rolls.splice(100);
+  if (initialSeenMigrationCutoff > 0) {
+    const cutoff = initialSeenMigrationCutoff;
+    initialSeenMigrationCutoff = 0;
+    const changed = markRollsSeen(
+      getVisibleRolls().filter((item) => {
+        const createdAt = Date.parse(item.roll.createdAt);
+        return Number.isFinite(createdAt) && createdAt <= cutoff;
+      })
+    );
+    if (changed) {
+      void savePanelUiState();
+    }
+  }
   renderPanel();
 }
 
@@ -2490,7 +2504,7 @@ function getVisibleRolls(): Array<{ roll: RollEvent; origin: "local" | "remote";
 function getUnreadVisibleRolls(
   visibleRolls: Array<{ roll: RollEvent; origin: "local" | "remote"; delivery: string }>
 ): Array<{ roll: RollEvent; origin: "local" | "remote"; delivery: string }> {
-  return visibleRolls.filter((item) => item.origin === "remote" && !seenRollIds.has(item.roll.id));
+  return visibleRolls.filter((item) => item.origin === "remote" && item.delivery !== "history" && !seenRollIds.has(item.roll.id));
 }
 
 function markRollsSeen(items: Array<{ roll: RollEvent; origin: "local" | "remote"; delivery: string }>): boolean {
@@ -3341,17 +3355,7 @@ function clampPanelPosition(left: number, top: number, host: HTMLElement): { lef
 }
 
 async function loadPanelUiState(): Promise<void> {
-  const stored = await chrome.storage.local.get({
-    [panelUiStorageKey]: {
-      collapsed: true,
-      settingsOpen: false,
-      opacity: 0.94,
-      diceAnimationScale: defaultDiceAnimationScale,
-      position: undefined,
-      language: "pt-BR",
-      seenRollIds: []
-    }
-  });
+  const stored = await chrome.storage.local.get(panelUiStorageKey);
 
   const value = stored[panelUiStorageKey] as
     | {
@@ -3373,9 +3377,12 @@ async function loadPanelUiState(): Promise<void> {
       ? clampNumber(value.diceAnimationScale, minDiceAnimationScale, maxDiceAnimationScale)
       : defaultDiceAnimationScale;
   uiLanguage = value?.language === "en" ? "en" : "pt-BR";
-  seenRollIds = Array.isArray(value?.seenRollIds)
-    ? new Set(value.seenRollIds.filter((id): id is string => typeof id === "string").slice(-maxSeenRollIds))
-    : new Set();
+  if (Array.isArray(value?.seenRollIds)) {
+    seenRollIds = new Set(value.seenRollIds.filter((id): id is string => typeof id === "string").slice(-maxSeenRollIds));
+  } else {
+    seenRollIds = new Set();
+    initialSeenMigrationCutoff = Date.now();
+  }
 
   if (isPanelPosition(value?.position)) {
     panelPosition = value.position;
