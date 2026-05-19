@@ -36,6 +36,12 @@ await Promise.all([
   }),
   esbuild.build({
     ...common,
+    entryPoints: ["src/pageBridge.ts"],
+    outfile: "dist/page-bridge.js",
+    format: "iife"
+  }),
+  esbuild.build({
+    ...common,
     entryPoints: ["src/popup.ts"],
     outfile: "dist/popup.js",
     format: "iife"

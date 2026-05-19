@@ -52,7 +52,10 @@ const panelUiStorageKey = "diceRoomPanelUi";
 const defaultDiceAnimationScale = 0.75;
 const minDiceAnimationScale = 0.45;
 const maxDiceAnimationScale = 1.15;
-const extensionUiVersion = "0.1.63";
+const extensionUiVersion = "0.1.64";
+const pageBridgeMessageSource = "demiplane-dice-room-page";
+const pageDiceRollResponseWaitMs = 1400;
+const pageDiceRollResponseTtlMs = 8_000;
 const activeToastByActor = new Map<string, HTMLElement>();
 let collapsed = true;
 let settingsOpen = false;
@@ -65,6 +68,8 @@ let captureArmedUntil = 0;
 let armedBaselineElements = new WeakSet<Element>();
 let captureScanTimers: number[] = [];
 let pendingDicePoolHint: DicePoolHint | undefined;
+let pendingPageDiceRollStartedAt = 0;
+let pendingPageDiceRollResponses: PageDiceRollResponse[] = [];
 const publishedElements = new WeakSet<Element>();
 
 declare global {
@@ -87,7 +92,23 @@ type DicePoolHint = {
   regular?: number;
   hunger?: number;
   total?: number;
+  sequence?: Array<Extract<DiceValue["kind"], "regular" | "hunger">>;
   capturedAt?: number;
+};
+
+type PageDiceRollResponse = {
+  roll?: string;
+  values: number[];
+  receivedAt: number;
+};
+
+type PageBridgeDiceRollMessage = {
+  source: typeof pageBridgeMessageSource;
+  kind: "dice-roll-api-response";
+  payload?: {
+    roll?: unknown;
+    values?: unknown;
+  };
 };
 
 const messages = {
@@ -224,6 +245,7 @@ if (firstLoad) {
 }
 
 async function initializeContentScript(): Promise<void> {
+  window.addEventListener("message", handlePageBridgeMessage);
   await loadPanelUiState();
   liveLayer = createLiveLayer();
   try {
@@ -322,6 +344,53 @@ function scheduleScan(): void {
   }, 180);
 }
 
+function handlePageBridgeMessage(event: MessageEvent): void {
+  if (event.source !== window || !isPageBridgeDiceRollMessage(event.data)) {
+    return;
+  }
+
+  const values = normalizePageDiceRollValues(event.data.payload?.values);
+  if (values.length === 0) {
+    return;
+  }
+
+  pendingPageDiceRollResponses.push({
+    roll: typeof event.data.payload?.roll === "string" ? event.data.payload.roll : undefined,
+    values,
+    receivedAt: Date.now()
+  });
+  prunePageDiceRollResponses();
+
+  if (isCaptureArmed()) {
+    scheduleScan();
+  }
+}
+
+function isPageBridgeDiceRollMessage(value: unknown): value is PageBridgeDiceRollMessage {
+  if (!value || typeof value !== "object") {
+    return false;
+  }
+
+  const message = value as Partial<PageBridgeDiceRollMessage>;
+  return message.source === pageBridgeMessageSource && message.kind === "dice-roll-api-response";
+}
+
+function normalizePageDiceRollValues(values: unknown): number[] {
+  if (!Array.isArray(values)) {
+    return [];
+  }
+
+  return values
+    .map((value) => (typeof value === "number" ? value : Number.parseInt(String(value), 10)))
+    .filter((value) => Number.isFinite(value) && value >= 1 && value <= 100)
+    .slice(0, 80);
+}
+
+function prunePageDiceRollResponses(): void {
+  const cutoff = Date.now() - pageDiceRollResponseTtlMs;
+  pendingPageDiceRollResponses = pendingPageDiceRollResponses.filter((response) => response.receivedAt >= cutoff);
+}
+
 function handlePotentialRollAction(event: PointerEvent): void {
   if (!(event.target instanceof Element)) {
     return;
@@ -337,6 +406,8 @@ function handlePotentialRollAction(event: PointerEvent): void {
   }
 
   pendingDicePoolHint = readCurrentDicePoolHint(rollAction);
+  pendingPageDiceRollStartedAt = Date.now() - 50;
+  pendingPageDiceRollResponses = [];
   armCapture();
 }
 
@@ -456,20 +527,28 @@ function readDicePoolVisualHint(root: Element): DicePoolHint | undefined {
   const markers = collectDicePoolMarkerElements(root, top, bottom, rootRect);
   let regular = 0;
   let hunger = 0;
+  const sequence: Array<Extract<DiceValue["kind"], "regular" | "hunger">> = [];
   const seenRects: DOMRect[] = [];
 
-  for (const marker of markers) {
-    const rect = marker.getBoundingClientRect();
+  const orderedMarkers = markers
+    .map((marker) => ({ marker, rect: marker.getBoundingClientRect() }))
+    .sort((first, second) => {
+      const vertical = first.rect.top - second.rect.top;
+      return Math.abs(vertical) > 8 ? vertical : first.rect.left - second.rect.left;
+    });
+
+  for (const { marker, rect } of orderedMarkers) {
     if (seenRects.some((seen) => rectsMostlyOverlap(seen, rect))) {
       continue;
     }
 
     const kind = inferDicePoolMarkerKind(root, marker);
-    if (!kind) {
+    if (kind !== "regular" && kind !== "hunger") {
       continue;
     }
 
     seenRects.push(rect);
+    sequence.push(kind);
     if (kind === "hunger") {
       hunger += 1;
     } else {
@@ -478,7 +557,7 @@ function readDicePoolVisualHint(root: Element): DicePoolHint | undefined {
   }
 
   const total = regular + hunger;
-  return total > 0 ? { regular, hunger, total, capturedAt: Date.now() } : undefined;
+  return total > 0 ? { regular, hunger, total, sequence, capturedAt: Date.now() } : undefined;
 }
 
 function collectDicePoolMarkerElements(root: Element, top: number, bottom: number, rootRect: DOMRect): Element[] {
@@ -546,6 +625,8 @@ function disarmCapture(): void {
   captureArmedUntil = 0;
   armedBaselineElements = new WeakSet<Element>();
   pendingDicePoolHint = undefined;
+  pendingPageDiceRollStartedAt = 0;
+  pendingPageDiceRollResponses = [];
 
   for (const timer of captureScanTimers) {
     clearTimeout(timer);
@@ -706,6 +787,10 @@ function extractRoll(element: Element): CapturedRoll | undefined {
   const sourceLines = enriched?.lines ?? lines;
   const poolHint = getActiveDicePoolHint();
   if (poolHint?.total && !hasRollDetailsText(sourceText)) {
+    return undefined;
+  }
+
+  if (shouldWaitForPageDiceRollResponses(poolHint)) {
     return undefined;
   }
 
@@ -905,6 +990,62 @@ function parseNumber(text: string, pattern: RegExp): number | null {
   return Number.isFinite(value) ? value : null;
 }
 
+function shouldWaitForPageDiceRollResponses(poolHint?: DicePoolHint): boolean {
+  if (!isCaptureArmed() || pendingPageDiceRollStartedAt <= 0 || !poolHint?.sequence?.length) {
+    return false;
+  }
+
+  if (Date.now() - pendingPageDiceRollStartedAt > pageDiceRollResponseWaitMs) {
+    return false;
+  }
+
+  return getActivePageDiceRollValues().length < poolHint.sequence.length;
+}
+
+function buildDiceFromPageDiceRollResponses(successes?: number, poolHint?: DicePoolHint): DiceValue[] {
+  if (!isCaptureArmed() || pendingPageDiceRollStartedAt <= 0 || !poolHint?.sequence?.length) {
+    return [];
+  }
+
+  const values = getActivePageDiceRollValues();
+  if (values.length === 0 || values.length !== poolHint.sequence.length) {
+    return [];
+  }
+
+  if (typeof poolHint.total === "number" && values.length !== poolHint.total) {
+    return [];
+  }
+
+  const dice = values.map((value, index): DiceValue => {
+    const kind = poolHint.sequence?.[index] ?? "regular";
+    return {
+      kind,
+      value,
+      sides: value <= 10 ? 10 : undefined,
+      face: getDieFaceFromValue(kind, value)
+    };
+  });
+
+  if (typeof successes === "number" && calculateDiceSuccesses(dice) !== successes) {
+    return [];
+  }
+
+  return dice;
+}
+
+function getActivePageDiceRollValues(): number[] {
+  prunePageDiceRollResponses();
+
+  if (pendingPageDiceRollStartedAt <= 0) {
+    return [];
+  }
+
+  return pendingPageDiceRollResponses
+    .filter((response) => response.receivedAt >= pendingPageDiceRollStartedAt)
+    .flatMap((response) => response.values)
+    .slice(0, 80);
+}
+
 function parseDice(
   element: Element,
   lines: string[],
@@ -912,6 +1053,11 @@ function parseDice(
   successes?: number,
   poolHint?: DicePoolHint
 ): DiceValue[] {
+  const pageDice = buildDiceFromPageDiceRollResponses(successes, poolHint);
+  if (pageDice.length > 0) {
+    return pageDice;
+  }
+
   const detailDice = parseDetailDiceFromDom(element, successes);
   const textDetailDice =
     typeof text === "string" && typeof successes === "number" ? parseDetailDiceFromText(text, successes, poolHint) : [];
