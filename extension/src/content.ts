@@ -53,7 +53,7 @@ const panelUiStorageKey = "diceRoomPanelUi";
 const defaultDiceAnimationScale = 0.75;
 const minDiceAnimationScale = 0.45;
 const maxDiceAnimationScale = 1.15;
-const extensionUiVersion = "0.1.69";
+const extensionUiVersion = "0.1.70";
 const pageBridgeMessageSource = "demiplane-dice-room-page";
 const pageDiceRollResponseWaitMs = 1400;
 const pageDiceRollResponseTtlMs = 8_000;
@@ -1747,12 +1747,10 @@ function parseDetailDiceFromDom(element: Element, successes?: number): DiceValue
     const markerParts = collectDetailMarkerParts(element, marker);
     const red = hasStrongRedMarkerColor(marker, markerParts);
     const filledRed = hasDominantRedFillColor(marker, markerParts);
-    const inferredFace = inferDieFaceFromElement(marker);
-    const graphicFace = inferGraphicDetailDieFace(marker, red, filledRed, markerParts);
-    const face =
-      inferredFace === "critical" || inferredFace === "skull"
-        ? inferredFace
-        : graphicFace ?? inferredFace ?? inferBlankDetailDieFace(marker, countText, detailLabelRects);
+    const explicitFace = inferDemiplaneDetailDieFace(marker);
+    const inferredFace = explicitFace ?? inferDieFaceFromElement(marker);
+    const graphicFace = explicitFace ? undefined : inferGraphicDetailDieFace(marker, red, filledRed, markerParts);
+    const face = explicitFace ?? graphicFace ?? inferredFace ?? inferBlankDetailDieFace(marker, countText, detailLabelRects);
     const markerIsNearDetails = isNearDetailsRow(marker, countText, detailLabelRects);
     if (!face && !markerIsNearDetails) {
       continue;
@@ -2011,6 +2009,44 @@ function inferGraphicDetailDieFace(
   }
 
   return filledRed ? "blank" : undefined;
+}
+
+function inferDemiplaneDetailDieFace(element: Element): DiceFace | undefined {
+  const context = getElementContext(element);
+
+  if (
+    /(history-item-result__die--(?:standard|hunger)-(?:fail|failure)|(?:standard|hunger)[-_\s]+(?:fail|failure)|(?:standard|hunger)\s+failure|(?:standard|hunger)\s+fail|standard-fail\.png|hunger-fail\.png)/i.test(
+      context
+    )
+  ) {
+    return "blank";
+  }
+
+  if (
+    /(history-item-result__die--hunger-(?:skull|beast|bestial)|hunger[-_\s]+(?:skull|beast|bestial)|vampiric[-_\s]+skull|vampiric\s+skull|hunger-skull\.png|skull\.png)/i.test(
+      context
+    )
+  ) {
+    return "skull";
+  }
+
+  if (
+    /(history-item-result__die--(?:standard|hunger)-(?:critical|crit|special)|(?:standard|hunger)[-_\s]+(?:critical|crit|special)|(?:standard|hunger)\s+(?:critical|special)|special[-_\s]+ankh|fanged[-_\s]+ankh|ankh[-_\s]+fangs?|ankh[-_\s]+presas?|fangs?|presas?|critical\.png|crit\.png|special\.png)/i.test(
+      context
+    )
+  ) {
+    return "critical";
+  }
+
+  if (
+    /(history-item-result__die--(?:standard|hunger)-success|(?:standard|hunger)[-_\s]+success|(?:standard|hunger)\s+success|standard-success\.png|hunger-success\.png)/i.test(
+      context
+    )
+  ) {
+    return "success";
+  }
+
+  return undefined;
 }
 
 function isNearDetailsRow(marker: Element, countText: VisibleNumberText, detailLabelRects: DOMRect[]): boolean {
