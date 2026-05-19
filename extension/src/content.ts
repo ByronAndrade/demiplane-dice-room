@@ -48,11 +48,12 @@ const diceSupportPivotSpinDamping = 0.02;
 const diceFaceCollapseSpeed = 14;
 const diceHardFaceCollapseSpeed = 28;
 const maxAnimatedDice = 20;
+const maxSeenRollIds = 200;
 const panelUiStorageKey = "diceRoomPanelUi";
 const defaultDiceAnimationScale = 0.75;
 const minDiceAnimationScale = 0.45;
 const maxDiceAnimationScale = 1.15;
-const extensionUiVersion = "0.1.64";
+const extensionUiVersion = "0.1.66";
 const pageBridgeMessageSource = "demiplane-dice-room-page";
 const pageDiceRollResponseWaitMs = 1400;
 const pageDiceRollResponseTtlMs = 8_000;
@@ -70,6 +71,7 @@ let captureScanTimers: number[] = [];
 let pendingDicePoolHint: DicePoolHint | undefined;
 let pendingPageDiceRollStartedAt = 0;
 let pendingPageDiceRollResponses: PageDiceRollResponse[] = [];
+let seenRollIds = new Set<string>();
 const publishedElements = new WeakSet<Element>();
 
 declare global {
@@ -98,6 +100,7 @@ type DicePoolHint = {
 
 type PageDiceRollResponse = {
   roll?: string;
+  order?: number;
   values: number[];
   receivedAt: number;
 };
@@ -107,6 +110,7 @@ type PageBridgeDiceRollMessage = {
   kind: "dice-roll-api-response";
   payload?: {
     roll?: unknown;
+    order?: unknown;
     values?: unknown;
   };
 };
@@ -114,6 +118,7 @@ type PageBridgeDiceRollMessage = {
 const messages = {
   "pt-BR": {
     historyCount: (count: number) => `${count} ${count === 1 ? "rolagem" : "rolagens"}`,
+    unreadCount: (count: number) => `${count} ${count === 1 ? "nova" : "novas"}`,
     connected: "Conectado",
     connecting: "Conectando",
     disconnected: "Desconectado",
@@ -173,6 +178,7 @@ const messages = {
   },
   en: {
     historyCount: (count: number) => `${count} ${count === 1 ? "roll" : "rolls"}`,
+    unreadCount: (count: number) => `${count} new`,
     connected: "Connected",
     connecting: "Connecting",
     disconnected: "Disconnected",
@@ -356,6 +362,7 @@ function handlePageBridgeMessage(event: MessageEvent): void {
 
   pendingPageDiceRollResponses.push({
     roll: typeof event.data.payload?.roll === "string" ? event.data.payload.roll : undefined,
+    order: typeof event.data.payload?.order === "number" ? event.data.payload.order : undefined,
     values,
     receivedAt: Date.now()
   });
@@ -408,7 +415,14 @@ function handlePotentialRollAction(event: PointerEvent): void {
   pendingDicePoolHint = readCurrentDicePoolHint(rollAction);
   pendingPageDiceRollStartedAt = Date.now() - 50;
   pendingPageDiceRollResponses = [];
-  armCapture();
+  armCapture(isRerollActionElement(rollAction) ? 18_000 : 6000);
+}
+
+function isRerollActionElement(element: Element): boolean {
+  const label = normalizeText(
+    [element.textContent ?? "", element.getAttribute("aria-label") ?? "", element.getAttribute("title") ?? ""].join(" ")
+  );
+  return /\b(re-roll|reroll)\b/i.test(`${label} ${getElementContext(element)}`);
 }
 
 function findRollActionElement(target: Element): Element | undefined {
@@ -605,10 +619,10 @@ function rectsMostlyOverlap(first: DOMRect, second: DOMRect): boolean {
   return overlap / smallerArea > 0.72;
 }
 
-function armCapture(): void {
+function armCapture(durationMs = 6000): void {
   baselineCurrentRolls();
   armedBaselineElements = new WeakSet(collectRollCandidates().map(({ element }) => element));
-  captureArmedUntil = Date.now() + 6000;
+  captureArmedUntil = Date.now() + durationMs;
 
   for (const timer of captureScanTimers) {
     clearTimeout(timer);
@@ -909,7 +923,7 @@ function isOwnPanelElement(element: Element): boolean {
 }
 
 function isControlBlock(text: string): boolean {
-  return /(add dice to roll|dice pool|clear|regular\s+hunger)/i.test(text);
+  return /(add dice to roll|dice pool|clear|regular\s+hunger|select dice to reroll|select dice to re-roll)/i.test(text);
 }
 
 function normalizeRollTextForSignature(text: string, lines: string[]): string {
@@ -953,6 +967,11 @@ function parseRollTitle(text: string, lines: string[]): string | undefined {
     return "CUSTOM";
   }
 
+  const simpleLine = lines.find((line) => isSingleTraitRollTitle(line));
+  if (simpleLine) {
+    return simpleLine.replace(/\s+/g, " ").trim();
+  }
+
   const match = text.match(/\b([A-Z][A-Z '-]{2,50})[ \t]*\+[ \t]*([A-Z][A-Z '-]{2,50})\b/);
   if (!match) {
     return undefined;
@@ -965,9 +984,20 @@ function isAttributeSkillTitle(value: string): boolean {
   return /^[A-Z][A-Z '-]{2,50}[ \t]*\+[ \t]*[A-Z][A-Z '-]{2,50}$/.test(value.trim());
 }
 
+function isSingleTraitRollTitle(value: string): boolean {
+  const title = value.replace(/\s+/g, " ").trim();
+  if (!/^[A-Z][A-Z '-]{1,50}$/.test(title) || isAttributeSkillTitle(title)) {
+    return false;
+  }
+
+  return !/^(ADD DICE TO ROLL|ATTRIBUTES|CLEAR|COTERIE|CUSTOM|DETAILS|DETAILED|DICE POOL|DISCIPLINES|EXPAND|FLAWS|GAME RULES|GROUPS|HEALTH|HUMANITY|HUNGER|INVENTORY|LIBRARY|LOCAL|MENTAL|MERITS|NOTES|PHYSICAL|RE-ROLL|REROLL|ROLL|SELECT DICE TO REROLL|SKILLS|SOCIAL|SUCCESSES?|SUCCESS|WILLPOWER)$/i.test(
+    title
+  );
+}
+
 function isUsefulRollTitle(value: string): boolean {
   const title = value.trim();
-  return isAttributeSkillTitle(title) || /^custom$/i.test(title);
+  return isAttributeSkillTitle(title) || isSingleTraitRollTitle(title) || /^custom$/i.test(title);
 }
 
 function getUniqueRollTitles(text: string): string[] {
@@ -1042,6 +1072,11 @@ function getActivePageDiceRollValues(): number[] {
 
   return pendingPageDiceRollResponses
     .filter((response) => response.receivedAt >= pendingPageDiceRollStartedAt)
+    .sort((first, second) => {
+      const firstOrder = first.order ?? Number.MAX_SAFE_INTEGER;
+      const secondOrder = second.order ?? Number.MAX_SAFE_INTEGER;
+      return firstOrder !== secondOrder ? firstOrder - secondOrder : first.receivedAt - second.receivedAt;
+    })
     .flatMap((response) => response.values)
     .slice(0, 80);
 }
@@ -2452,6 +2487,32 @@ function getVisibleRolls(): Array<{ roll: RollEvent; origin: "local" | "remote";
   return rolls.filter(shouldShowRoll);
 }
 
+function getUnreadVisibleRolls(
+  visibleRolls: Array<{ roll: RollEvent; origin: "local" | "remote"; delivery: string }>
+): Array<{ roll: RollEvent; origin: "local" | "remote"; delivery: string }> {
+  return visibleRolls.filter((item) => item.origin === "remote" && !seenRollIds.has(item.roll.id));
+}
+
+function markRollsSeen(items: Array<{ roll: RollEvent; origin: "local" | "remote"; delivery: string }>): boolean {
+  let changed = false;
+
+  for (const item of items) {
+    if (item.origin !== "remote" || seenRollIds.has(item.roll.id)) {
+      continue;
+    }
+
+    seenRollIds.add(item.roll.id);
+    changed = true;
+  }
+
+  if (seenRollIds.size > maxSeenRollIds) {
+    seenRollIds = new Set(Array.from(seenRollIds).slice(-maxSeenRollIds));
+    changed = true;
+  }
+
+  return changed;
+}
+
 function shouldShowRoll(item: { roll: RollEvent; origin: "local" | "remote"; delivery: string }): boolean {
   if (item.origin !== "local") {
     return true;
@@ -3031,9 +3092,10 @@ function createPanel(): {
 
   toggle.addEventListener("click", () => {
     collapsed = !collapsed;
-    host.dataset.collapsed = String(collapsed);
-    toggle.textContent = collapsed ? "^" : "v";
-    toggle.setAttribute("aria-label", collapsed ? "Abrir historico" : "Recolher historico");
+    if (!collapsed) {
+      markRollsSeen(getVisibleRolls());
+    }
+    renderPanel();
     void savePanelUiState();
   });
 
@@ -3114,12 +3176,17 @@ function renderPanel(): void {
   }
 
   const visibleRolls = getVisibleRolls();
+  if (!collapsed && markRollsSeen(visibleRolls)) {
+    void savePanelUiState();
+  }
+  const unreadRolls = getUnreadVisibleRolls(visibleRolls);
   const displayStatus = getDisplayStatus(connectionState.status);
   panel.status.textContent = statusLabel(displayStatus);
   panel.status.className = `status status-${displayStatus}`;
   panel.status.title = t("openDiagnostic");
-  panel.count.textContent = String(visibleRolls.length);
-  panel.countLabel.textContent = t("historyCount", visibleRolls.length);
+  panel.count.textContent = String(unreadRolls.length);
+  panel.countLabel.textContent = t("unreadCount", unreadRolls.length);
+  panel.countLabel.title = t("historyCount", visibleRolls.length);
   panel.host.dataset.collapsed = String(collapsed);
   panel.host.dataset.diagnostic = String(diagnosticOpen);
   panel.host.dataset.settings = String(settingsOpen);
@@ -3281,7 +3348,8 @@ async function loadPanelUiState(): Promise<void> {
       opacity: 0.94,
       diceAnimationScale: defaultDiceAnimationScale,
       position: undefined,
-      language: "pt-BR"
+      language: "pt-BR",
+      seenRollIds: []
     }
   });
 
@@ -3293,6 +3361,7 @@ async function loadPanelUiState(): Promise<void> {
         diceAnimationScale?: unknown;
         position?: unknown;
         language?: unknown;
+        seenRollIds?: unknown;
       }
     | undefined;
 
@@ -3304,6 +3373,9 @@ async function loadPanelUiState(): Promise<void> {
       ? clampNumber(value.diceAnimationScale, minDiceAnimationScale, maxDiceAnimationScale)
       : defaultDiceAnimationScale;
   uiLanguage = value?.language === "en" ? "en" : "pt-BR";
+  seenRollIds = Array.isArray(value?.seenRollIds)
+    ? new Set(value.seenRollIds.filter((id): id is string => typeof id === "string").slice(-maxSeenRollIds))
+    : new Set();
 
   if (isPanelPosition(value?.position)) {
     panelPosition = value.position;
@@ -3318,7 +3390,8 @@ async function savePanelUiState(): Promise<void> {
       opacity: panelOpacity,
       diceAnimationScale,
       position: panelPosition,
-      language: uiLanguage
+      language: uiLanguage,
+      seenRollIds: Array.from(seenRollIds).slice(-maxSeenRollIds)
     }
   });
 }

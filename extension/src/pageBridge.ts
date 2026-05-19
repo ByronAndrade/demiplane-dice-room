@@ -2,8 +2,11 @@ const source = "demiplane-dice-room-page";
 
 export {};
 
+let requestSequence = 0;
+
 type DiceRollApiPayload = {
   roll?: string;
+  order: number;
   values: number[];
 };
 
@@ -36,13 +39,15 @@ function patchFetch(): void {
   const originalFetch = window.fetch.bind(window);
 
   window.fetch = async (...args: Parameters<typeof fetch>): Promise<Response> => {
+    const order = requestSequence;
+    requestSequence += 1;
     const response = await originalFetch(...args);
     const url = getFetchUrl(args[0], response.url);
     if (isDiceRollUrl(url)) {
       void response
         .clone()
         .text()
-        .then((text) => publishDiceRollResponse(url, text))
+        .then((text) => publishDiceRollResponse(url, text, order))
         .catch(() => undefined);
     }
 
@@ -58,6 +63,7 @@ function patchXhr(): void {
   const originalOpen = xhrPrototype.open;
   const originalSend = xhrPrototype.send;
   const requestUrlByXhr = new WeakMap<XMLHttpRequest, string>();
+  const requestOrderByXhr = new WeakMap<XMLHttpRequest, number>();
 
   xhrPrototype.open = function patchedOpen(this: XMLHttpRequest, ...args: unknown[]): void {
     const url = args[1];
@@ -69,14 +75,17 @@ function patchXhr(): void {
   };
 
   xhrPrototype.send = function patchedSend(this: XMLHttpRequest, ...args: unknown[]): void {
+    requestOrderByXhr.set(this, requestSequence);
+    requestSequence += 1;
     this.addEventListener("loadend", () => {
       const url = requestUrlByXhr.get(this);
+      const order = requestOrderByXhr.get(this) ?? requestSequence;
       const responseText = readXhrResponseText(this);
       if (!url || !isDiceRollUrl(url) || !responseText) {
         return;
       }
 
-      publishDiceRollResponse(url, responseText);
+      publishDiceRollResponse(url, responseText, order);
     });
 
     return originalSend.apply(this, args);
@@ -107,8 +116,8 @@ function isDiceRollUrl(url: string): boolean {
   return url.includes("/dice-roll");
 }
 
-function publishDiceRollResponse(url: string, responseText: string): void {
-  const payload = parseDiceRollApiPayload(url, responseText);
+function publishDiceRollResponse(url: string, responseText: string, order: number): void {
+  const payload = parseDiceRollApiPayload(url, responseText, order);
   if (!payload || payload.values.length === 0) {
     return;
   }
@@ -123,7 +132,7 @@ function publishDiceRollResponse(url: string, responseText: string): void {
   );
 }
 
-function parseDiceRollApiPayload(url: string, responseText: string): DiceRollApiPayload | undefined {
+function parseDiceRollApiPayload(url: string, responseText: string, order: number): DiceRollApiPayload | undefined {
   const data = parseJson(responseText);
   if (!data) {
     return undefined;
@@ -132,6 +141,7 @@ function parseDiceRollApiPayload(url: string, responseText: string): DiceRollApi
   const values = extractDiceValues(data);
   return {
     roll: getRollParam(url),
+    order,
     values
   };
 }
