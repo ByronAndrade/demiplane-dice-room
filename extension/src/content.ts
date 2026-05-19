@@ -53,7 +53,7 @@ const panelUiStorageKey = "diceRoomPanelUi";
 const defaultDiceAnimationScale = 0.75;
 const minDiceAnimationScale = 0.45;
 const maxDiceAnimationScale = 1.15;
-const extensionUiVersion = "0.1.73";
+const extensionUiVersion = "0.1.74";
 const pageBridgeMessageSource = "demiplane-dice-room-page";
 const pageDiceRollResponseWaitMs = 1400;
 const pageDiceRollResponseTtlMs = 8_000;
@@ -1365,10 +1365,10 @@ function readDemiplaneDetailDieCount(element: Element): number {
 }
 
 function inferDemiplaneDetailDieKind(element: Element): DiceValue["kind"] | undefined {
-  const context = getElementContext(element);
+  const context = getDemiplaneDetailDieContext(element);
 
   if (
-    /(history-item-result__die--hunger-|hunger[-_\s]+(?:fail|failure|success|critical|crit|special|skull|beast|bestial)|hunger\s+(?:failure|fail|success|critical|special|skull|beast|bestial)|hunger-(?:fail|success|critical|crit|special|skull|beast|bestial)\.png|hunger-fail\.png|hunger-success\.png|hunger-skull\.png|vampiric[-_\s]+skull|vampiric\s+skull)/i.test(
+    /(history-item-result__die--hunger-|hunger[-_\s]+(?:[1-9]|10|fail|failure|success|critical|crit|special|skull|beast|bestial)(?:[-_\s]+roll)?|hunger\s+(?:[1-9]|10|failure|fail|success|critical|special|skull|beast|bestial)|hunger-(?:[1-9]|10|fail|success|critical|crit|special|skull|beast|bestial)-roll\.png|hunger-fail\.png|hunger-success\.png|hunger-skull\.png|vampiric[-_\s]+skull|vampiric\s+skull)/i.test(
       context
     )
   ) {
@@ -1376,7 +1376,7 @@ function inferDemiplaneDetailDieKind(element: Element): DiceValue["kind"] | unde
   }
 
   if (
-    /(history-item-result__die--standard-|standard[-_\s]+(?:fail|failure|success|critical|crit|special)|standard\s+(?:failure|fail|success|critical|special)|standard-(?:fail|success|critical|crit|special)\.png|standard-fail\.png|standard-success\.png)/i.test(
+    /(history-item-result__die--standard-|standard[-_\s]+(?:[1-9]|10|fail|failure|success|critical|crit|special)(?:[-_\s]+roll)?|standard\s+(?:[1-9]|10|failure|fail|success|critical|special)|standard-(?:[1-9]|10|fail|success|critical|crit|special)-roll\.png|standard-fail\.png|standard-success\.png)/i.test(
       context
     )
   ) {
@@ -1424,10 +1424,10 @@ function getTextRangeRect(node: Text, start: number, end: number): DOMRect | und
 }
 
 function inferDemiplaneDetailDieFace(element: Element): DiceFace | undefined {
-  const context = getElementContext(element);
+  const context = getDemiplaneDetailDieContext(element);
 
   if (
-    /(history-item-result__die--(?:standard|hunger)-(?:fail|failure)|(?:standard|hunger)[-_\s]+(?:fail|failure)|(?:standard|hunger)\s+failure|(?:standard|hunger)\s+fail|standard-fail\.png|hunger-fail\.png)/i.test(
+    /(history-item-result__die--(?:standard|hunger)-(?:fail|failure)|(?:standard|hunger)[-_\s]+(?:fail|failure)|(?:standard|hunger)\s+failure|(?:standard|hunger)\s+fail|standard-fail\.png|hunger-fail\.png|history-item-result__die--standard-[1-5]\b|history-item-result__die--hunger-[2-5]\b|standard[-_\s]+[1-5](?:[-_\s]+roll)?|hunger[-_\s]+[2-5](?:[-_\s]+roll)?|standard-[1-5]-roll\.png|hunger-[2-5]-roll\.png)/i.test(
       context
     )
   ) {
@@ -1435,7 +1435,7 @@ function inferDemiplaneDetailDieFace(element: Element): DiceFace | undefined {
   }
 
   if (
-    /(history-item-result__die--hunger-(?:skull|beast|bestial)|hunger[-_\s]+(?:skull|beast|bestial)|vampiric[-_\s]+skull|vampiric\s+skull|hunger-skull\.png|skull\.png)/i.test(
+    /(history-item-result__die--hunger-(?:1|skull|beast|bestial)\b|hunger[-_\s]+(?:1|skull|beast|bestial)(?:[-_\s]+roll)?|hunger\s+1|vampiric[-_\s]+skull|vampiric\s+skull|hunger-1-roll\.png|hunger-skull\.png|skull\.png)/i.test(
       context
     )
   ) {
@@ -1443,7 +1443,7 @@ function inferDemiplaneDetailDieFace(element: Element): DiceFace | undefined {
   }
 
   if (
-    /(history-item-result__die--(?:standard|hunger)-(?:critical|crit|special)|(?:standard|hunger)[-_\s]+(?:critical|crit|special)|(?:standard|hunger)\s+(?:critical|special)|special[-_\s]+ankh|fanged[-_\s]+ankh|ankh[-_\s]+fangs?|ankh[-_\s]+presas?|fangs?|presas?|critical\.png|crit\.png|special\.png)/i.test(
+    /(history-item-result__die--(?:standard|hunger)-(?:10|critical|crit|special)\b|(?:standard|hunger)[-_\s]+(?:10|critical|crit|special)(?:[-_\s]+roll)?|(?:standard|hunger)\s+(?:10|critical|special)|standard-10-roll\.png|hunger-10-roll\.png|special[-_\s]+ankh|fanged[-_\s]+ankh|ankh[-_\s]+fangs?|ankh[-_\s]+presas?|fangs?|presas?|critical\.png|crit\.png|special\.png)/i.test(
       context
     )
   ) {
@@ -1451,7 +1451,7 @@ function inferDemiplaneDetailDieFace(element: Element): DiceFace | undefined {
   }
 
   if (
-    /(history-item-result__die--(?:standard|hunger)-success|(?:standard|hunger)[-_\s]+success|(?:standard|hunger)\s+success|standard-success\.png|hunger-success\.png)/i.test(
+    /(history-item-result__die--(?:standard|hunger)-(?:success|[6-9])\b|(?:standard|hunger)[-_\s]+(?:success|[6-9])(?:[-_\s]+roll)?|(?:standard|hunger)\s+(?:success|[6-9])|standard-success\.png|hunger-success\.png|standard-[6-9]-roll\.png|hunger-[6-9]-roll\.png)/i.test(
       context
     )
   ) {
@@ -1459,6 +1459,19 @@ function inferDemiplaneDetailDieFace(element: Element): DiceFace | undefined {
   }
 
   return undefined;
+}
+
+function getDemiplaneDetailDieContext(element: Element): string {
+  const childImageContext = Array.from(element.querySelectorAll("img"))
+    .flatMap((image) => [
+      image.getAttribute("alt") ?? "",
+      image.getAttribute("src") ?? "",
+      image.getAttribute("srcset") ?? ""
+    ])
+    .filter(Boolean)
+    .join(" ");
+
+  return `${getElementContext(element)} ${childImageContext}`;
 }
 
 function collectDetailMarkerParts(root: Element, marker: Element): Element[] {
