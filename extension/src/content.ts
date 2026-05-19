@@ -53,7 +53,7 @@ const panelUiStorageKey = "diceRoomPanelUi";
 const defaultDiceAnimationScale = 0.75;
 const minDiceAnimationScale = 0.45;
 const maxDiceAnimationScale = 1.15;
-const extensionUiVersion = "0.1.68";
+const extensionUiVersion = "0.1.69";
 const pageBridgeMessageSource = "demiplane-dice-room-page";
 const pageDiceRollResponseWaitMs = 1400;
 const pageDiceRollResponseTtlMs = 8_000;
@@ -1998,6 +1998,10 @@ function inferGraphicDetailDieFace(
     return "skull";
   }
 
+  if (filledRed && hasFangedAnkhInteriorShape(marker, markerParts)) {
+    return "critical";
+  }
+
   if (filledRed && hasInteriorInkShape(marker, markerParts, false)) {
     return "success";
   }
@@ -2229,6 +2233,55 @@ function hasInteriorInkShape(element: Element, markerParts?: Element[], includeR
   return false;
 }
 
+function hasFangedAnkhInteriorShape(element: Element, markerParts?: Element[]): boolean {
+  const markerRect = element.getBoundingClientRect();
+  const markerArea = Math.max(1, markerRect.width * markerRect.height);
+  const elements = markerParts ?? Array.from(element.querySelectorAll("*"));
+  let inkCount = 0;
+
+  for (const current of elements) {
+    if (!(current instanceof Element)) {
+      continue;
+    }
+
+    const style = window.getComputedStyle(current);
+    const hasDarkInk = [style.color, style.backgroundColor, style.fill, style.stroke].some((color) => {
+      const rgb = parseRgbColor(color);
+      if (!rgb) {
+        return false;
+      }
+
+      const [red, green, blue] = rgb;
+      return red < 90 && green < 90 && blue < 90;
+    });
+
+    if (!hasDarkInk) {
+      continue;
+    }
+
+    const rect = current.getBoundingClientRect();
+    const insideMarker =
+      rect.left >= markerRect.left - 1 &&
+      rect.right <= markerRect.right + 1 &&
+      rect.top >= markerRect.top - 1 &&
+      rect.bottom <= markerRect.bottom + 1;
+    const area = rect.width * rect.height;
+    if (!insideMarker || area < markerArea * 0.008 || area > markerArea * 0.52) {
+      continue;
+    }
+
+    inkCount += 1;
+    const widthRatio = rect.width / Math.max(1, markerRect.width);
+    const heightRatio = rect.height / Math.max(1, markerRect.height);
+    const aspect = rect.width / Math.max(1, rect.height);
+    if (widthRatio >= 0.48 && heightRatio >= 0.36 && aspect >= 0.72) {
+      return true;
+    }
+  }
+
+  return inkCount >= 3;
+}
+
 function parseDiceFromText(lines: string[]): DiceValue[] {
   const dice: DiceValue[] = [];
 
@@ -2321,7 +2374,11 @@ function inferDieFaceFromElement(element: Element): DiceFace | undefined {
     return "skull";
   }
 
-  if (/(critical|crit|messy|special|double|two[-_\s]?ankh|double[-_\s]?ankh|regular[-_\s]?10|hunger[-_\s]?10|blood[-_\s]?10|face[-_\s]?10|result[-_\s]?10|d10[-_\s]?10)/i.test(context)) {
+  if (
+    /(critical|crit|messy|special|fangs?|presas?|double|two[-_\s]?ankh|double[-_\s]?ankh|fanged[-_\s]?ankh|ankh[-_\s]?fangs?|ankh[-_\s]?presas?|regular[-_\s]?10|hunger[-_\s]?10|blood[-_\s]?10|face[-_\s]?10|result[-_\s]?10|d10[-_\s]?10)/i.test(
+      context
+    )
+  ) {
     return "critical";
   }
 
