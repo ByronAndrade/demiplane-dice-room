@@ -52,7 +52,7 @@ const panelUiStorageKey = "diceRoomPanelUi";
 const defaultDiceAnimationScale = 0.75;
 const minDiceAnimationScale = 0.45;
 const maxDiceAnimationScale = 1.15;
-const extensionUiVersion = "0.1.62";
+const extensionUiVersion = "0.1.63";
 const activeToastByActor = new Map<string, HTMLElement>();
 let collapsed = true;
 let settingsOpen = false;
@@ -453,20 +453,7 @@ function readDicePoolVisualHint(root: Element): DicePoolHint | undefined {
   const lowerControls = controlRects.filter((rect) => rect.top > top + 8);
   const bottom =
     lowerControls.length > 0 ? Math.min(...lowerControls.map((rect) => rect.top)) - 2 : rootRect.bottom;
-  const markers = collectDieMarkerElements(root).filter((marker) => {
-    const rect = marker.getBoundingClientRect();
-    const centerX = rect.left + rect.width / 2;
-    const centerY = rect.top + rect.height / 2;
-    const hasPoolSize = rect.width >= 7 && rect.height >= 7 && rect.width <= 38 && rect.height <= 38;
-    return (
-      hasPoolSize &&
-      centerX >= rootRect.left - 2 &&
-      centerX <= rootRect.right + 2 &&
-      centerY >= top &&
-      centerY <= bottom
-    );
-  });
-
+  const markers = collectDicePoolMarkerElements(root, top, bottom, rootRect);
   let regular = 0;
   let hunger = 0;
   const seenRects: DOMRect[] = [];
@@ -492,6 +479,26 @@ function readDicePoolVisualHint(root: Element): DicePoolHint | undefined {
 
   const total = regular + hunger;
   return total > 0 ? { regular, hunger, total, capturedAt: Date.now() } : undefined;
+}
+
+function collectDicePoolMarkerElements(root: Element, top: number, bottom: number, rootRect: DOMRect): Element[] {
+  return Array.from(root.querySelectorAll("*")).filter((marker) => {
+    const rect = marker.getBoundingClientRect();
+    const centerX = rect.left + rect.width / 2;
+    const centerY = rect.top + rect.height / 2;
+    const hasPoolSize = rect.width >= 7 && rect.height >= 7 && rect.width <= 38 && rect.height <= 38;
+    const labelText = normalizeText(marker.textContent ?? "");
+    return (
+      marker instanceof Element &&
+      isVisibleElement(marker) &&
+      hasPoolSize &&
+      labelText.length <= 2 &&
+      centerX >= rootRect.left - 2 &&
+      centerX <= rootRect.right + 2 &&
+      centerY >= top &&
+      centerY <= bottom
+    );
+  });
 }
 
 function inferDicePoolMarkerKind(root: Element, marker: Element): DiceValue["kind"] | undefined {
@@ -575,6 +582,7 @@ function scanPage(): void {
   }
 
   const candidates = collectRollCandidates();
+  let bestCandidate: { element: Element; captured: CapturedRoll; score: number } | undefined;
 
   for (const { element, captured } of candidates) {
     const previousSignature = elementSignatures.get(element);
@@ -589,11 +597,40 @@ function scanPage(): void {
       continue;
     }
 
-    elementSignatures.set(element, captured.signature);
-    publishCapturedRoll(captured, element);
-    disarmCapture();
-    return;
+    const score = scoreRollCandidate(captured);
+    if (!bestCandidate || score > bestCandidate.score) {
+      bestCandidate = { element, captured, score };
+    }
   }
+
+  if (bestCandidate) {
+    elementSignatures.set(bestCandidate.element, bestCandidate.captured.signature);
+    publishCapturedRoll(bestCandidate.captured, bestCandidate.element);
+    disarmCapture();
+  }
+}
+
+function scoreRollCandidate(captured: CapturedRoll): number {
+  const poolHint = getActiveDicePoolHint();
+  let score = captured.dice.length * 20 + Math.min(captured.rawText.length, 800) / 20;
+
+  if (hasRollDetailsText(captured.rawText)) {
+    score += 1000;
+  }
+
+  if (poolHint?.total && captured.dice.length === poolHint.total) {
+    score += 280;
+  }
+
+  if (typeof poolHint?.hunger === "number" && captured.dice.filter((die) => die.kind === "hunger").length === poolHint.hunger) {
+    score += 220;
+  }
+
+  if (typeof captured.successes === "number" && calculateDiceSuccesses(captured.dice) === captured.successes) {
+    score += 180;
+  }
+
+  return score;
 }
 
 function publishCapturedRoll(captured: CapturedRoll, sourceElement?: Element): void {
@@ -667,7 +704,12 @@ function extractRoll(element: Element): CapturedRoll | undefined {
   const sourceElement = enriched?.element ?? element;
   const sourceText = enriched?.rawText ?? rawText;
   const sourceLines = enriched?.lines ?? lines;
-  const dice = parseDice(sourceElement, sourceLines, sourceText, successes, getActiveDicePoolHint());
+  const poolHint = getActiveDicePoolHint();
+  if (poolHint?.total && !hasRollDetailsText(sourceText)) {
+    return undefined;
+  }
+
+  const dice = parseDice(sourceElement, sourceLines, sourceText, successes, poolHint);
   const signature = hashText([rollTitle, successes, diceKey(dice), normalizeRollTextForSignature(sourceText, sourceLines)].join("|"));
 
   return {
@@ -679,6 +721,10 @@ function extractRoll(element: Element): CapturedRoll | undefined {
     createdAt: new Date().toISOString(),
     signature
   };
+}
+
+function hasRollDetailsText(text: string): boolean {
+  return /\b(details|detalhes)\b/i.test(text);
 }
 
 function findRicherRollElement(
@@ -769,7 +815,12 @@ function looksLikeCompleteRoll(element: Element, text: string, lines: string[]):
 }
 
 function isOwnPanelElement(element: Element): boolean {
-  return element.id === "demiplane-dice-room-panel" || Boolean(element.closest("#demiplane-dice-room-panel"));
+  return (
+    element.id === "demiplane-dice-room-panel" ||
+    element.id === "demiplane-dice-room-live" ||
+    element.id === "demiplane-dice-room-animation" ||
+    Boolean(element.closest("#demiplane-dice-room-panel, #demiplane-dice-room-live, #demiplane-dice-room-animation"))
+  );
 }
 
 function isControlBlock(text: string): boolean {
@@ -1451,6 +1502,10 @@ function parseDetailDiceFromDom(element: Element, successes?: number): DiceValue
   }
 
   const detailLabelRects = collectVisibleTextRects(element, /\b(details|detalhes)\b/i);
+  if (detailLabelRects.length === 0) {
+    return [];
+  }
+
   const usedCounts = new Set<VisibleNumberText>();
   const candidates: DetailDieCandidate[] = [];
 
