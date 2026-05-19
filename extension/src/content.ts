@@ -52,7 +52,7 @@ const panelUiStorageKey = "diceRoomPanelUi";
 const defaultDiceAnimationScale = 0.75;
 const minDiceAnimationScale = 0.45;
 const maxDiceAnimationScale = 1.15;
-const extensionUiVersion = "0.1.60";
+const extensionUiVersion = "0.1.61";
 const activeToastByActor = new Map<string, HTMLElement>();
 let collapsed = true;
 let settingsOpen = false;
@@ -530,7 +530,7 @@ function extractRoll(element: Element): CapturedRoll | undefined {
   const sourceElement = enriched?.element ?? element;
   const sourceText = enriched?.rawText ?? rawText;
   const sourceLines = enriched?.lines ?? lines;
-  const dice = parseDice(sourceElement, sourceLines, sourceText, successes);
+  const dice = parseDice(sourceElement, sourceLines, sourceText, successes, readCurrentHungerDiceCount());
   const signature = hashText([rollTitle, successes, diceKey(dice), normalizeRollTextForSignature(sourceText, sourceLines)].join("|"));
 
   return {
@@ -717,28 +717,169 @@ function parseNumber(text: string, pattern: RegExp): number | null {
   return Number.isFinite(value) ? value : null;
 }
 
-function parseDice(element: Element, lines: string[], text?: string, successes?: number): DiceValue[] {
+function parseDice(
+  element: Element,
+  lines: string[],
+  text?: string,
+  successes?: number,
+  hungerDiceCount?: number
+): DiceValue[] {
   const detailDice = parseDetailDiceFromDom(element, successes);
   const textDetailDice =
     typeof text === "string" && typeof successes === "number" ? parseDetailDiceFromText(text, successes) : [];
+  let dice: DiceValue[];
 
   if (typeof successes === "number" && shouldPreferScoredTextDetailDice(detailDice, textDetailDice, successes)) {
-    return textDetailDice;
+    dice = textDetailDice;
+  } else if (textDetailDice.length > detailDice.length) {
+    dice = textDetailDice;
+  } else if (detailDice.length > 0) {
+    dice = detailDice;
+  } else if (textDetailDice.length > 0) {
+    dice = textDetailDice;
+  } else {
+    dice = parseDiceFromText(lines);
   }
 
-  if (textDetailDice.length > detailDice.length) {
-    return textDetailDice;
+  return reconcileDiceWithHungerCount(dice, hungerDiceCount);
+}
+
+function readCurrentHungerDiceCount(): number | undefined {
+  const body = document.body;
+  if (!body) {
+    return undefined;
   }
 
-  if (detailDice.length > 0) {
-    return detailDice;
+  const visibleValues: number[] = [];
+  const walker = document.createTreeWalker(body, NodeFilter.SHOW_TEXT);
+  while (walker.nextNode()) {
+    const node = walker.currentNode;
+    if (!(node instanceof Text) || !node.parentElement || !isVisibleElement(node.parentElement)) {
+      continue;
+    }
+
+    const match = node.textContent?.match(/\bHUNGER\s*\((\d{1,2})\)/i);
+    if (!match) {
+      continue;
+    }
+
+    const value = Number.parseInt(match[1], 10);
+    if (Number.isFinite(value)) {
+      visibleValues.push(clampNumber(value, 0, 10));
+    }
   }
 
-  if (textDetailDice.length > 0) {
-    return textDetailDice;
+  if (visibleValues.length > 0) {
+    return visibleValues[visibleValues.length - 1];
   }
 
-  return parseDiceFromText(lines);
+  const fallbackMatch = body.innerText?.match(/\bHUNGER\s*\((\d{1,2})\)/i);
+  if (!fallbackMatch) {
+    return undefined;
+  }
+
+  const fallbackValue = Number.parseInt(fallbackMatch[1], 10);
+  return Number.isFinite(fallbackValue) ? clampNumber(fallbackValue, 0, 10) : undefined;
+}
+
+function reconcileDiceWithHungerCount(dice: DiceValue[], hungerDiceCount?: number): DiceValue[] {
+  if (typeof hungerDiceCount !== "number" || dice.length === 0) {
+    return dice;
+  }
+
+  const targetHungerDice = clampNumber(hungerDiceCount, 0, dice.length);
+  const currentHungerDice = dice.filter((die) => die.kind === "hunger").length;
+  if (currentHungerDice === targetHungerDice) {
+    return dice;
+  }
+
+  const reconciled = dice.map((die) => ({ ...die }));
+  if (currentHungerDice < targetHungerDice) {
+    let remaining = targetHungerDice - currentHungerDice;
+    const candidates = getDiceKindConversionCandidates(reconciled, "hunger");
+    for (const index of candidates) {
+      reconciled[index] = convertDiceKind(reconciled[index], "hunger");
+      remaining -= 1;
+      if (remaining <= 0) {
+        break;
+      }
+    }
+  } else {
+    let remaining = currentHungerDice - targetHungerDice;
+    const candidates = getDiceKindConversionCandidates(reconciled, "regular");
+    for (const index of candidates) {
+      reconciled[index] = convertDiceKind(reconciled[index], "regular");
+      remaining -= 1;
+      if (remaining <= 0) {
+        break;
+      }
+    }
+  }
+
+  return reconciled;
+}
+
+function getDiceKindConversionCandidates(dice: DiceValue[], targetKind: DiceValue["kind"]): number[] {
+  return dice
+    .map((die, index) => ({ die, index, face: resolveDiceFace(die) }))
+    .filter(({ die }) => (targetKind === "hunger" ? die.kind !== "hunger" : die.kind === "hunger"))
+    .sort((first, second) => {
+      const faceRank =
+        targetKind === "hunger"
+          ? hungerPromotionFaceRank(first.face) - hungerPromotionFaceRank(second.face)
+          : regularPromotionFaceRank(first.face) - regularPromotionFaceRank(second.face);
+      return faceRank !== 0 ? faceRank : second.index - first.index;
+    })
+    .map(({ index }) => index);
+}
+
+function hungerPromotionFaceRank(face: DiceFace): number {
+  if (face === "critical") {
+    return 0;
+  }
+
+  if (face === "success") {
+    return 1;
+  }
+
+  if (face === "blank") {
+    return 2;
+  }
+
+  return 3;
+}
+
+function regularPromotionFaceRank(face: DiceFace): number {
+  if (face === "blank") {
+    return 0;
+  }
+
+  if (face === "success") {
+    return 1;
+  }
+
+  if (face === "critical") {
+    return 2;
+  }
+
+  return 3;
+}
+
+function convertDiceKind(die: DiceValue, targetKind: DiceValue["kind"]): DiceValue {
+  let face = resolveDiceFace(die);
+  if (targetKind === "regular" && face === "skull") {
+    face = "blank";
+  }
+
+  return createDiceValue(targetKind, face);
+}
+
+function resolveDiceFace(die: DiceValue): DiceFace {
+  if (die.face) {
+    return die.face;
+  }
+
+  return getDieFaceFromValue(die.kind === "hunger" ? "hunger" : "regular", die.value) ?? "blank";
 }
 
 function parseDetailDiceFromText(text: string, successes: number): DiceValue[] {
