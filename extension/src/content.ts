@@ -53,7 +53,7 @@ const panelUiStorageKey = "diceRoomPanelUi";
 const defaultDiceAnimationScale = 0.75;
 const minDiceAnimationScale = 0.45;
 const maxDiceAnimationScale = 1.15;
-const extensionUiVersion = "0.1.71";
+const extensionUiVersion = "0.1.72";
 const pageBridgeMessageSource = "demiplane-dice-room-page";
 const pageDiceRollResponseWaitMs = 1400;
 const pageDiceRollResponseTtlMs = 8_000;
@@ -483,8 +483,7 @@ function getActiveDicePoolHint(): DicePoolHint | undefined {
     return pendingDicePoolHint;
   }
 
-  const hunger = readCurrentHungerDiceCount();
-  return typeof hunger === "number" ? { hunger } : undefined;
+  return undefined;
 }
 
 function readCurrentDicePoolHint(actionElement?: Element): DicePoolHint | undefined {
@@ -494,8 +493,7 @@ function readCurrentDicePoolHint(actionElement?: Element): DicePoolHint | undefi
     return visualHint;
   }
 
-  const hunger = readCurrentHungerDiceCount();
-  return typeof hunger === "number" ? { hunger, capturedAt: Date.now() } : undefined;
+  return undefined;
 }
 
 function findDicePoolRoot(actionElement?: Element): Element | undefined {
@@ -809,7 +807,7 @@ function extractRoll(element: Element): CapturedRoll | undefined {
     return undefined;
   }
 
-  const dice = parseDice(sourceElement, sourceLines, sourceText, successes, poolHint);
+  const dice = parseDice(sourceElement, sourceLines, successes, poolHint);
   const signature = hashText([rollTitle, successes, diceKey(dice), normalizeRollTextForSignature(sourceText, sourceLines)].join("|"));
 
   return {
@@ -855,7 +853,7 @@ function findRicherRollElement(
       .filter(Boolean);
 
     if (isSameSingleRollBlock(rawText, lines, rollTitle, successes)) {
-      const dice = parseDice(current, lines, rawText, successes);
+      const dice = parseDice(current, lines, successes);
       const score = dice.length * 10 + lines.length + Math.min(rawText.length, 600) / 600;
       if (!best || score > best.score) {
         best = { element: current, rawText, lines, score };
@@ -1132,13 +1130,11 @@ function getActivePageDiceRollValues(): number[] {
 function parseDice(
   element: Element,
   lines: string[],
-  text?: string,
   successes?: number,
   poolHint?: DicePoolHint
 ): DiceValue[] {
-  const detailDice = parseDetailDiceFromDom(element, successes);
-  const hasAuthoritativeDetailDice = detailDice.length > 0 && hasDemiplaneDetailDieMetadata(element);
-  if (hasAuthoritativeDetailDice) {
+  const detailDice = parseDetailDiceFromDom(element);
+  if (detailDice.length > 0) {
     return detailDice;
   }
 
@@ -1147,63 +1143,8 @@ function parseDice(
     return pageDice;
   }
 
-  const textDetailDice =
-    typeof text === "string" && typeof successes === "number" ? parseDetailDiceFromText(text, successes, poolHint) : [];
-  let dice: DiceValue[];
-
-  if (typeof successes === "number" && shouldPreferPooledTextDetailDice(textDetailDice, successes, poolHint)) {
-    dice = textDetailDice;
-  } else if (typeof successes === "number" && shouldPreferScoredTextDetailDice(detailDice, textDetailDice, successes)) {
-    dice = textDetailDice;
-  } else if (textDetailDice.length > detailDice.length) {
-    dice = textDetailDice;
-  } else if (detailDice.length > 0) {
-    dice = detailDice;
-  } else if (textDetailDice.length > 0) {
-    dice = textDetailDice;
-  } else {
-    dice = parseDiceFromText(lines);
-  }
-
+  const dice = parseDiceFromText(lines);
   return reconcileDiceWithPoolHint(dice, poolHint);
-}
-
-function readCurrentHungerDiceCount(): number | undefined {
-  const body = document.body;
-  if (!body) {
-    return undefined;
-  }
-
-  const visibleValues: number[] = [];
-  const walker = document.createTreeWalker(body, NodeFilter.SHOW_TEXT);
-  while (walker.nextNode()) {
-    const node = walker.currentNode;
-    if (!(node instanceof Text) || !node.parentElement || !isVisibleElement(node.parentElement)) {
-      continue;
-    }
-
-    const match = node.textContent?.match(/\bHUNGER\s*\((\d{1,2})\)/i);
-    if (!match) {
-      continue;
-    }
-
-    const value = Number.parseInt(match[1], 10);
-    if (Number.isFinite(value)) {
-      visibleValues.push(clampNumber(value, 0, 10));
-    }
-  }
-
-  if (visibleValues.length > 0) {
-    return visibleValues[visibleValues.length - 1];
-  }
-
-  const fallbackMatch = body.innerText?.match(/\bHUNGER\s*\((\d{1,2})\)/i);
-  if (!fallbackMatch) {
-    return undefined;
-  }
-
-  const fallbackValue = Number.parseInt(fallbackMatch[1], 10);
-  return Number.isFinite(fallbackValue) ? clampNumber(fallbackValue, 0, 10) : undefined;
 }
 
 function reconcileDiceWithPoolHint(dice: DiceValue[], poolHint?: DicePoolHint): DiceValue[] {
@@ -1351,363 +1292,10 @@ function resolveDiceFace(die: DiceValue): DiceFace {
   return getDieFaceFromValue(die.kind === "hunger" ? "hunger" : "regular", die.value) ?? "blank";
 }
 
-function parseDetailDiceFromText(text: string, successes: number, poolHint?: DicePoolHint): DiceValue[] {
-  const match = text.match(/\b(?:details|detalhes)\b([\s\S]{0,180})/i);
-  if (!match) {
-    return [];
-  }
-
-  const detailsText = match[1]
-    .split(/\n\s*(?:dice pool|add dice|clear|roll|re-roll|reroll)\b/i)[0]
-    .replace(/[^\d,\s]/g, " ");
-  const counts = (detailsText.match(/\b\d{1,2}\b/g) ?? [])
-    .map((value) => Number.parseInt(value, 10))
-    .filter((value) => Number.isFinite(value) && value > 0 && value <= 80)
-    .slice(0, 7);
-
-  if (counts.length === 0) {
-    return [];
-  }
-
-  const buckets = inferBucketsFromDetailCounts(counts, successes, poolHint);
-  const dice: DiceValue[] = [];
-  for (let index = 0; index < counts.length && index < buckets.length; index += 1) {
-    const bucket = buckets[index];
-    for (let count = 0; count < counts[index] && dice.length < 80; count += 1) {
-      dice.push(createDiceValue(bucket.kind, bucket.face));
-    }
-  }
-
-  return dice;
-}
-
-function shouldPreferPooledTextDetailDice(
-  textDetailDice: DiceValue[],
-  successes: number,
-  poolHint?: DicePoolHint
-): boolean {
-  if (!poolHint || textDetailDice.length === 0) {
-    return false;
-  }
-
-  const totalMatches = typeof poolHint.total !== "number" || textDetailDice.length === poolHint.total;
-  const hungerMatches =
-    typeof poolHint.hunger !== "number" || textDetailDice.filter((die) => die.kind === "hunger").length === poolHint.hunger;
-  return totalMatches && hungerMatches && calculateDiceSuccesses(textDetailDice) === successes;
-}
-
-function shouldPreferScoredTextDetailDice(
-  detailDice: DiceValue[],
-  textDetailDice: DiceValue[],
-  successes: number
-): boolean {
-  if (detailDice.length === 0 || textDetailDice.length === 0 || detailDice.length !== textDetailDice.length) {
-    return false;
-  }
-
-  return calculateDiceSuccesses(detailDice) !== successes && calculateDiceSuccesses(textDetailDice) === successes;
-}
-
 function calculateDiceSuccesses(dice: DiceValue[]): number {
   const successCount = dice.filter((die) => die.face === "success").length;
   const criticalCount = dice.filter((die) => die.face === "critical").length;
   return successCount + criticalCount + Math.floor(criticalCount / 2) * 2;
-}
-
-type DetailBucket = { kind: DiceValue["kind"]; face: DiceFace };
-
-const detailBucketOrders: DetailBucket[][] = [
-  [
-    { kind: "hunger", face: "skull" },
-    { kind: "regular", face: "blank" },
-    { kind: "hunger", face: "blank" },
-    { kind: "regular", face: "success" },
-    { kind: "regular", face: "critical" },
-    { kind: "hunger", face: "success" },
-    { kind: "hunger", face: "critical" }
-  ],
-  [
-    { kind: "hunger", face: "skull" },
-    { kind: "regular", face: "blank" },
-    { kind: "hunger", face: "blank" },
-    { kind: "regular", face: "success" },
-    { kind: "hunger", face: "success" },
-    { kind: "regular", face: "critical" },
-    { kind: "hunger", face: "critical" }
-  ],
-  [
-    { kind: "regular", face: "blank" },
-    { kind: "hunger", face: "blank" },
-    { kind: "regular", face: "success" },
-    { kind: "regular", face: "critical" },
-    { kind: "hunger", face: "success" },
-    { kind: "hunger", face: "critical" },
-    { kind: "hunger", face: "skull" }
-  ],
-  [
-    { kind: "regular", face: "blank" },
-    { kind: "hunger", face: "blank" },
-    { kind: "regular", face: "success" },
-    { kind: "hunger", face: "success" },
-    { kind: "regular", face: "critical" },
-    { kind: "hunger", face: "critical" },
-    { kind: "hunger", face: "skull" }
-  ]
-];
-
-function inferBucketsFromDetailCountsWithPool(
-  counts: number[],
-  successes: number,
-  poolHint?: DicePoolHint
-): DetailBucket[] | undefined {
-  if (!poolHint || counts.length === 0 || counts.length > 7) {
-    return undefined;
-  }
-
-  const totalCount = counts.reduce((total, count) => total + count, 0);
-  const targetTotal = poolHint.total;
-  const targetHunger =
-    typeof poolHint.hunger === "number" ? clampNumber(poolHint.hunger, 0, targetTotal ?? totalCount) : undefined;
-  const targetRegular =
-    typeof poolHint.regular === "number"
-      ? poolHint.regular
-      : typeof targetTotal === "number" && typeof targetHunger === "number"
-        ? Math.max(0, targetTotal - targetHunger)
-        : undefined;
-
-  let best: { buckets: DetailBucket[]; score: number } | undefined;
-  for (const [orderIndex, order] of detailBucketOrders.entries()) {
-    for (const buckets of buildBucketSubsequences(order, counts.length)) {
-      const regularCount = sumCountsForKind(counts, buckets, "regular");
-      const hungerCount = sumCountsForKind(counts, buckets, "hunger");
-      const successCount = calculateBucketSuccesses(counts, buckets);
-      let score = orderIndex * 3;
-
-      if (typeof targetTotal === "number") {
-        score += Math.abs(totalCount - targetTotal) * 500;
-      }
-
-      if (typeof targetRegular === "number") {
-        score += Math.abs(regularCount - targetRegular) * 180;
-      }
-
-      if (typeof targetHunger === "number") {
-        score += Math.abs(hungerCount - targetHunger) * 180;
-      }
-
-      score += Math.abs(successCount - successes) * 160;
-      score += bucketSkipPenalty(order, buckets);
-
-      if (!best || score < best.score) {
-        best = { buckets, score };
-      }
-    }
-  }
-
-  if (!best) {
-    return undefined;
-  }
-
-  const totalMatches = typeof targetTotal !== "number" || totalCount === targetTotal;
-  const regularMatches =
-    typeof targetRegular !== "number" || sumCountsForKind(counts, best.buckets, "regular") === targetRegular;
-  const hungerMatches =
-    typeof targetHunger !== "number" || sumCountsForKind(counts, best.buckets, "hunger") === targetHunger;
-  const successesMatch = calculateBucketSuccesses(counts, best.buckets) === successes;
-  return totalMatches && regularMatches && hungerMatches && successesMatch ? best.buckets : undefined;
-}
-
-function buildBucketSubsequences(order: DetailBucket[], length: number): DetailBucket[][] {
-  const results: DetailBucket[][] = [];
-  const current: DetailBucket[] = [];
-
-  function visit(startIndex: number): void {
-    if (current.length === length) {
-      results.push([...current]);
-      return;
-    }
-
-    const remaining = length - current.length;
-    for (let index = startIndex; index <= order.length - remaining; index += 1) {
-      current.push(order[index]);
-      visit(index + 1);
-      current.pop();
-    }
-  }
-
-  visit(0);
-  return results;
-}
-
-function sumCountsForKind(counts: number[], buckets: DetailBucket[], kind: DiceValue["kind"]): number {
-  return buckets.reduce((total, bucket, index) => total + (bucket.kind === kind ? counts[index] : 0), 0);
-}
-
-function calculateBucketSuccesses(counts: number[], buckets: DetailBucket[]): number {
-  let successCount = 0;
-  let criticalCount = 0;
-  for (const [index, bucket] of buckets.entries()) {
-    if (bucket.face === "success") {
-      successCount += counts[index];
-    } else if (bucket.face === "critical") {
-      criticalCount += counts[index];
-    }
-  }
-
-  return successCount + criticalCount + Math.floor(criticalCount / 2) * 2;
-}
-
-function bucketSkipPenalty(order: DetailBucket[], buckets: DetailBucket[]): number {
-  let penalty = 0;
-  let searchIndex = 0;
-  for (const bucket of buckets) {
-    const foundIndex = order.findIndex(
-      (candidate, index) => index >= searchIndex && candidate.kind === bucket.kind && candidate.face === bucket.face
-    );
-    if (foundIndex >= 0) {
-      penalty += foundIndex - searchIndex;
-      searchIndex = foundIndex + 1;
-    }
-  }
-
-  return penalty;
-}
-
-function inferBucketsFromDetailCounts(
-  counts: number[],
-  successes: number,
-  poolHint?: DicePoolHint
-): Array<{ kind: DiceValue["kind"]; face: DiceFace }> {
-  const pooledBuckets = inferBucketsFromDetailCountsWithPool(counts, successes, poolHint);
-  if (pooledBuckets) {
-    return pooledBuckets;
-  }
-
-  if (counts.length === 1) {
-    return successes > 0 ? [{ kind: "regular", face: "success" }] : [{ kind: "regular", face: "blank" }];
-  }
-
-  if (counts.length === 2) {
-    if (successes <= 0) {
-      return [
-        { kind: "regular", face: "blank" },
-        { kind: "hunger", face: "blank" }
-      ];
-    }
-
-    return [
-      { kind: "regular", face: "blank" },
-      { kind: "regular", face: "success" }
-    ];
-  }
-
-  if (counts.length === 3) {
-    const totalDice = counts[0] + counts[1] + counts[2];
-    if (successes > totalDice) {
-      return [
-        { kind: "regular", face: "success" },
-        { kind: "regular", face: "critical" },
-        { kind: "hunger", face: "success" }
-      ];
-    }
-
-    const thirdCount = counts[2];
-    if (successes === thirdCount) {
-      return [
-        { kind: "regular", face: "blank" },
-        { kind: "hunger", face: "blank" },
-        { kind: "regular", face: "success" }
-      ];
-    }
-
-    return [
-      { kind: "regular", face: "blank" },
-      { kind: "regular", face: "success" },
-      { kind: "regular", face: "critical" }
-    ];
-  }
-
-  if (counts.length === 4) {
-    const [, secondCount, thirdCount, fourthCount] = counts;
-    if (successes === thirdCount + fourthCount) {
-      return [
-        { kind: "regular", face: "blank" },
-        { kind: "hunger", face: "blank" },
-        { kind: "regular", face: "success" },
-        { kind: "hunger", face: "critical" }
-      ];
-    }
-
-    if (successes === secondCount + thirdCount + fourthCount) {
-      return [
-        { kind: "regular", face: "blank" },
-        { kind: "regular", face: "success" },
-        { kind: "hunger", face: "success" },
-        { kind: "hunger", face: "critical" }
-      ];
-    }
-
-    return [
-      { kind: "regular", face: "blank" },
-      { kind: "regular", face: "success" },
-      { kind: "regular", face: "critical" },
-      { kind: "hunger", face: "skull" }
-    ];
-  }
-
-  if (counts.length === 5) {
-    const markedSuccessDice = counts[2] + counts[3] + counts[4];
-    if (successes > markedSuccessDice) {
-      return [
-        { kind: "regular", face: "blank" },
-        { kind: "hunger", face: "blank" },
-        { kind: "regular", face: "success" },
-        { kind: "regular", face: "critical" },
-        { kind: "hunger", face: "critical" }
-      ];
-    }
-
-    return [
-      { kind: "regular", face: "blank" },
-      { kind: "hunger", face: "blank" },
-      { kind: "regular", face: "success" },
-      { kind: "hunger", face: "success" },
-      { kind: "hunger", face: "critical" }
-    ];
-  }
-
-  if (counts.length === 6) {
-    const noSkullSuccesses = counts[2] + counts[3] + counts[4] + counts[5];
-    if (successes === noSkullSuccesses) {
-      return [
-        { kind: "regular", face: "blank" },
-        { kind: "hunger", face: "blank" },
-        { kind: "regular", face: "success" },
-        { kind: "regular", face: "critical" },
-        { kind: "hunger", face: "success" },
-        { kind: "hunger", face: "critical" }
-      ];
-    }
-
-    return [
-      { kind: "regular", face: "blank" },
-      { kind: "hunger", face: "blank" },
-      { kind: "regular", face: "success" },
-      { kind: "hunger", face: "success" },
-      { kind: "hunger", face: "critical" },
-      { kind: "hunger", face: "skull" }
-    ];
-  }
-
-  return [
-    { kind: "regular", face: "blank" },
-    { kind: "hunger", face: "blank" },
-    { kind: "regular", face: "success" },
-    { kind: "regular", face: "critical" },
-    { kind: "hunger", face: "success" },
-    { kind: "hunger", face: "critical" },
-    { kind: "hunger", face: "skull" }
-  ];
 }
 
 type VisibleNumberText = {
@@ -1715,17 +1303,7 @@ type VisibleNumberText = {
   rect: DOMRect;
 };
 
-type DetailDieCandidate = {
-  marker: Element;
-  countText: VisibleNumberText;
-  kind?: DiceValue["kind"];
-  face?: DiceFace;
-  red: boolean;
-  filledRed: boolean;
-  rect: DOMRect;
-};
-
-function parseDetailDiceFromDom(element: Element, successes?: number): DiceValue[] {
+function parseDetailDiceFromDom(element: Element): DiceValue[] {
   const markers = collectDieMarkerElements(element);
   if (markers.length === 0) {
     return [];
@@ -1742,57 +1320,29 @@ function parseDetailDiceFromDom(element: Element, successes?: number): DiceValue
   }
 
   const usedCounts = new Set<VisibleNumberText>();
-  const candidates: DetailDieCandidate[] = [];
+  const dice: DiceValue[] = [];
 
   for (const marker of markers) {
+    const kind = inferDemiplaneDetailDieKind(marker);
+    const face = inferDemiplaneDetailDieFace(marker);
+    if (!kind || !face) {
+      continue;
+    }
+
     const countText = findNearestDieCount(marker, countTexts, usedCounts);
     if (!countText) {
       continue;
     }
 
-    const markerParts = collectDetailMarkerParts(element, marker);
-    const red = hasStrongRedMarkerColor(marker, markerParts);
-    const filledRed = hasDominantRedFillColor(marker, markerParts);
-    const explicitKind = inferDemiplaneDetailDieKind(marker);
-    const explicitFace = inferDemiplaneDetailDieFace(marker);
-    const inferredFace = explicitFace ?? inferDieFaceFromElement(marker);
-    const graphicFace = explicitFace ? undefined : inferGraphicDetailDieFace(marker, red, filledRed, markerParts);
-    const face = explicitFace ?? graphicFace ?? inferredFace ?? inferBlankDetailDieFace(marker, countText, detailLabelRects);
-    const markerIsNearDetails = isNearDetailsRow(marker, countText, detailLabelRects);
-    if (!face && !markerIsNearDetails) {
+    if (!isNearDetailsRow(marker, countText, detailLabelRects)) {
       continue;
     }
 
     usedCounts.add(countText);
-    candidates.push({
-      marker,
-      countText,
-      kind: explicitKind,
-      face,
-      red,
-      filledRed,
-      rect: marker.getBoundingClientRect()
-    });
-  }
-
-  if (candidates.length === 0) {
-    return [];
-  }
-
-  assignDetailFacesByRowOrder(candidates, successes);
-
-  const dice: DiceValue[] = [];
-  for (const candidate of candidates) {
-    if (!candidate.face) {
-      continue;
-    }
-
-    const kind =
-      candidate.kind ?? (candidate.filledRed ? "hunger" : inferDieKindFromDetailMarker(candidate.marker, candidate.face));
-    const count = clampNumber(candidate.countText.value, 1, 80 - dice.length);
+    const count = clampNumber(countText.value, 1, 80 - dice.length);
 
     for (let index = 0; index < count; index += 1) {
-      dice.push(createDiceValue(kind, candidate.face));
+      dice.push(createDiceValue(kind, face));
     }
 
     if (dice.length >= 80) {
@@ -1801,73 +1351,6 @@ function parseDetailDiceFromDom(element: Element, successes?: number): DiceValue
   }
 
   return dice;
-}
-
-function assignDetailFacesByRowOrder(candidates: DetailDieCandidate[], successes?: number): void {
-  const sorted = [...candidates].sort((first, second) => {
-    const vertical = first.rect.top - second.rect.top;
-    return Math.abs(vertical) > 8 ? vertical : first.rect.left - second.rect.left;
-  });
-
-  for (const candidate of sorted) {
-    if (!candidate.face && !candidate.red) {
-      candidate.face = "blank";
-    }
-  }
-
-  assignUnknownFacesBySuccessTotal(sorted, successes);
-
-  const redCandidates = sorted.filter((candidate) => candidate.red && !candidate.filledRed && candidate.face !== "skull");
-  const needsOrderedRegularFaces = redCandidates.length >= 2;
-  redCandidates.forEach((candidate, index) => {
-    if (!candidate.face || (needsOrderedRegularFaces && candidate.face === "success")) {
-      candidate.face = needsOrderedRegularFaces && index === redCandidates.length - 1 ? "critical" : "success";
-    }
-  });
-}
-
-function assignUnknownFacesBySuccessTotal(candidates: DetailDieCandidate[], successes?: number): void {
-  if (typeof successes !== "number" || successes < 0) {
-    return;
-  }
-
-  let remainingSuccesses =
-    successes -
-    candidates
-      .filter((candidate) => candidate.face === "success" || candidate.face === "critical")
-      .reduce((total, candidate) => total + candidate.countText.value, 0);
-
-  if (remainingSuccesses > 0) {
-    for (const candidate of [...candidates].reverse()) {
-      if (candidate.face || !candidate.red) {
-        continue;
-      }
-
-      if (candidate.countText.value <= remainingSuccesses) {
-        candidate.face = "success";
-        remainingSuccesses -= candidate.countText.value;
-      }
-
-      if (remainingSuccesses <= 0) {
-        break;
-      }
-    }
-  }
-
-  for (const candidate of candidates) {
-    if (!candidate.face && candidate.filledRed) {
-      candidate.face = "blank";
-    }
-  }
-}
-
-function inferDieKindFromDetailMarker(marker: Element, face: DiceFace): DiceValue["kind"] {
-  if (face === "skull") {
-    return "hunger";
-  }
-
-  const context = getElementContext(marker);
-  return /(hunger|fome|blood|skull|vermelh)/i.test(context) ? "hunger" : "regular";
 }
 
 function inferDemiplaneDetailDieKind(element: Element): DiceValue["kind"] | undefined {
@@ -1890,12 +1373,6 @@ function inferDemiplaneDetailDieKind(element: Element): DiceValue["kind"] | unde
   }
 
   return undefined;
-}
-
-function hasDemiplaneDetailDieMetadata(element: Element): boolean {
-  return collectDieMarkerElements(element).some(
-    (marker) => inferDemiplaneDetailDieKind(marker) !== undefined || inferDemiplaneDetailDieFace(marker) !== undefined
-  );
 }
 
 function collectVisibleTextRects(root: Element, pattern: RegExp): DOMRect[] {
@@ -2005,47 +1482,6 @@ function findNearestDieCount(
   }
 
   return best;
-}
-
-function inferBlankDetailDieFace(
-  marker: Element,
-  countText: VisibleNumberText,
-  detailLabelRects: DOMRect[]
-): DiceFace | undefined {
-  if (detailLabelRects.length === 0 || !isNearDetailsRow(marker, countText, detailLabelRects)) {
-    return undefined;
-  }
-
-  if (hasStrongRedMarkerColor(marker)) {
-    return undefined;
-  }
-
-  return "blank";
-}
-
-function inferGraphicDetailDieFace(
-  marker: Element,
-  red: boolean,
-  filledRed: boolean,
-  markerParts: Element[]
-): DiceFace | undefined {
-  if (filledRed && hasLargeLightInteriorShape(marker, markerParts)) {
-    return "skull";
-  }
-
-  if (filledRed && hasFangedAnkhInteriorShape(marker, markerParts)) {
-    return "critical";
-  }
-
-  if (filledRed && hasInteriorInkShape(marker, markerParts, false)) {
-    return "success";
-  }
-
-  if (!filledRed && red && hasInteriorInkShape(marker, markerParts, true)) {
-    return "success";
-  }
-
-  return filledRed ? "blank" : undefined;
 }
 
 function inferDemiplaneDetailDieFace(element: Element): DiceFace | undefined {
@@ -2223,138 +1659,6 @@ function hasStrongLightMarkerColor(element: Element, markerParts?: Element[]): b
   return false;
 }
 
-function hasLargeLightInteriorShape(element: Element, markerParts?: Element[]): boolean {
-  const markerRect = element.getBoundingClientRect();
-  const markerArea = Math.max(1, markerRect.width * markerRect.height);
-  const elements = markerParts ?? Array.from(element.querySelectorAll("*"));
-
-  for (const current of elements) {
-    if (!(current instanceof Element)) {
-      continue;
-    }
-
-    const style = window.getComputedStyle(current);
-    const hasLightInk = [style.color, style.backgroundColor, style.fill, style.stroke].some((color) => {
-      const rgb = parseRgbColor(color);
-      if (!rgb) {
-        return false;
-      }
-
-      const [red, green, blue] = rgb;
-      return red > 180 && green > 180 && blue > 180;
-    });
-
-    if (!hasLightInk) {
-      continue;
-    }
-
-    const rect = current.getBoundingClientRect();
-    const insideMarker =
-      rect.left >= markerRect.left - 1 &&
-      rect.right <= markerRect.right + 1 &&
-      rect.top >= markerRect.top - 1 &&
-      rect.bottom <= markerRect.bottom + 1;
-    const area = rect.width * rect.height;
-    if (insideMarker && area >= markerArea * 0.06) {
-      return true;
-    }
-  }
-
-  return false;
-}
-
-function hasInteriorInkShape(element: Element, markerParts?: Element[], includeRedInk = false): boolean {
-  const markerRect = element.getBoundingClientRect();
-  const markerArea = Math.max(1, markerRect.width * markerRect.height);
-  const elements = markerParts ?? Array.from(element.querySelectorAll("*"));
-
-  for (const current of elements) {
-    if (!(current instanceof Element)) {
-      continue;
-    }
-
-    const style = window.getComputedStyle(current);
-    const hasInk = [style.color, style.backgroundColor, style.fill, style.stroke].some((color) => {
-      const rgb = parseRgbColor(color);
-      if (!rgb) {
-        return false;
-      }
-
-      const [red, green, blue] = rgb;
-      const isRed = red > 120 && green < 95 && blue < 105 && red > green * 1.35 && red > blue * 1.35;
-      const isDark = red < 90 && green < 90 && blue < 90;
-      const isLight = red > 180 && green > 180 && blue > 180;
-      return isDark || isLight || (includeRedInk && isRed);
-    });
-
-    if (!hasInk) {
-      continue;
-    }
-
-    const rect = current.getBoundingClientRect();
-    const insideMarker =
-      rect.left >= markerRect.left - 1 &&
-      rect.right <= markerRect.right + 1 &&
-      rect.top >= markerRect.top - 1 &&
-      rect.bottom <= markerRect.bottom + 1;
-    const area = rect.width * rect.height;
-    if (insideMarker && area >= markerArea * 0.025 && area <= markerArea * 0.45) {
-      return true;
-    }
-  }
-
-  return false;
-}
-
-function hasFangedAnkhInteriorShape(element: Element, markerParts?: Element[]): boolean {
-  const markerRect = element.getBoundingClientRect();
-  const markerArea = Math.max(1, markerRect.width * markerRect.height);
-  const elements = markerParts ?? Array.from(element.querySelectorAll("*"));
-  let inkCount = 0;
-
-  for (const current of elements) {
-    if (!(current instanceof Element)) {
-      continue;
-    }
-
-    const style = window.getComputedStyle(current);
-    const hasDarkInk = [style.color, style.backgroundColor, style.fill, style.stroke].some((color) => {
-      const rgb = parseRgbColor(color);
-      if (!rgb) {
-        return false;
-      }
-
-      const [red, green, blue] = rgb;
-      return red < 90 && green < 90 && blue < 90;
-    });
-
-    if (!hasDarkInk) {
-      continue;
-    }
-
-    const rect = current.getBoundingClientRect();
-    const insideMarker =
-      rect.left >= markerRect.left - 1 &&
-      rect.right <= markerRect.right + 1 &&
-      rect.top >= markerRect.top - 1 &&
-      rect.bottom <= markerRect.bottom + 1;
-    const area = rect.width * rect.height;
-    if (!insideMarker || area < markerArea * 0.008 || area > markerArea * 0.52) {
-      continue;
-    }
-
-    inkCount += 1;
-    const widthRatio = rect.width / Math.max(1, markerRect.width);
-    const heightRatio = rect.height / Math.max(1, markerRect.height);
-    const aspect = rect.width / Math.max(1, rect.height);
-    if (widthRatio >= 0.48 && heightRatio >= 0.36 && aspect >= 0.72) {
-      return true;
-    }
-  }
-
-  return inkCount >= 3;
-}
-
 function parseDiceFromText(lines: string[]): DiceValue[] {
   const dice: DiceValue[] = [];
 
@@ -2438,32 +1742,6 @@ function isVisibleElement(element: Element): boolean {
 
   const style = window.getComputedStyle(element);
   return style.display !== "none" && style.visibility !== "hidden" && style.opacity !== "0";
-}
-
-function inferDieFaceFromElement(element: Element): DiceFace | undefined {
-  const context = getElementContext(element);
-
-  if (/(skull|caveira|bestial|beast|hunger[-_\s]?1|blood[-_\s]?1)/i.test(context)) {
-    return "skull";
-  }
-
-  if (
-    /(critical|crit|messy|special|fangs?|presas?|double|two[-_\s]?ankh|double[-_\s]?ankh|fanged[-_\s]?ankh|ankh[-_\s]?fangs?|ankh[-_\s]?presas?|regular[-_\s]?10|hunger[-_\s]?10|blood[-_\s]?10|face[-_\s]?10|result[-_\s]?10|d10[-_\s]?10)/i.test(
-      context
-    )
-  ) {
-    return "critical";
-  }
-
-  if (/(ankh|success|sucesso|win|regular[-_\s]?[6-9]|hunger[-_\s]?[6-9]|blood[-_\s]?[6-9]|face[-_\s]?[6-9]|result[-_\s]?[6-9]|d10[-_\s]?[6-9])/i.test(context)) {
-    return "success";
-  }
-
-  if (/(blank|fail|failure|asterisk|star|dot|empty|none|regular[-_\s]?[1-5]|hunger[-_\s]?[2-5]|blood[-_\s]?[2-5]|face[-_\s]?[1-5]|result[-_\s]?[1-5]|d10[-_\s]?[1-5])/i.test(context)) {
-    return "blank";
-  }
-
-  return undefined;
 }
 
 function inferDieKindFromElement(element: Element): DiceValue["kind"] {
