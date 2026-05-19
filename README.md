@@ -85,7 +85,7 @@ Veja [docs/hosting-and-browser-support.md](docs/hosting-and-browser-support.md) 
 
 1. Abra uma ficha em `https://app.demiplane.com/nexus/*/character-sheet/*`.
 2. Abra o popup da extensao.
-3. Informe nome do jogador, canal, senha e use o relay online `wss://...workers.dev`. Para teste na mesma maquina, `ws://localhost:8787` funciona; para fallback temporario, o launcher ainda pode gerar um `wss://...trycloudflare.com`.
+3. Informe nome do jogador, canal e senha. O pacote padrao ja usa o relay online `wss://demiplane-dice-room-relay.foxbyron.workers.dev`. Para teste na mesma maquina, `ws://localhost:8787` funciona; para fallback temporario, o launcher ainda pode gerar um `wss://...trycloudflare.com`.
 4. Clique em `Conectar`.
 5. Repita em outra janela/perfil de navegador com o mesmo canal e senha.
 6. Use o botao `Teste` ou faca uma rolagem no Demiplane.

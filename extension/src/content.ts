@@ -53,7 +53,8 @@ const panelUiStorageKey = "diceRoomPanelUi";
 const defaultDiceAnimationScale = 0.75;
 const minDiceAnimationScale = 0.45;
 const maxDiceAnimationScale = 1.15;
-const extensionUiVersion = "0.1.74";
+const defaultRelayUrl = "wss://demiplane-dice-room-relay.foxbyron.workers.dev";
+const extensionUiVersion = "0.1.75";
 const pageBridgeMessageSource = "demiplane-dice-room-page";
 const pageDiceRollResponseWaitMs = 1400;
 const pageDiceRollResponseTtlMs = 8_000;
@@ -2764,7 +2765,7 @@ function translateConnectionDetail(value: string): string {
 }
 
 function renderDiagnostic(): string {
-  const relay = currentConfig?.serverUrl ?? "ws://localhost:8787";
+  const relay = currentConfig?.serverUrl ?? defaultRelayUrl;
 
   if (connectionState.status === "connected") {
     return `

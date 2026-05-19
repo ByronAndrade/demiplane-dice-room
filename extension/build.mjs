@@ -15,7 +15,9 @@ const common = {
   bundle: true,
   target: ["chrome116"],
   define: {
-    __DICE_ROOM_DEFAULT_RELAY__: JSON.stringify(process.env.DICE_ROOM_DEFAULT_RELAY || "ws://localhost:8787")
+    __DICE_ROOM_DEFAULT_RELAY__: JSON.stringify(
+      process.env.DICE_ROOM_DEFAULT_RELAY || "wss://demiplane-dice-room-relay.foxbyron.workers.dev"
+    )
   },
   sourcemap: true,
   logLevel: "info"

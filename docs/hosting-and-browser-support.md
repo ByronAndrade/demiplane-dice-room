@@ -100,10 +100,16 @@ Sem relay conectado, nada e enviado para outros jogadores. Ao conectar em um rel
 O fluxo online usa a mesma extensao e o mesmo campo `Relay`. A diferenca e que, em vez de um endereco local como `ws://localhost:8787`, todos usam um endereco publico como:
 
 ```text
-wss://dice-room.seudominio.com
+wss://demiplane-dice-room-relay.foxbyron.workers.dev
 ```
 
-Para deploy, rode o pacote `server` em qualquer host que suporte WebSocket. Configure:
+Este projeto tambem mantem um relay Cloudflare Workers publicado em:
+
+```text
+https://demiplane-dice-room-relay.foxbyron.workers.dev
+```
+
+Para outro deploy proprio, rode o pacote `server` em qualquer host que suporte WebSocket. Configure:
 
 ```text
 PORT=8787

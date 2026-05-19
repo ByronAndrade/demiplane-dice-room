@@ -1,5 +1,7 @@
 declare const __DICE_ROOM_DEFAULT_RELAY__: string;
 
+const legacyDefaultRelayUrl = "ws://localhost:8787";
+
 export type ExtensionConfig = {
   serverUrl: string;
   playerName: string;
@@ -23,7 +25,7 @@ export const defaultConfig: ExtensionConfig = {
 };
 
 function getDefaultRelayUrl(): string {
-  return __DICE_ROOM_DEFAULT_RELAY__ || "ws://localhost:8787";
+  return __DICE_ROOM_DEFAULT_RELAY__ || legacyDefaultRelayUrl;
 }
 
 export async function getConfig(): Promise<ExtensionConfig> {
@@ -51,7 +53,7 @@ export async function getClientId(): Promise<string> {
 
 function normalizeConfig(value: Partial<ExtensionConfig>): ExtensionConfig {
   return {
-    serverUrl: cleanString(value.serverUrl) || defaultConfig.serverUrl,
+    serverUrl: normalizeServerUrl(value.serverUrl),
     playerName: cleanString(value.playerName),
     characterName: cleanString(value.characterName),
     channel: cleanString(value.channel),
@@ -60,6 +62,20 @@ function normalizeConfig(value: Partial<ExtensionConfig>): ExtensionConfig {
     showOwnRolls: value.showOwnRolls === true,
     enableDiceAnimation: value.enableDiceAnimation !== false
   };
+}
+
+function normalizeServerUrl(value: unknown): string {
+  const serverUrl = cleanString(value);
+
+  if (!serverUrl) {
+    return defaultConfig.serverUrl;
+  }
+
+  if (serverUrl === legacyDefaultRelayUrl && defaultConfig.serverUrl !== legacyDefaultRelayUrl) {
+    return defaultConfig.serverUrl;
+  }
+
+  return serverUrl;
 }
 
 function cleanString(value: unknown): string {
