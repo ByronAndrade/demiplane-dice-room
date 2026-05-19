@@ -53,7 +53,7 @@ const panelUiStorageKey = "diceRoomPanelUi";
 const defaultDiceAnimationScale = 0.75;
 const minDiceAnimationScale = 0.45;
 const maxDiceAnimationScale = 1.15;
-const extensionUiVersion = "0.1.72";
+const extensionUiVersion = "0.1.73";
 const pageBridgeMessageSource = "demiplane-dice-room-page";
 const pageDiceRollResponseWaitMs = 1400;
 const pageDiceRollResponseTtlMs = 8_000;
@@ -1298,48 +1298,20 @@ function calculateDiceSuccesses(dice: DiceValue[]): number {
   return successCount + criticalCount + Math.floor(criticalCount / 2) * 2;
 }
 
-type VisibleNumberText = {
-  value: number;
-  rect: DOMRect;
-};
-
 function parseDetailDiceFromDom(element: Element): DiceValue[] {
-  const markers = collectDieMarkerElements(element);
-  if (markers.length === 0) {
-    return [];
-  }
-
-  const countTexts = collectVisibleNumberTexts(element);
-  if (countTexts.length === 0) {
-    return [];
-  }
-
-  const detailLabelRects = collectVisibleTextRects(element, /\b(details|detalhes)\b/i);
-  if (detailLabelRects.length === 0) {
-    return [];
-  }
-
-  const usedCounts = new Set<VisibleNumberText>();
   const dice: DiceValue[] = [];
 
-  for (const marker of markers) {
-    const kind = inferDemiplaneDetailDieKind(marker);
-    const face = inferDemiplaneDetailDieFace(marker);
+  for (const dieElement of collectDemiplaneDetailDieElements(element)) {
+    const kind = inferDemiplaneDetailDieKind(dieElement);
+    const face = inferDemiplaneDetailDieFace(dieElement);
     if (!kind || !face) {
       continue;
     }
 
-    const countText = findNearestDieCount(marker, countTexts, usedCounts);
-    if (!countText) {
+    const count = readDemiplaneDetailDieCount(dieElement);
+    if (count <= 0) {
       continue;
     }
-
-    if (!isNearDetailsRow(marker, countText, detailLabelRects)) {
-      continue;
-    }
-
-    usedCounts.add(countText);
-    const count = clampNumber(countText.value, 1, 80 - dice.length);
 
     for (let index = 0; index < count; index += 1) {
       dice.push(createDiceValue(kind, face));
@@ -1351,6 +1323,45 @@ function parseDetailDiceFromDom(element: Element): DiceValue[] {
   }
 
   return dice;
+}
+
+function collectDemiplaneDetailDieElements(root: Element): Element[] {
+  const selector = [
+    ".history-item-result__die",
+    ".dice-history-result-dice",
+    "[class*='history-item-result__die--standard-']",
+    "[class*='history-item-result__die--hunger-']"
+  ].join(",");
+  const rawElements = [
+    ...(root.matches(selector) ? [root] : []),
+    ...Array.from(root.querySelectorAll(selector))
+  ];
+  const dieElements: Element[] = [];
+
+  for (const element of rawElements) {
+    const dieElement = element.closest(".history-item-result__die, .dice-history-result-dice") ?? element;
+    if (dieElements.includes(dieElement)) {
+      continue;
+    }
+
+    if (inferDemiplaneDetailDieKind(dieElement) && inferDemiplaneDetailDieFace(dieElement)) {
+      dieElements.push(dieElement);
+    }
+  }
+
+  return dieElements;
+}
+
+function readDemiplaneDetailDieCount(element: Element): number {
+  const label = element.querySelector("[value='count'], .history-item-result__label");
+  const text = label?.textContent ?? element.textContent ?? "";
+  const match = text.match(/\b\d{1,2}\b/);
+  if (!match) {
+    return 0;
+  }
+
+  const count = Number.parseInt(match[0], 10);
+  return Number.isFinite(count) ? clampNumber(count, 1, 80) : 0;
 }
 
 function inferDemiplaneDetailDieKind(element: Element): DiceValue["kind"] | undefined {
@@ -1399,43 +1410,6 @@ function collectVisibleTextRects(root: Element, pattern: RegExp): DOMRect[] {
   return rects;
 }
 
-function collectVisibleNumberTexts(root: Element): VisibleNumberText[] {
-  const values: VisibleNumberText[] = [];
-  const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
-
-  while (walker.nextNode()) {
-    const node = walker.currentNode;
-    if (!(node instanceof Text) || !node.parentElement || !isVisibleElement(node.parentElement)) {
-      continue;
-    }
-
-    const text = node.textContent ?? "";
-    const matches = text.matchAll(/\b\d{1,2}\b/g);
-
-    for (const match of matches) {
-      const rawValue = match[0];
-      const start = match.index ?? -1;
-      if (start < 0) {
-        continue;
-      }
-
-      const value = Number.parseInt(rawValue, 10);
-      if (!Number.isFinite(value) || value < 1 || value > 80) {
-        continue;
-      }
-
-      const rect = getTextRangeRect(node, start, start + rawValue.length);
-      if (!rect || rect.width <= 0 || rect.height <= 0) {
-        continue;
-      }
-
-      values.push({ value, rect });
-    }
-  }
-
-  return values;
-}
-
 function getTextRangeRect(node: Text, start: number, end: number): DOMRect | undefined {
   const range = document.createRange();
   try {
@@ -1447,41 +1421,6 @@ function getTextRangeRect(node: Text, start: number, end: number): DOMRect | und
   } finally {
     range.detach();
   }
-}
-
-function findNearestDieCount(
-  marker: Element,
-  countTexts: VisibleNumberText[],
-  usedCounts: Set<VisibleNumberText>
-): VisibleNumberText | undefined {
-  const markerRect = marker.getBoundingClientRect();
-  const markerCenterY = markerRect.top + markerRect.height / 2;
-  const maxVerticalDistance = Math.max(10, markerRect.height * 0.8);
-  const maxHorizontalDistance = Math.max(40, markerRect.width * 2 + 28);
-  let best: VisibleNumberText | undefined;
-  let bestScore = Infinity;
-
-  for (const countText of countTexts) {
-    if (usedCounts.has(countText)) {
-      continue;
-    }
-
-    const countCenterY = countText.rect.top + countText.rect.height / 2;
-    const verticalDistance = Math.abs(countCenterY - markerCenterY);
-    const horizontalDistance = countText.rect.left - markerRect.right;
-
-    if (verticalDistance > maxVerticalDistance || horizontalDistance < -6 || horizontalDistance > maxHorizontalDistance) {
-      continue;
-    }
-
-    const score = horizontalDistance + verticalDistance * 2;
-    if (score < bestScore) {
-      best = countText;
-      bestScore = score;
-    }
-  }
-
-  return best;
 }
 
 function inferDemiplaneDetailDieFace(element: Element): DiceFace | undefined {
@@ -1520,19 +1459,6 @@ function inferDemiplaneDetailDieFace(element: Element): DiceFace | undefined {
   }
 
   return undefined;
-}
-
-function isNearDetailsRow(marker: Element, countText: VisibleNumberText, detailLabelRects: DOMRect[]): boolean {
-  const markerRect = marker.getBoundingClientRect();
-  const markerCenterY = markerRect.top + markerRect.height / 2;
-
-  return detailLabelRects.some((labelRect) => {
-    const belowOrAligned = markerCenterY >= labelRect.top - 4;
-    const closeVertically = markerCenterY <= labelRect.bottom + 58;
-    const countAfterMarker = countText.rect.left >= markerRect.right - 6;
-    const markerAfterLabel = markerRect.left >= labelRect.left - 8;
-    return belowOrAligned && closeVertically && countAfterMarker && markerAfterLabel;
-  });
 }
 
 function collectDetailMarkerParts(root: Element, marker: Element): Element[] {
@@ -1696,44 +1622,6 @@ function parseDiceFromText(lines: string[]): DiceValue[] {
   return dice;
 }
 
-function collectDieMarkerElements(root: Element): Element[] {
-  const allElements = [root, ...Array.from(root.querySelectorAll("*"))];
-  const markers: Element[] = [];
-
-  for (const element of allElements) {
-    if (!isLikelyDieMarkerElement(element)) {
-      continue;
-    }
-
-    if (markers.some((marker) => marker.contains(element))) {
-      continue;
-    }
-
-    markers.push(element);
-  }
-
-  return markers;
-}
-
-function isLikelyDieMarkerElement(element: Element): boolean {
-  if (!(element instanceof HTMLElement) && !(element instanceof SVGElement)) {
-    return false;
-  }
-
-  const tagName = element.tagName.toLowerCase();
-  const context = getElementContext(element);
-  const hasDiceContext = /(die|dice|dado|hunger|fome|regular|skull|ankh|blood|blank|critical|success|failure|detail|result|icon)/i.test(context);
-  const isMedia = tagName === "img" || tagName === "svg" || tagName === "path" || tagName === "use";
-
-  if (!hasDiceContext && !isMedia) {
-    return false;
-  }
-
-  const rect = element.getBoundingClientRect();
-  const hasSmallVisibleBox = rect.width >= 4 && rect.height >= 4 && rect.width <= 52 && rect.height <= 52;
-  return hasSmallVisibleBox || isMedia;
-}
-
 function isVisibleElement(element: Element): boolean {
   const rect = element.getBoundingClientRect();
   if (rect.width <= 0 || rect.height <= 0) {
@@ -1742,21 +1630,6 @@ function isVisibleElement(element: Element): boolean {
 
   const style = window.getComputedStyle(element);
   return style.display !== "none" && style.visibility !== "hidden" && style.opacity !== "0";
-}
-
-function inferDieKindFromElement(element: Element): DiceValue["kind"] {
-  const context = getElementContext(element);
-
-  if (/(hunger|fome|blood|skull|red|vermelh)/i.test(context)) {
-    return "hunger";
-  }
-
-  if (/(regular|normal|black|preto|grey|gray)/i.test(context)) {
-    return "regular";
-  }
-
-  const colorKind = inferKindFromComputedColors(element);
-  return colorKind ?? "regular";
 }
 
 function getElementContext(element: Element): string {
@@ -1830,37 +1703,6 @@ function getDieFaceFromValue(kind: DiceValue["kind"], value: number): DiceFace |
 
   if (value >= 1 && value <= 5) {
     return "blank";
-  }
-
-  return undefined;
-}
-
-function inferKindFromComputedColors(element: Element): DiceValue["kind"] | undefined {
-  const colors = new Set<string>();
-  let current: Element | null = element;
-  let depth = 0;
-
-  while (current && depth < 3) {
-    const style = window.getComputedStyle(current);
-    colors.add(style.color);
-    colors.add(style.backgroundColor);
-    colors.add(style.borderColor);
-    colors.add(style.fill);
-    colors.add(style.stroke);
-    current = current.parentElement;
-    depth += 1;
-  }
-
-  for (const color of colors) {
-    const rgb = parseRgbColor(color);
-    if (!rgb) {
-      continue;
-    }
-
-    const [red, green, blue] = rgb;
-    if (red > 120 && green < 95 && blue < 105 && red > green * 1.35 && red > blue * 1.35) {
-      return "hunger";
-    }
   }
 
   return undefined;
