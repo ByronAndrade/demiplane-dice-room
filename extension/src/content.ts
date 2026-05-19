@@ -53,7 +53,7 @@ const panelUiStorageKey = "diceRoomPanelUi";
 const defaultDiceAnimationScale = 0.75;
 const minDiceAnimationScale = 0.45;
 const maxDiceAnimationScale = 1.15;
-const extensionUiVersion = "0.1.70";
+const extensionUiVersion = "0.1.71";
 const pageBridgeMessageSource = "demiplane-dice-room-page";
 const pageDiceRollResponseWaitMs = 1400;
 const pageDiceRollResponseTtlMs = 8_000;
@@ -1136,12 +1136,17 @@ function parseDice(
   successes?: number,
   poolHint?: DicePoolHint
 ): DiceValue[] {
+  const detailDice = parseDetailDiceFromDom(element, successes);
+  const hasAuthoritativeDetailDice = detailDice.length > 0 && hasDemiplaneDetailDieMetadata(element);
+  if (hasAuthoritativeDetailDice) {
+    return detailDice;
+  }
+
   const pageDice = buildDiceFromPageDiceRollResponses(successes, poolHint);
   if (pageDice.length > 0) {
     return pageDice;
   }
 
-  const detailDice = parseDetailDiceFromDom(element, successes);
   const textDetailDice =
     typeof text === "string" && typeof successes === "number" ? parseDetailDiceFromText(text, successes, poolHint) : [];
   let dice: DiceValue[];
@@ -1202,12 +1207,12 @@ function readCurrentHungerDiceCount(): number | undefined {
 }
 
 function reconcileDiceWithPoolHint(dice: DiceValue[], poolHint?: DicePoolHint): DiceValue[] {
-  if (!poolHint || typeof poolHint.hunger !== "number" || dice.length === 0) {
+  if (!poolHint || typeof poolHint.hunger !== "number" || typeof poolHint.total !== "number" || dice.length === 0) {
     return dice;
   }
 
-  const targetHungerDice = clampNumber(poolHint.hunger, 0, poolHint.total ?? dice.length);
-  if (typeof poolHint.total === "number" && dice.length !== poolHint.total) {
+  const targetHungerDice = clampNumber(poolHint.hunger, 0, poolHint.total);
+  if (dice.length !== poolHint.total) {
     dice = resizeDiceToPoolHint(dice, poolHint);
   }
 
@@ -1713,6 +1718,7 @@ type VisibleNumberText = {
 type DetailDieCandidate = {
   marker: Element;
   countText: VisibleNumberText;
+  kind?: DiceValue["kind"];
   face?: DiceFace;
   red: boolean;
   filledRed: boolean;
@@ -1747,6 +1753,7 @@ function parseDetailDiceFromDom(element: Element, successes?: number): DiceValue
     const markerParts = collectDetailMarkerParts(element, marker);
     const red = hasStrongRedMarkerColor(marker, markerParts);
     const filledRed = hasDominantRedFillColor(marker, markerParts);
+    const explicitKind = inferDemiplaneDetailDieKind(marker);
     const explicitFace = inferDemiplaneDetailDieFace(marker);
     const inferredFace = explicitFace ?? inferDieFaceFromElement(marker);
     const graphicFace = explicitFace ? undefined : inferGraphicDetailDieFace(marker, red, filledRed, markerParts);
@@ -1760,6 +1767,7 @@ function parseDetailDiceFromDom(element: Element, successes?: number): DiceValue
     candidates.push({
       marker,
       countText,
+      kind: explicitKind,
       face,
       red,
       filledRed,
@@ -1779,7 +1787,8 @@ function parseDetailDiceFromDom(element: Element, successes?: number): DiceValue
       continue;
     }
 
-    const kind = candidate.filledRed ? "hunger" : inferDieKindFromDetailMarker(candidate.marker, candidate.face);
+    const kind =
+      candidate.kind ?? (candidate.filledRed ? "hunger" : inferDieKindFromDetailMarker(candidate.marker, candidate.face));
     const count = clampNumber(candidate.countText.value, 1, 80 - dice.length);
 
     for (let index = 0; index < count; index += 1) {
@@ -1859,6 +1868,34 @@ function inferDieKindFromDetailMarker(marker: Element, face: DiceFace): DiceValu
 
   const context = getElementContext(marker);
   return /(hunger|fome|blood|skull|vermelh)/i.test(context) ? "hunger" : "regular";
+}
+
+function inferDemiplaneDetailDieKind(element: Element): DiceValue["kind"] | undefined {
+  const context = getElementContext(element);
+
+  if (
+    /(history-item-result__die--hunger-|hunger[-_\s]+(?:fail|failure|success|critical|crit|special|skull|beast|bestial)|hunger\s+(?:failure|fail|success|critical|special|skull|beast|bestial)|hunger-(?:fail|success|critical|crit|special|skull|beast|bestial)\.png|hunger-fail\.png|hunger-success\.png|hunger-skull\.png|vampiric[-_\s]+skull|vampiric\s+skull)/i.test(
+      context
+    )
+  ) {
+    return "hunger";
+  }
+
+  if (
+    /(history-item-result__die--standard-|standard[-_\s]+(?:fail|failure|success|critical|crit|special)|standard\s+(?:failure|fail|success|critical|special)|standard-(?:fail|success|critical|crit|special)\.png|standard-fail\.png|standard-success\.png)/i.test(
+      context
+    )
+  ) {
+    return "regular";
+  }
+
+  return undefined;
+}
+
+function hasDemiplaneDetailDieMetadata(element: Element): boolean {
+  return collectDieMarkerElements(element).some(
+    (marker) => inferDemiplaneDetailDieKind(marker) !== undefined || inferDemiplaneDetailDieFace(marker) !== undefined
+  );
 }
 
 function collectVisibleTextRects(root: Element, pattern: RegExp): DOMRect[] {
