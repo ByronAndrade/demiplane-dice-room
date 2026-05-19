@@ -2,6 +2,7 @@
 name = "demiplane-dice-room-relay"
 main = "src/index.ts"
 compatibility_date = "2026-05-13"
+account_id = "2d807825366e0df95b6a6fb54860ab6e"
 
 [[durable_objects.bindings]]
 name = "DICE_ROOM_ROOMS"
