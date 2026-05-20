@@ -24,8 +24,7 @@ type DisplayConnectionStatus = ConnectionState["status"] | "local";
 const messages = {
   "pt-BR": {
     playerNameLabel: "Nome do jogador",
-    characterNameLabel: "Personagem",
-    hideCharacterNameLabel: "Ocultar personagem como Narrador",
+    hideCharacterNameLabel: "Fazer rolagem como Narrador",
     channelLabel: "Canal da mesa",
     passwordLabel: "Senha da sala",
     relayLabel: "Relay",
@@ -80,8 +79,7 @@ const messages = {
   },
   en: {
     playerNameLabel: "Player name",
-    characterNameLabel: "Character",
-    hideCharacterNameLabel: "Hide character as Storyteller",
+    hideCharacterNameLabel: "Roll as Storyteller",
     channelLabel: "Table channel",
     passwordLabel: "Room password",
     relayLabel: "Relay",
@@ -145,7 +143,6 @@ const inputs = {
   serverUrl: requireElement("#serverUrl", HTMLInputElement),
   relayKey: requireElement("#relayKey", HTMLInputElement),
   playerName: requireElement("#playerName", HTMLInputElement),
-  characterName: requireElement("#characterName", HTMLInputElement),
   hideCharacterName: requireElement("#hideCharacterName", HTMLInputElement),
   channel: requireElement("#channel", HTMLInputElement),
   password: requireElement("#password", HTMLInputElement),
@@ -261,7 +258,6 @@ function fillConfig(config: ExtensionConfig): void {
   inputs.serverUrl.value = config.serverUrl;
   inputs.relayKey.value = config.relayKey;
   inputs.playerName.value = config.playerName;
-  inputs.characterName.value = config.characterName;
   roomMode = config.roomRole === "host" ? "host" : "join";
   inputs.hideCharacterName.checked = roomMode === "host" && config.hideCharacterName;
   inputs.channel.value = config.channel;
@@ -276,7 +272,7 @@ function readConfig(): ExtensionConfig {
     serverUrl: inputs.serverUrl.value.trim(),
     relayKey: inputs.relayKey.value.trim(),
     playerName: inputs.playerName.value.trim(),
-    characterName: inputs.characterName.value.trim(),
+    characterName: "",
     roomRole: roomMode === "host" ? "host" : "player",
     hideCharacterName: roomMode === "host" && inputs.hideCharacterName.checked,
     channel: inputs.channel.value.trim(),

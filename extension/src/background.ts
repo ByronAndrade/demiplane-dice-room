@@ -272,7 +272,7 @@ async function publishCapturedRoll(captured: CapturedRoll): Promise<{ ok: true; 
   const config = await getConfig();
   const clientId = await getClientId();
   const createdAt = captured.createdAt || new Date().toISOString();
-  const publicCharacterName = await getPublicCharacterName(config);
+  const publicCharacterName = await getPublicCharacterName(config, captured.characterName);
 
   const roll: RollEvent = {
     type: "roll",
@@ -314,9 +314,9 @@ async function publishCapturedRoll(captured: CapturedRoll): Promise<{ ok: true; 
   return { ok: true, delivered: delivery, roll };
 }
 
-async function getPublicCharacterName(config: ExtensionConfig): Promise<string | undefined> {
+async function getPublicCharacterName(config: ExtensionConfig, sheetCharacterName?: string): Promise<string | undefined> {
   if (!config.hideCharacterName || config.roomRole !== "host") {
-    return config.characterName || undefined;
+    return cleanDisplayName(sheetCharacterName) || cleanDisplayName(config.characterName);
   }
 
   const stored = await chrome.storage.local.get({
@@ -326,6 +326,11 @@ async function getPublicCharacterName(config: ExtensionConfig): Promise<string |
   });
   const value = stored[panelUiStorageKey] as { language?: unknown } | undefined;
   return value?.language === "en" ? "Storyteller" : "Narrador";
+}
+
+function cleanDisplayName(value: string | undefined): string | undefined {
+  const cleaned = value?.trim();
+  return cleaned || undefined;
 }
 
 function handleServerMessage(message: ServerMessage): void {

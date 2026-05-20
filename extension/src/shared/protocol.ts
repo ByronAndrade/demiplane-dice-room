@@ -30,6 +30,7 @@ export type ConnectionState = {
 
 export type CapturedRoll = {
   rollTitle: string;
+  characterName?: string;
   successes?: number | null;
   total?: number | null;
   dice: DiceValue[];

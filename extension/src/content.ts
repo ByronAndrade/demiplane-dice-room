@@ -55,7 +55,7 @@ const defaultDiceAnimationScale = 0.75;
 const minDiceAnimationScale = 0.45;
 const maxDiceAnimationScale = 1.15;
 const defaultRelayUrl = "wss://demiplane-dice-room-relay.foxbyron.workers.dev";
-const extensionUiVersion = "0.1.80";
+const extensionUiVersion = "0.1.81";
 const pageBridgeMessageSource = "demiplane-dice-room-page";
 const pageDiceRollResponseWaitMs = 1400;
 const pageDiceRollResponseTtlMs = 8_000;
@@ -69,6 +69,7 @@ let uiLanguage: UiLanguage = "pt-BR";
 let scanTimer: number | undefined;
 let captureArmedUntil = 0;
 let armedBaselineElements = new WeakSet<Element>();
+let mutatedElementsSinceArm = new WeakSet<Element>();
 let captureScanTimers: number[] = [];
 let pendingDicePoolHint: DicePoolHint | undefined;
 let pendingPageDiceRollStartedAt = 0;
@@ -142,7 +143,7 @@ const messages = {
     roomSettings: "Sala da mesa",
     playerName: "Nome do jogador",
     characterName: "Personagem",
-    hideCharacterName: "Ocultar personagem como Narrador",
+    hideCharacterName: "Fazer rolagem como Narrador",
     channel: "Canal",
     password: "Senha",
     relayKey: "Chave do relay",
@@ -222,7 +223,7 @@ const messages = {
     roomSettings: "Table room",
     playerName: "Player name",
     characterName: "Character",
-    hideCharacterName: "Hide character as Storyteller",
+    hideCharacterName: "Roll as Storyteller",
     channel: "Channel",
     password: "Password",
     relayKey: "Relay key",
@@ -394,6 +395,7 @@ async function initializeContentScript(): Promise<void> {
 function startObserver(): void {
   const observer = new MutationObserver((mutations) => {
     if (isCaptureArmed() && mutations.some((mutation) => isRelevantMutation(mutation))) {
+      markMutatedElementsSinceArm(mutations);
       scheduleScan();
     }
   });
@@ -690,6 +692,7 @@ function rectsMostlyOverlap(first: DOMRect, second: DOMRect): boolean {
 function armCapture(durationMs = 6000): void {
   baselineCurrentRolls();
   armedBaselineElements = new WeakSet(collectRollCandidates().map(({ element }) => element));
+  mutatedElementsSinceArm = new WeakSet<Element>();
   captureArmedUntil = Date.now() + durationMs;
 
   for (const timer of captureScanTimers) {
@@ -706,6 +709,7 @@ function armCapture(durationMs = 6000): void {
 function disarmCapture(): void {
   captureArmedUntil = 0;
   armedBaselineElements = new WeakSet<Element>();
+  mutatedElementsSinceArm = new WeakSet<Element>();
   pendingDicePoolHint = undefined;
   pendingPageDiceRollStartedAt = 0;
   pendingPageDiceRollResponses = [];
@@ -733,6 +737,35 @@ function isRelevantMutation(mutation: MutationRecord): boolean {
   return mutation.addedNodes.length > 0 || mutation.removedNodes.length > 0;
 }
 
+function markMutatedElementsSinceArm(mutations: MutationRecord[]): void {
+  for (const mutation of mutations) {
+    if (mutation.target instanceof Element) {
+      markElementAndAncestors(mutatedElementsSinceArm, mutation.target);
+    }
+
+    if (mutation.target.parentElement) {
+      markElementAndAncestors(mutatedElementsSinceArm, mutation.target.parentElement);
+    }
+
+    for (const node of mutation.addedNodes) {
+      if (node instanceof Element) {
+        markElementAndAncestors(mutatedElementsSinceArm, node);
+      }
+    }
+  }
+}
+
+function markElementAndAncestors(target: WeakSet<Element>, element: Element): void {
+  let current: Element | null = element;
+  let depth = 0;
+
+  while (current && current !== document.body && depth < 8) {
+    target.add(current);
+    current = current.parentElement;
+    depth += 1;
+  }
+}
+
 function baselineCurrentRolls(): void {
   for (const { element, captured } of collectRollCandidates()) {
     elementSignatures.set(element, captured.signature);
@@ -750,13 +783,14 @@ function scanPage(): void {
   for (const { element, captured } of candidates) {
     const previousSignature = elementSignatures.get(element);
     const isBaselineElement = armedBaselineElements.has(element);
+    const mutatedAfterArm = mutatedElementsSinceArm.has(element);
 
-    if (publishedElements.has(element) && previousSignature === captured.signature) {
+    if (publishedElements.has(element) && previousSignature === captured.signature && !mutatedAfterArm) {
       elementSignatures.set(element, captured.signature);
       continue;
     }
 
-    if (isBaselineElement && previousSignature === captured.signature) {
+    if (isBaselineElement && previousSignature === captured.signature && !mutatedAfterArm) {
       continue;
     }
 
@@ -879,6 +913,7 @@ function extractRoll(element: Element): CapturedRoll | undefined {
 
   return {
     rollTitle,
+    characterName: getCurrentSheetCharacterName(),
     successes,
     total,
     dice,
@@ -890,6 +925,60 @@ function extractRoll(element: Element): CapturedRoll | undefined {
 
 function hasRollDetailsText(text: string): boolean {
   return /\b(details|detalhes)\b/i.test(text);
+}
+
+function getCurrentSheetCharacterName(): string | undefined {
+  const candidates: string[] = [];
+
+  const selector = [
+    "h1",
+    "h2",
+    "[class*='character-name' i]",
+    "[class*='characterName']",
+    "[class*='character-header' i] [class*='name' i]",
+    "[class*='sheet-header' i] [class*='name' i]"
+  ].join(",");
+
+  for (const element of document.querySelectorAll(selector)) {
+    if (!(element instanceof HTMLElement) || !isVisibleElement(element)) {
+      continue;
+    }
+
+    const rect = element.getBoundingClientRect();
+    if (rect.top > Math.max(260, window.innerHeight * 0.35)) {
+      continue;
+    }
+
+    const candidate = normalizeCharacterNameCandidate(element.innerText || element.textContent || "");
+    if (candidate) {
+      candidates.push(candidate);
+    }
+  }
+
+  const titleCandidate = normalizeCharacterNameCandidate(document.title.replace(/\s+[-|].*$/u, ""));
+  if (titleCandidate) {
+    candidates.push(titleCandidate);
+  }
+
+  return candidates.find(Boolean);
+}
+
+function normalizeCharacterNameCandidate(value: string): string | undefined {
+  const candidate = normalizeText(value)
+    .replace(/\s+/g, " ")
+    .replace(/[≡☰]+/g, "")
+    .trim();
+
+  if (
+    candidate.length < 2 ||
+    candidate.length > 60 ||
+    /^(ATTRIBUTES|BANE|CHARACTERS|CHRONICLES|COMPULSION|DEMIPLANE|GAME RULES|GROUPS|LIBRARY|NEXUS|ROLL|VAMPIRE)$/i.test(candidate) ||
+    /(?:demiplane|nexus|vampire:\s*the masquerade|character sheet|dice room)/i.test(candidate)
+  ) {
+    return undefined;
+  }
+
+  return candidate;
 }
 
 function findRicherRollElement(
@@ -1956,7 +2045,6 @@ function createPanel(): {
   hostRoomButton: HTMLButtonElement;
   joinRoomButton: HTMLButtonElement;
   playerNameInput: HTMLInputElement;
-  characterNameInput: HTMLInputElement;
   hideCharacterNameInput: HTMLInputElement;
   channelInput: HTMLInputElement;
   passwordInput: HTMLInputElement;
@@ -2552,15 +2640,9 @@ function createPanel(): {
           <input id="dice-room-player-name" data-player-name type="text" autocomplete="name" />
         </div>
         <div class="settings-row">
-          <label for="dice-room-character-name">
-            <span data-settings-character-label>Personagem</span>
-          </label>
-          <input id="dice-room-character-name" data-character-name type="text" autocomplete="off" />
-        </div>
-        <div class="settings-row">
           <label class="checkbox-row">
             <input data-hide-character-name type="checkbox" />
-            <span data-settings-hide-character-label>Ocultar personagem como Narrador</span>
+            <span data-settings-hide-character-label>Fazer rolagem como Narrador</span>
           </label>
         </div>
         <div class="settings-row">
@@ -2651,7 +2733,6 @@ function createPanel(): {
   const joinRoomButton = shadow.querySelector("[data-join-room]");
   const opacityInput = shadow.querySelector("[data-opacity]");
   const playerNameInput = shadow.querySelector("[data-player-name]");
-  const characterNameInput = shadow.querySelector("[data-character-name]");
   const hideCharacterNameInput = shadow.querySelector("[data-hide-character-name]");
   const channelInput = shadow.querySelector("[data-channel]");
   const passwordInput = shadow.querySelector("[data-password]");
@@ -2682,7 +2763,6 @@ function createPanel(): {
     !(joinRoomButton instanceof HTMLButtonElement) ||
     !(opacityInput instanceof HTMLInputElement) ||
     !(playerNameInput instanceof HTMLInputElement) ||
-    !(characterNameInput instanceof HTMLInputElement) ||
     !(hideCharacterNameInput instanceof HTMLInputElement) ||
     !(channelInput instanceof HTMLInputElement) ||
     !(passwordInput instanceof HTMLInputElement) ||
@@ -2826,7 +2906,6 @@ function createPanel(): {
     joinRoomButton,
     opacityInput,
     playerNameInput,
-    characterNameInput,
     hideCharacterNameInput,
     channelInput,
     passwordInput,
@@ -2872,9 +2951,6 @@ function renderPanel(): void {
   const activePanelElement = panel.host.shadowRoot?.activeElement;
   if (activePanelElement !== panel.playerNameInput) {
     panel.playerNameInput.value = config.playerName;
-  }
-  if (activePanelElement !== panel.characterNameInput) {
-    panel.characterNameInput.value = config.characterName;
   }
   if (activePanelElement !== panel.channelInput) {
     panel.channelInput.value = config.channel;
@@ -2928,10 +3004,6 @@ function renderPanel(): void {
   const playerLabel = panel.host.shadowRoot?.querySelector("[data-settings-player-label]");
   if (playerLabel instanceof HTMLSpanElement) {
     playerLabel.textContent = t("playerName");
-  }
-  const characterLabel = panel.host.shadowRoot?.querySelector("[data-settings-character-label]");
-  if (characterLabel instanceof HTMLSpanElement) {
-    characterLabel.textContent = t("characterName");
   }
   const hideCharacterLabel = panel.host.shadowRoot?.querySelector("[data-settings-hide-character-label]");
   if (hideCharacterLabel instanceof HTMLSpanElement) {
@@ -3057,7 +3129,7 @@ async function savePanelRoomConfig(): Promise<void> {
     ...(currentConfig ?? defaultConfig),
     serverUrl: panel.relayInput.value.trim(),
     playerName: panel.playerNameInput.value.trim(),
-    characterName: panel.characterNameInput.value.trim(),
+    characterName: "",
     roomRole: panel.hostRoomButton.classList.contains("active") ? "host" : "player",
     hideCharacterName: panel.hostRoomButton.classList.contains("active") && panel.hideCharacterNameInput.checked,
     channel: panel.channelInput.value.trim(),
@@ -4750,7 +4822,22 @@ function revealReadyDiceBatches(layer: DiceAnimationLayer, now: number): void {
     for (const die of dice) {
       revealDieResult(die, layer, now);
     }
+    scheduleDiceBatchCompletionAfterReveal(layer, dice[0].batchId);
   }
+}
+
+function scheduleDiceBatchCompletionAfterReveal(layer: DiceAnimationLayer, batchId: number): void {
+  const complete = layer.batchCompletionCallbacks.get(batchId);
+  if (!complete) {
+    return;
+  }
+
+  window.setTimeout(() => {
+    const stillPending = layer.batchCompletionCallbacks.get(batchId);
+    if (stillPending) {
+      stillPending();
+    }
+  }, resultLabelRevealMs + 80);
 }
 
 function fadeAnimatedDie(die: AnimatedDie, now: number): void {
