@@ -289,7 +289,8 @@ async function disconnect(): Promise<void> {
   await saveConfig({ ...config, autoConnect: false });
 
   if (socket) {
-    socket.close();
+    sendSocketMessage({ type: "leave_room", version: protocolVersion });
+    socket.close(1000, "leave_room");
     socket = undefined;
   }
 
@@ -475,9 +476,9 @@ function isTerminalRoomError(code: string): boolean {
     code === "room_closed" ||
     code === "room_full" ||
     code === "room_host_exists" ||
-    code === "room_not_found" ||
     code === "approval_rejected" ||
-    code === "kicked"
+    code === "kicked" ||
+    code === "session_replaced"
   );
 }
 

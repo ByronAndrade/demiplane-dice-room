@@ -111,6 +111,14 @@ export type ServerMessage =
       message: string;
     };
 
+export type ClientMessage =
+  | { type: "hello"; version: 1; clientId: string; playerName: string; characterName?: string; roomRole: "host" | "player"; channel: string; password?: string }
+  | { type: "roll"; version: 1; roll: RollEvent }
+  | { type: "approve_player"; version: 1; clientId: string }
+  | { type: "reject_player"; version: 1; clientId: string }
+  | { type: "kick_player"; version: 1; clientId: string }
+  | { type: "leave_room"; version: 1 };
+
 export type BackgroundMessage =
   | {
       kind: "background:connection-state";

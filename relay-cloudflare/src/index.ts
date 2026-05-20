@@ -4,6 +4,7 @@ const protocolVersion = 1;
 const maxMessageBytes = 64 * 1024;
 const maxRoomHistory = 100;
 const maxRoomPlayers = 20;
+const hostReconnectGraceMs = 120_000;
 const historyStorageKey = "history";
 const approvedStorageKey = "approvedPlayers";
 
@@ -67,6 +68,11 @@ type PlayerControlMessage = {
   type: "approve_player" | "reject_player" | "kick_player";
   version: 1;
   clientId: string;
+};
+
+type LeaveRoomMessage = {
+  type: "leave_room";
+  version: 1;
 };
 
 type ServerMessage =
@@ -174,6 +180,8 @@ export default {
 
 export class DiceRoomDurableObject extends DurableObject<Env> {
   private sessions = new Map<WebSocket, ClientSession>();
+  private hostGraceTimer: ReturnType<typeof setTimeout> | undefined;
+  private hostGraceClientId = "";
 
   constructor(ctx: DurableObjectState, env: Env) {
     super(ctx, env);
@@ -237,6 +245,11 @@ export class DiceRoomDurableObject extends DurableObject<Env> {
       return;
     }
 
+    if (isLeaveRoomMessage(parsed.value)) {
+      void this.handleLeaveRoom(socket);
+      return;
+    }
+
     const session = this.getReadySession(socket);
     if (!session) {
       this.send(socket, errorMessage("not_joined", "Aguardando entrada na sala antes de publicar rolagens."));
@@ -270,7 +283,7 @@ export class DiceRoomDurableObject extends DurableObject<Env> {
 
     if (session?.ready) {
       if (session.roomRole === "host") {
-        void this.closeRoom(session.roomId);
+        this.scheduleHostGraceRoomClose(session.roomId, session.clientId || "");
         return;
       }
 
@@ -286,7 +299,7 @@ export class DiceRoomDurableObject extends DurableObject<Env> {
 
     if (session?.ready) {
       if (session.roomRole === "host") {
-        void this.closeRoom(session.roomId);
+        this.scheduleHostGraceRoomClose(session.roomId, session.clientId || "");
         return;
       }
 
@@ -307,30 +320,54 @@ export class DiceRoomDurableObject extends DurableObject<Env> {
 
     const clientId = hello.clientId.trim();
     const playerName = hello.playerName.trim();
-    const roomPlayerCount = this.getReadyCount(roomId, socket);
     const roomRole = hello.roomRole === "host" ? "host" : "player";
-    if (roomRole === "host" && this.hasRoomHost(roomId, socket)) {
+    const existingHostSocket = this.findHostSocket(roomId, socket);
+    const existingHostSession = existingHostSocket ?
+      this.sessions.get(existingHostSocket) ?? normalizeSession(existingHostSocket.deserializeAttachment()) :
+      undefined;
+
+    if (roomRole === "host" && existingHostSocket && existingHostSession?.clientId !== clientId) {
       this.send(socket, errorMessage("room_host_exists", "Esta sala ja tem um narrador conectado."));
       socket.close(1008, "room_host_exists");
       this.sessions.delete(socket);
       return;
     }
 
-    if (roomRole === "player" && !this.hasRoomHost(roomId, socket)) {
+    if (
+      roomRole === "host" &&
+      !existingHostSocket &&
+      this.hostGraceClientId &&
+      this.hostGraceClientId !== clientId
+    ) {
+      this.send(socket, errorMessage("room_host_exists", "Esta sala aguarda o narrador original reconectar."));
+      socket.close(1008, "room_host_exists");
+      this.sessions.delete(socket);
+      return;
+    }
+
+    const approvedPlayer = await this.isPlayerApproved(clientId);
+    if (roomRole === "player" && !existingHostSocket && !approvedPlayer) {
       this.send(socket, errorMessage("room_not_found", "A sala ainda nao foi criada pelo narrador."));
       socket.close(1008, "room_not_found");
       this.sessions.delete(socket);
       return;
     }
 
-    if (roomPlayerCount >= maxRoomPlayers) {
+    if (roomRole === "host") {
+      this.clearHostGraceTimer();
+    }
+
+    this.replaceReadyPlayer(roomId, clientId, socket);
+    const nextRoomPlayerCount = this.getReadyCount(roomId, socket);
+
+    if (nextRoomPlayerCount >= maxRoomPlayers) {
       this.send(socket, errorMessage("room_full", `Sala cheia. O limite e de ${maxRoomPlayers} jogadores.`));
       socket.close(1008, "room_full");
       this.sessions.delete(socket);
       return;
     }
 
-    if (roomRole === "player" && !(await this.isPlayerApproved(clientId))) {
+    if (roomRole === "player" && !approvedPlayer) {
       const pendingSession: ClientSession = {
         roomId,
         joinedAt: current?.joinedAt || new Date().toISOString(),
@@ -378,6 +415,9 @@ export class DiceRoomDurableObject extends DurableObject<Env> {
     });
 
     this.broadcastPresence(roomId);
+    if (roomRole === "host") {
+      this.sendPendingPlayers(roomId);
+    }
   }
 
   private async handlePlayerControl(
@@ -401,6 +441,25 @@ export class DiceRoomDurableObject extends DurableObject<Env> {
     }
 
     this.kickRoomPlayer(socket, hostSession.roomId, message.clientId, hostSession.clientId);
+  }
+
+  private async handleLeaveRoom(socket: WebSocket): Promise<void> {
+    const session = this.sessions.get(socket) ?? normalizeSession(socket.deserializeAttachment());
+    this.sessions.delete(socket);
+
+    if (session?.ready && session.roomRole === "host") {
+      await this.closeRoom(session.roomId);
+      socket.close(1000, "leave_room");
+      return;
+    }
+
+    if (session?.ready) {
+      this.broadcastPresence(session.roomId);
+    } else if (session?.roomId && session.clientId) {
+      this.sendPendingPlayers(session.roomId);
+    }
+
+    socket.close(1000, "leave_room");
   }
 
   private async approvePendingPlayer(hostSocket: WebSocket, roomId: string, clientId: string): Promise<void> {
@@ -616,6 +675,23 @@ export class DiceRoomDurableObject extends DurableObject<Env> {
     this.sessions.delete(existingSocket);
   }
 
+  private replaceReadyPlayer(roomId: string, clientId: string, nextSocket: WebSocket): void {
+    for (const socket of this.ctx.getWebSockets()) {
+      if (socket === nextSocket) {
+        continue;
+      }
+
+      const session = this.sessions.get(socket) ?? normalizeSession(socket.deserializeAttachment());
+      if (!session?.ready || session.roomId !== roomId || session.clientId !== clientId) {
+        continue;
+      }
+
+      this.send(socket, errorMessage("session_replaced", "Uma nova conexao substituiu esta sessao."));
+      socket.close(1001, "session_replaced");
+      this.sessions.delete(socket);
+    }
+  }
+
   private getReadyCount(roomId: string, except?: WebSocket): number {
     let count = 0;
 
@@ -681,6 +757,7 @@ export class DiceRoomDurableObject extends DurableObject<Env> {
   }
 
   private async closeRoom(roomId: string): Promise<void> {
+    this.clearHostGraceTimer();
     for (const socket of this.ctx.getWebSockets()) {
       const session = this.sessions.get(socket) ?? normalizeSession(socket.deserializeAttachment());
       if (session?.roomId !== roomId) {
@@ -694,6 +771,25 @@ export class DiceRoomDurableObject extends DurableObject<Env> {
 
     await this.ctx.storage.delete(historyStorageKey);
     await this.ctx.storage.delete(approvedStorageKey);
+  }
+
+  private scheduleHostGraceRoomClose(roomId: string, hostClientId: string): void {
+    this.clearHostGraceTimer();
+    this.hostGraceClientId = hostClientId;
+    this.hostGraceTimer = setTimeout(() => {
+      this.hostGraceTimer = undefined;
+      this.hostGraceClientId = "";
+      void this.closeRoom(roomId);
+    }, hostReconnectGraceMs);
+    this.broadcastPresence(roomId);
+  }
+
+  private clearHostGraceTimer(): void {
+    if (this.hostGraceTimer) {
+      clearTimeout(this.hostGraceTimer);
+      this.hostGraceTimer = undefined;
+    }
+    this.hostGraceClientId = "";
   }
 }
 
@@ -747,6 +843,15 @@ function isPlayerControlMessage(value: unknown): value is PlayerControlMessage {
     message.version === protocolVersion &&
     isBoundedString(message.clientId, 8, 120)
   );
+}
+
+function isLeaveRoomMessage(value: unknown): value is LeaveRoomMessage {
+  if (!value || typeof value !== "object") {
+    return false;
+  }
+
+  const message = value as Partial<LeaveRoomMessage>;
+  return message.type === "leave_room" && message.version === protocolVersion;
 }
 
 function isRollEvent(value: unknown): value is RollEvent {

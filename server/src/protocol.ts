@@ -61,12 +61,18 @@ export const kickPlayerMessageSchema = z.object({
   clientId: z.string().trim().min(8).max(120)
 });
 
+export const leaveRoomMessageSchema = z.object({
+  type: z.literal("leave_room"),
+  version: protocolVersionSchema
+});
+
 export const clientMessageSchema = z.discriminatedUnion("type", [
   helloMessageSchema,
   rollMessageSchema,
   approvePlayerMessageSchema,
   rejectPlayerMessageSchema,
-  kickPlayerMessageSchema
+  kickPlayerMessageSchema,
+  leaveRoomMessageSchema
 ]);
 
 export type HelloMessage = z.infer<typeof helloMessageSchema>;

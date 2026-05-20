@@ -55,7 +55,7 @@ const defaultDiceAnimationScale = 0.75;
 const minDiceAnimationScale = 0.45;
 const maxDiceAnimationScale = 1.15;
 const defaultRelayUrl = "wss://demiplane-dice-room-relay.foxbyron.workers.dev";
-const extensionUiVersion = "0.1.86";
+const extensionUiVersion = "0.1.87";
 const pageBridgeMessageSource = "demiplane-dice-room-page";
 const pageDiceRollResponseWaitMs = 1400;
 const pageDiceRollResponseTtlMs = 8_000;
@@ -4752,8 +4752,24 @@ function createFaceLabelGeometry(anchor: FaceAnchor): THREE.BufferGeometry {
 function createAssetImage(path: string): HTMLImageElement {
   const image = new Image();
   image.decoding = "async";
-  image.src = chrome.runtime.getURL(path);
+  image.loading = "eager";
+  image.src = getExtensionAssetUrl(path);
   return image;
+}
+
+function getExtensionAssetUrl(path: string): string {
+  const runtime = (globalThis as {
+    chrome?: { runtime?: { getURL: (assetPath: string) => string } };
+    browser?: { runtime?: { getURL: (assetPath: string) => string } };
+  }).chrome?.runtime ?? (globalThis as {
+    browser?: { runtime?: { getURL: (assetPath: string) => string } };
+  }).browser?.runtime;
+
+  try {
+    return runtime?.getURL(path) ?? path;
+  } catch {
+    return path;
+  }
 }
 
 function drawRegularDieResult(
@@ -4797,7 +4813,7 @@ function drawHungerDieResult(
     drawIconResult(context, fangedAnkhIconImage, color, glow, {
       maxWidth: 238,
       maxHeight: 238,
-      fallback: () => drawAnkhGlyphFallback(context, color)
+      fallback: () => drawFangedAnkhGlyphFallback(context, color)
     });
   }
 }
@@ -4885,17 +4901,87 @@ function drawTintedImage(
 }
 
 function drawAnkhGlyphFallback(context: CanvasRenderingContext2D, color: string): void {
-  context.font = "900 230px Georgia, serif";
-  context.strokeText("\u2625", resultLabelCanvasWidth / 2, resultLabelCanvasHeight / 2 + 8);
+  drawVectorAnkhFallback(context, color, false);
+}
+
+function drawFangedAnkhGlyphFallback(context: CanvasRenderingContext2D, color: string): void {
+  drawVectorAnkhFallback(context, color, true);
+}
+
+function drawVectorAnkhFallback(context: CanvasRenderingContext2D, color: string, fanged: boolean): void {
+  context.save();
+  context.translate(resultLabelCanvasWidth / 2, resultLabelCanvasHeight / 2 + 4);
+  context.strokeStyle = color;
   context.fillStyle = color;
-  context.fillText("\u2625", resultLabelCanvasWidth / 2, resultLabelCanvasHeight / 2 + 8);
+  context.lineCap = "round";
+  context.lineJoin = "round";
+  context.lineWidth = 18;
+
+  context.beginPath();
+  context.ellipse(0, -48, 38, 48, 0, 0, Math.PI * 2);
+  context.stroke();
+
+  context.beginPath();
+  context.moveTo(0, -2);
+  context.lineTo(0, 92);
+  context.moveTo(-70, 16);
+  context.quadraticCurveTo(-34, 34, 0, 20);
+  context.quadraticCurveTo(34, 34, 70, 16);
+  context.moveTo(-46, 78);
+  context.lineTo(0, 92);
+  context.lineTo(46, 78);
+  context.stroke();
+
+  if (fanged) {
+    context.beginPath();
+    context.moveTo(-74, 20);
+    context.lineTo(-108, 72);
+    context.lineTo(-50, 48);
+    context.closePath();
+    context.moveTo(74, 20);
+    context.lineTo(108, 72);
+    context.lineTo(50, 48);
+    context.closePath();
+    context.fill();
+  }
+
+  context.restore();
 }
 
 function drawSkullGlyphFallback(context: CanvasRenderingContext2D, color: string): void {
-  context.font = "900 178px Georgia, serif";
-  context.strokeText("\u2620", resultLabelCanvasWidth / 2, resultLabelCanvasHeight / 2 + 3);
+  context.save();
+  context.translate(resultLabelCanvasWidth / 2, resultLabelCanvasHeight / 2 + 4);
   context.fillStyle = color;
-  context.fillText("\u2620", resultLabelCanvasWidth / 2, resultLabelCanvasHeight / 2 + 3);
+  context.strokeStyle = "rgba(0, 0, 0, 0.72)";
+  context.lineWidth = 9;
+  context.lineJoin = "round";
+
+  context.beginPath();
+  context.moveTo(-74, -18);
+  context.bezierCurveTo(-82, -94, -20, -114, 36, -98);
+  context.bezierCurveTo(96, -80, 104, -14, 70, 30);
+  context.bezierCurveTo(52, 54, 36, 72, 28, 102);
+  context.lineTo(10, 82);
+  context.lineTo(-4, 106);
+  context.lineTo(-18, 80);
+  context.lineTo(-38, 100);
+  context.bezierCurveTo(-42, 68, -58, 50, -72, 28);
+  context.bezierCurveTo(-84, 10, -82, -4, -74, -18);
+  context.closePath();
+  context.stroke();
+  context.fill();
+
+  context.globalCompositeOperation = "destination-out";
+  context.beginPath();
+  context.ellipse(-34, -10, 28, 34, -0.25, 0, Math.PI * 2);
+  context.ellipse(34, -10, 28, 34, 0.25, 0, Math.PI * 2);
+  context.moveTo(0, 24);
+  context.lineTo(-16, 56);
+  context.lineTo(18, 56);
+  context.closePath();
+  context.fill();
+  context.globalCompositeOperation = "source-over";
+  context.restore();
 }
 
 function drawCriticalAnkhStars(

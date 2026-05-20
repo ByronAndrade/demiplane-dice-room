@@ -16,6 +16,7 @@ const host = process.env.HOST ?? "0.0.0.0";
 const maxMessageBytes = 64 * 1024;
 const maxRoomHistory = 100;
 const maxRoomPlayers = 20;
+const hostReconnectGraceMs = 120_000;
 const adminToken = process.env.DICE_ROOM_ADMIN_TOKEN ?? "";
 const relayAccessKey = process.env.DICE_ROOM_RELAY_KEY?.trim() ?? "";
 let runtimePublicRelayUrl = "";
@@ -39,6 +40,11 @@ type PendingClient = {
   requestedAt: string;
 };
 
+type HostGrace = {
+  hostClientId: string;
+  timer: ReturnType<typeof setTimeout>;
+};
+
 type JoinResult =
   | { state: "joined"; client: Client }
   | { state: "pending"; pending: PendingClient }
@@ -48,6 +54,7 @@ const rooms = new Map<string, Set<Client>>();
 const roomHistories = new Map<string, RollEvent[]>();
 const pendingRooms = new Map<string, Set<PendingClient>>();
 const approvedRoomClients = new Map<string, Set<string>>();
+const hostGraceTimers = new Map<string, HostGrace>();
 
 const heartbeatInterval = setInterval(() => {
   const createdAt = new Date().toISOString();
@@ -106,7 +113,7 @@ wss.on("connection", (socket, request) => {
 
     if (parsed.data.type === "hello") {
       if (client) {
-        leaveRoom(client);
+        leaveRoom(client, { manual: false });
         client = undefined;
       }
       if (pendingClient) {
@@ -120,6 +127,19 @@ wss.on("connection", (socket, request) => {
       } else if (joinResult?.state === "pending") {
         pendingClient = joinResult.pending;
       }
+      return;
+    }
+
+    if (parsed.data.type === "leave_room") {
+      if (client) {
+        leaveRoom(client, { manual: true });
+        client = undefined;
+      }
+      if (pendingClient) {
+        leavePendingRoom(pendingClient);
+        pendingClient = undefined;
+      }
+      socket.close(1000, "leave_room");
       return;
     }
 
@@ -161,7 +181,7 @@ wss.on("connection", (socket, request) => {
   socket.on("close", () => {
     const activeClient = client ?? findClientBySocket(socket);
     if (activeClient) {
-      leaveRoom(activeClient);
+      leaveRoom(activeClient, { manual: false });
       client = undefined;
     }
     const activePendingClient = pendingClient ?? findPendingBySocket(socket);
@@ -174,7 +194,7 @@ wss.on("connection", (socket, request) => {
   socket.on("error", () => {
     const activeClient = client ?? findClientBySocket(socket);
     if (activeClient) {
-      leaveRoom(activeClient);
+      leaveRoom(activeClient, { manual: false });
       client = undefined;
     }
     const activePendingClient = pendingClient ?? findPendingBySocket(socket);
@@ -258,20 +278,34 @@ function getHealthPayload(): { ok: true; rooms: number; players: number; relays:
 
 function joinRoom(socket: WebSocket, hello: HelloMessage): JoinResult {
   const roomId = createRoomId(hello.channel, hello.password);
-  const room = rooms.get(roomId) ?? new Set<Client>();
   const roomRole = hello.roomRole === "host" ? "host" : "player";
+  const existingHost = findRoomHost(roomId);
+  const hostGrace = hostGraceTimers.get(roomId);
 
-  if (roomRole === "host" && hasRoomHost(roomId)) {
+  if (roomRole === "host" && existingHost && existingHost.clientId !== hello.clientId) {
     send(socket, errorMessage("room_host_exists", "Esta sala ja tem um narrador conectado."));
     socket.close(1008, "room_host_exists");
     return undefined;
   }
 
-  if (roomRole === "player" && !hasRoomHost(roomId)) {
+  if (roomRole === "host" && hostGrace && !existingHost && hostGrace.hostClientId !== hello.clientId) {
+    send(socket, errorMessage("room_host_exists", "Esta sala aguarda o narrador original reconectar."));
+    socket.close(1008, "room_host_exists");
+    return undefined;
+  }
+
+  if (roomRole === "player" && !existingHost && !hostGrace && !isPlayerApproved(roomId, hello.clientId)) {
     send(socket, errorMessage("room_not_found", "A sala ainda nao foi criada pelo narrador."));
     socket.close(1008, "room_not_found");
     return undefined;
   }
+
+  if (roomRole === "host") {
+    clearHostGraceTimer(roomId);
+  }
+
+  replaceReadyClient(roomId, hello.clientId, socket);
+  const room = rooms.get(roomId) ?? new Set<Client>();
 
   if (room.size >= maxRoomPlayers) {
     send(socket, errorMessage("room_full", `Sala cheia. O limite e de ${maxRoomPlayers} jogadores.`));
@@ -322,6 +356,9 @@ function joinRoom(socket: WebSocket, hello: HelloMessage): JoinResult {
   });
 
   broadcastPresence(roomId);
+  if (roomRole === "host") {
+    sendPendingPlayers(roomId);
+  }
   return { state: "joined", client };
 }
 
@@ -432,20 +469,36 @@ function kickRoomPlayer(host: Client, clientId: string): void {
   broadcastPresence(host.roomId);
 }
 
-function leaveRoom(client: Client): void {
+function leaveRoom(client: Client, options: { manual: boolean }): void {
   const room = rooms.get(client.roomId);
   if (!room) {
     return;
   }
 
   if (client.roomRole === "host") {
-    closeRoom(client.roomId);
+    const wasInRoom = room.delete(client);
+    if (!wasInRoom) {
+      return;
+    }
+    if (options.manual) {
+      closeRoom(client.roomId);
+      return;
+    }
+
+    if (room.size === 0) {
+      rooms.set(client.roomId, room);
+    }
+    scheduleHostGraceRoomClose(client.roomId, client.clientId);
+    broadcastPresence(client.roomId);
     return;
   }
 
-  room.delete(client);
+  const wasInRoom = room.delete(client);
+  if (!wasInRoom) {
+    return;
+  }
 
-  if (room.size === 0) {
+  if (room.size === 0 && !hostGraceTimers.has(client.roomId)) {
     rooms.delete(client.roomId);
     return;
   }
@@ -459,6 +512,7 @@ function leavePendingRoom(pending: PendingClient): void {
 }
 
 function closeRoom(roomId: string): void {
+  clearHostGraceTimer(roomId);
   const room = rooms.get(roomId);
   if (room) {
     for (const client of room) {
@@ -479,6 +533,26 @@ function closeRoom(roomId: string): void {
     }
   }
   pendingRooms.delete(roomId);
+}
+
+function scheduleHostGraceRoomClose(roomId: string, hostClientId: string): void {
+  clearHostGraceTimer(roomId);
+  const timer = setTimeout(() => {
+    hostGraceTimers.delete(roomId);
+    closeRoom(roomId);
+  }, hostReconnectGraceMs);
+  timer.unref();
+  hostGraceTimers.set(roomId, { hostClientId, timer });
+}
+
+function clearHostGraceTimer(roomId: string): void {
+  const grace = hostGraceTimers.get(roomId);
+  if (!grace) {
+    return;
+  }
+
+  clearTimeout(grace.timer);
+  hostGraceTimers.delete(roomId);
 }
 
 function broadcastPresence(roomId: string): void {
@@ -565,6 +639,23 @@ function findClientBySocket(socket: WebSocket): Client | undefined {
     }
   }
   return undefined;
+}
+
+function replaceReadyClient(roomId: string, clientId: string, nextSocket: WebSocket): void {
+  const room = rooms.get(roomId);
+  if (!room) {
+    return;
+  }
+
+  for (const existing of [...room]) {
+    if (existing.clientId !== clientId || existing.socket === nextSocket) {
+      continue;
+    }
+
+    send(existing.socket, errorMessage("session_replaced", "Uma nova conexao substituiu esta sessao."));
+    existing.socket.close(1001, "session_replaced");
+    room.delete(existing);
+  }
 }
 
 function findPendingBySocket(socket: WebSocket): PendingClient | undefined {
