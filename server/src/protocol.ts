@@ -43,9 +43,30 @@ export const rollMessageSchema = z.object({
   roll: rollEventSchema
 });
 
+export const approvePlayerMessageSchema = z.object({
+  type: z.literal("approve_player"),
+  version: protocolVersionSchema,
+  clientId: z.string().trim().min(8).max(120)
+});
+
+export const rejectPlayerMessageSchema = z.object({
+  type: z.literal("reject_player"),
+  version: protocolVersionSchema,
+  clientId: z.string().trim().min(8).max(120)
+});
+
+export const kickPlayerMessageSchema = z.object({
+  type: z.literal("kick_player"),
+  version: protocolVersionSchema,
+  clientId: z.string().trim().min(8).max(120)
+});
+
 export const clientMessageSchema = z.discriminatedUnion("type", [
   helloMessageSchema,
-  rollMessageSchema
+  rollMessageSchema,
+  approvePlayerMessageSchema,
+  rejectPlayerMessageSchema,
+  kickPlayerMessageSchema
 ]);
 
 export type HelloMessage = z.infer<typeof helloMessageSchema>;
@@ -58,6 +79,13 @@ export type PresencePlayer = {
   characterName?: string;
   roomRole?: "host" | "player";
   joinedAt: string;
+};
+
+export type PendingPlayer = {
+  clientId: string;
+  playerName: string;
+  characterName?: string;
+  requestedAt: string;
 };
 
 export type ServerMessage =
@@ -74,6 +102,18 @@ export type ServerMessage =
       version: 1;
       roomId: string;
       players: PresencePlayer[];
+    }
+  | {
+      type: "approval_required";
+      version: 1;
+      roomId: string;
+      message: string;
+    }
+  | {
+      type: "pending_players";
+      version: 1;
+      roomId: string;
+      pendingPlayers: PendingPlayer[];
     }
   | {
       type: "heartbeat";

@@ -81,6 +81,12 @@ h1 span {
   background: #332b16;
 }
 
+.status-pending {
+  border-color: #7c6835;
+  color: #ffe5a3;
+  background: #332b16;
+}
+
 .status-local {
   border-color: #475569;
   color: #d8e0ec;

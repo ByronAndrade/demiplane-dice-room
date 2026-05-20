@@ -18,6 +18,9 @@ type RuntimeRequest =
   | { kind: "popup:save-config"; config: ExtensionConfig }
   | { kind: "popup:connect" }
   | { kind: "popup:disconnect" }
+  | { kind: "popup:approve-player"; clientId: string }
+  | { kind: "popup:reject-player"; clientId: string }
+  | { kind: "popup:kick-player"; clientId: string }
   | { kind: "popup:test-roll" }
   | { kind: "content:ready" }
   | { kind: "content:captured-roll"; roll: CapturedRoll };
@@ -38,7 +41,8 @@ let activeHistoryRoomId: string | undefined;
 let connectionState: ConnectionState = {
   status: "disconnected",
   detail: "Desconectado",
-  players: []
+  players: [],
+  pendingPlayers: []
 };
 
 void bootstrap();
@@ -93,6 +97,18 @@ async function handleRuntimeMessage(message: RuntimeRequest): Promise<unknown> {
       await disconnect();
       return { ok: true, state: connectionState };
 
+    case "popup:approve-player":
+      sendSocketMessage({ type: "approve_player", version: protocolVersion, clientId: message.clientId });
+      return { ok: true, state: connectionState };
+
+    case "popup:reject-player":
+      sendSocketMessage({ type: "reject_player", version: protocolVersion, clientId: message.clientId });
+      return { ok: true, state: connectionState };
+
+    case "popup:kick-player":
+      sendSocketMessage({ type: "kick_player", version: protocolVersion, clientId: message.clientId });
+      return { ok: true, state: connectionState };
+
     case "popup:test-roll":
       await ensureContentScriptOnActiveDemiplaneTab();
       return publishCapturedRoll(createTestRoll());
@@ -110,7 +126,9 @@ async function connect(): Promise<void> {
       status: "error",
         detail: "Informe nome do jogador e canal da mesa.",
         roomId: undefined,
+        clientId: undefined,
         players: [],
+        pendingPlayers: [],
         connectedAt: undefined
       });
     return;
@@ -121,7 +139,9 @@ async function connect(): Promise<void> {
       status: "error",
       detail: "Informe a chave do relay ou use um relay proprio/local.",
       roomId: undefined,
+      clientId: undefined,
       players: [],
+      pendingPlayers: [],
       connectedAt: undefined
     });
     return;
@@ -131,6 +151,7 @@ async function connect(): Promise<void> {
   manualDisconnect = false;
   forcedDisconnectDetail = undefined;
   await saveConfig({ ...config, autoConnect: true });
+  const clientId = await getClientId();
 
   if (socket) {
     socket.close();
@@ -140,11 +161,12 @@ async function connect(): Promise<void> {
     status: "connecting",
       detail: "Conectando ao relay...",
       roomId: undefined,
+      clientId,
       players: [],
+      pendingPlayers: [],
       connectedAt: undefined
   });
 
-  const clientId = await getClientId();
   const publicCharacterName = await getPublicCharacterName(config);
   let socketUrl: string;
   try {
@@ -154,7 +176,9 @@ async function connect(): Promise<void> {
       status: "error",
       detail: `Relay invalido: ${config.serverUrl}`,
       roomId: undefined,
+      clientId,
       players: [],
+      pendingPlayers: [],
       connectedAt: undefined
     });
     return;
@@ -212,7 +236,9 @@ async function connect(): Promise<void> {
           status: "error",
           detail,
           roomId: undefined,
+          clientId: undefined,
           players: [],
+          pendingPlayers: [],
           connectedAt: undefined
         });
         activeHistoryRoomId = undefined;
@@ -224,7 +250,9 @@ async function connect(): Promise<void> {
         status: "disconnected",
         detail: "Desconectado",
         roomId: undefined,
+        clientId: undefined,
         players: [],
+        pendingPlayers: [],
         connectedAt: undefined
       });
       activeHistoryRoomId = undefined;
@@ -269,7 +297,9 @@ async function disconnect(): Promise<void> {
     status: "disconnected",
     detail: "Desconectado",
     roomId: undefined,
+    clientId: undefined,
     players: [],
+    pendingPlayers: [],
     connectedAt: undefined
   });
   activeHistoryRoomId = undefined;
@@ -351,7 +381,9 @@ function handleServerMessage(message: ServerMessage): void {
         status: "connected",
         detail: "Conectado",
         roomId: message.roomId,
+        clientId: message.clientId,
         players: message.players,
+        pendingPlayers: [],
         connectedAt: new Date().toISOString()
       });
       void syncRoomHistory(message.roomId, message.history);
@@ -363,6 +395,25 @@ function handleServerMessage(message: ServerMessage): void {
         status: connectionState.status === "connected" ? "connected" : connectionState.status,
         roomId: message.roomId,
         players: message.players
+      });
+      return;
+
+    case "approval_required":
+      setConnectionState({
+        ...connectionState,
+        status: "pending",
+        detail: message.message,
+        roomId: message.roomId,
+        players: [],
+        pendingPlayers: []
+      });
+      return;
+
+    case "pending_players":
+      setConnectionState({
+        ...connectionState,
+        roomId: message.roomId,
+        pendingPlayers: message.pendingPlayers
       });
       return;
 
@@ -401,7 +452,9 @@ function handleServerMessage(message: ServerMessage): void {
           status: "error",
           detail: message.message,
           roomId: undefined,
+          clientId: undefined,
           players: [],
+          pendingPlayers: [],
           connectedAt: undefined
         });
         activeHistoryRoomId = undefined;
@@ -418,7 +471,14 @@ function handleServerMessage(message: ServerMessage): void {
 }
 
 function isTerminalRoomError(code: string): boolean {
-  return code === "room_closed" || code === "room_full" || code === "room_host_exists";
+  return (
+    code === "room_closed" ||
+    code === "room_full" ||
+    code === "room_host_exists" ||
+    code === "room_not_found" ||
+    code === "approval_rejected" ||
+    code === "kicked"
+  );
 }
 
 async function bootstrap(): Promise<void> {
@@ -428,7 +488,7 @@ async function bootstrap(): Promise<void> {
 
 async function maybeAutoConnect(): Promise<void> {
   const config = await getConfig();
-  if (!config.autoConnect || socket?.readyState === WebSocket.OPEN || connectionState.status === "connecting") {
+  if (!config.autoConnect || socket?.readyState === WebSocket.OPEN || connectionState.status === "connecting" || connectionState.status === "pending") {
     return;
   }
 

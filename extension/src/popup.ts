@@ -50,6 +50,7 @@ const messages = {
     noRoll: "Nenhuma rolagem recebida.",
     connected: "Conectado",
     connecting: "Conectando",
+    pending: "Pendente",
     disconnected: "Desconectado",
     error: "Erro",
     localMode: "Local",
@@ -75,7 +76,10 @@ const messages = {
     missingRelayKey: "Informe a chave do relay ou use um relay proprio/local.",
     roomFull: "Sala cheia. O limite e de 20 jogadores.",
     roomClosed: "O narrador saiu e a sala foi desfeita.",
-    roomHostExists: "Esta sala ja tem um narrador conectado."
+    roomHostExists: "Esta sala ja tem um narrador conectado.",
+    roomNotFound: "A sala ainda nao foi criada pelo narrador.",
+    approvalRejected: "O narrador recusou sua entrada na sala.",
+    kicked: "Voce foi removido da sala pelo narrador."
   },
   en: {
     playerNameLabel: "Player name",
@@ -105,6 +109,7 @@ const messages = {
     noRoll: "No rolls received yet.",
     connected: "Connected",
     connecting: "Connecting",
+    pending: "Pending",
     disconnected: "Disconnected",
     error: "Error",
     localMode: "Local",
@@ -130,7 +135,10 @@ const messages = {
     missingRelayKey: "Enter the relay key or use your own/local relay.",
     roomFull: "Room is full. The limit is 20 players.",
     roomClosed: "The Storyteller left and the room was closed.",
-    roomHostExists: "This room already has a Storyteller connected."
+    roomHostExists: "This room already has a Storyteller connected.",
+    roomNotFound: "The room has not been created by the Storyteller yet.",
+    approvalRejected: "The Storyteller rejected your room request.",
+    kicked: "You were removed from the room by the Storyteller."
   }
 };
 
@@ -292,9 +300,9 @@ function renderState(state: ConnectionState): void {
   playerCount.textContent = String(state.players.length);
   playerCount.title = formatPlayersTooltip(state.players);
   detail.textContent = getDisplayDetail(state);
-  connectButton.disabled = state.status === "connecting" || state.status === "connected";
+  connectButton.disabled = state.status === "connecting" || state.status === "pending" || state.status === "connected";
   disconnectButton.disabled = state.status === "disconnected";
-  updateRoomLock(state.status === "connected" || state.status === "connecting");
+  updateRoomLock(state.status === "connected" || state.status === "connecting" || state.status === "pending");
 }
 
 function renderLastRoll(roll: RollEvent, delivery: string): void {
@@ -313,7 +321,7 @@ function renderEmptyLastRoll(): void {
 }
 
 function getDisplayStatus(status: ConnectionState["status"]): DisplayConnectionStatus {
-  if (status === "connected" || status === "connecting") {
+  if (status === "connected" || status === "connecting" || status === "pending") {
     return status;
   }
 
@@ -326,6 +334,9 @@ function statusLabel(status: DisplayConnectionStatus): string {
   }
   if (status === "connecting") {
     return t("connecting");
+  }
+  if (status === "pending") {
+    return t("pending");
   }
   if (status === "local") {
     return t("localMode");
@@ -561,6 +572,18 @@ function translateConnectionDetail(value: string): string {
   }
   if (value === "Esta sala ja tem um narrador conectado.") {
     return t("roomHostExists");
+  }
+  if (value === "A sala ainda nao foi criada pelo narrador.") {
+    return t("roomNotFound");
+  }
+  if (value === "Aguardando aprovacao do narrador para entrar na sala.") {
+    return t("pending");
+  }
+  if (value === "O narrador recusou sua entrada na sala.") {
+    return t("approvalRejected");
+  }
+  if (value === "Voce foi removido da sala pelo narrador.") {
+    return t("kicked");
   }
 
   const closedMatch = value.match(/^Conexao com (.+) encerrada\. Tentando reconectar\.\.\.$/);

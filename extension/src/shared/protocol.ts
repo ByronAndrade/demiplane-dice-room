@@ -1,6 +1,6 @@
 export const protocolVersion = 1;
 
-export type ConnectionStatus = "disconnected" | "connecting" | "connected" | "error";
+export type ConnectionStatus = "disconnected" | "connecting" | "pending" | "connected" | "error";
 
 export type DiceFace = "blank" | "success" | "critical" | "skull";
 
@@ -20,11 +20,20 @@ export type PresencePlayer = {
   joinedAt: string;
 };
 
+export type PendingPlayer = {
+  clientId: string;
+  playerName: string;
+  characterName?: string;
+  requestedAt: string;
+};
+
 export type ConnectionState = {
   status: ConnectionStatus;
   detail: string;
   roomId?: string;
+  clientId?: string;
   players: PresencePlayer[];
+  pendingPlayers?: PendingPlayer[];
   connectedAt?: string;
 };
 
@@ -70,6 +79,18 @@ export type ServerMessage =
       version: 1;
       roomId: string;
       players: PresencePlayer[];
+    }
+  | {
+      type: "approval_required";
+      version: 1;
+      roomId: string;
+      message: string;
+    }
+  | {
+      type: "pending_players";
+      version: 1;
+      roomId: string;
+      pendingPlayers: PendingPlayer[];
     }
   | {
       type: "heartbeat";

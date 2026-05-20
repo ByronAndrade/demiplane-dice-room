@@ -55,7 +55,7 @@ const defaultDiceAnimationScale = 0.75;
 const minDiceAnimationScale = 0.45;
 const maxDiceAnimationScale = 1.15;
 const defaultRelayUrl = "wss://demiplane-dice-room-relay.foxbyron.workers.dev";
-const extensionUiVersion = "0.1.85";
+const extensionUiVersion = "0.1.86";
 const pageBridgeMessageSource = "demiplane-dice-room-page";
 const pageDiceRollResponseWaitMs = 1400;
 const pageDiceRollResponseTtlMs = 8_000;
@@ -87,7 +87,8 @@ declare global {
 let connectionState: ConnectionState = {
   status: "disconnected",
   detail: "Desconectado",
-  players: []
+  players: [],
+  pendingPlayers: []
 };
 let currentConfig: ExtensionConfig | undefined;
 let diagnosticOpen = false;
@@ -125,6 +126,7 @@ const messages = {
     unreadCount: (count: number) => `${count} ${count === 1 ? "nova" : "novas"}`,
     connected: "Conectado",
     connecting: "Conectando",
+    pending: "Pendente",
     disconnected: "Desconectado",
     error: "Erro",
     localMode: "Local",
@@ -144,6 +146,11 @@ const messages = {
     roomHostUnknown: "Aguardando narrador",
     roomCreatedByYou: "Voce criou esta mesa.",
     roomJoinedByYou: "Voce entrou nesta mesa.",
+    roomPendingByYou: "Aguardando aprovacao do narrador.",
+    pendingPlayers: "Pedidos de entrada",
+    approvePlayer: "Aprovar",
+    rejectPlayer: "Recusar",
+    kickPlayer: "Expulsar",
     connectedPlayers: (count: number) => `${count} ${count === 1 ? "pessoa conectada" : "pessoas conectadas"}`,
     waiting: "Aguardando rolagens",
     roomSettings: "Sala da mesa",
@@ -202,6 +209,9 @@ const messages = {
     roomFull: "Sala cheia. O limite e de 20 jogadores.",
     roomClosed: "O narrador saiu e a sala foi desfeita.",
     roomHostExists: "Esta sala ja tem um narrador conectado.",
+    roomNotFound: "A sala ainda nao foi criada pelo narrador.",
+    approvalRejected: "O narrador recusou sua entrada na sala.",
+    kicked: "Voce foi removido da sala pelo narrador.",
     runServer: "No terminal do projeto, rode",
     reconnectHint: "Depois aguarde a reconexao ou clique em Conectar no popup.",
     disconnectedDiagnostic: "Abra o popup da extensao e clique em Conectar. Relay configurado:"
@@ -211,6 +221,7 @@ const messages = {
     unreadCount: (count: number) => `${count} new`,
     connected: "Connected",
     connecting: "Connecting",
+    pending: "Pending",
     disconnected: "Disconnected",
     error: "Error",
     localMode: "Local",
@@ -230,6 +241,11 @@ const messages = {
     roomHostUnknown: "Waiting for Storyteller",
     roomCreatedByYou: "You created this room.",
     roomJoinedByYou: "You joined this room.",
+    roomPendingByYou: "Waiting for Storyteller approval.",
+    pendingPlayers: "Join requests",
+    approvePlayer: "Approve",
+    rejectPlayer: "Reject",
+    kickPlayer: "Kick",
     connectedPlayers: (count: number) => `${count} ${count === 1 ? "person connected" : "people connected"}`,
     waiting: "Waiting for rolls",
     roomSettings: "Table room",
@@ -288,6 +304,9 @@ const messages = {
     roomFull: "Room is full. The limit is 20 players.",
     roomClosed: "The Storyteller left and the room was closed.",
     roomHostExists: "This room already has a Storyteller connected.",
+    roomNotFound: "The room has not been created by the Storyteller yet.",
+    approvalRejected: "The Storyteller rejected your room request.",
+    kicked: "You were removed from the room by the Storyteller.",
     runServer: "In the project terminal, run",
     reconnectHint: "Then wait for reconnection or click Connect in the popup.",
     disconnectedDiagnostic: "Open the extension popup and click Connect. Configured relay:"
@@ -2132,6 +2151,9 @@ function createPanel(): {
   roomPlayersSummary: HTMLElement;
   roomStatusSummary: HTMLParagraphElement;
   roomPlayersList: HTMLDivElement;
+  roomPendingSection: HTMLDivElement;
+  roomPendingLabel: HTMLSpanElement;
+  roomPendingList: HTMLDivElement;
   summaryStorytellerRow: HTMLLabelElement;
   summaryHideCharacterNameInput: HTMLInputElement;
   summaryHideCharacterLabel: HTMLSpanElement;
@@ -2367,6 +2389,12 @@ function createPanel(): {
         background: #332b16;
       }
 
+      .status-pending {
+        border-color: #7c6835;
+        color: #ffe5a3;
+        background: #332b16;
+      }
+
       .status-local {
         border-color: #475569;
         color: #d8e0ec;
@@ -2493,6 +2521,9 @@ function createPanel(): {
       }
 
       .room-player-chip {
+        display: inline-flex;
+        align-items: center;
+        gap: 5px;
         border: 1px solid rgba(190, 202, 220, 0.16);
         border-radius: 999px;
         padding: 3px 7px;
@@ -2512,6 +2543,70 @@ function createPanel(): {
         color: inherit;
         opacity: 0.78;
         font-size: 10px;
+      }
+
+      .room-player-action {
+        border: 0;
+        border-left: 1px solid rgba(255, 255, 255, 0.14);
+        padding: 0 0 0 5px;
+        color: #ffd0d0;
+        background: transparent;
+        cursor: pointer;
+        font: inherit;
+        font-size: 10px;
+        font-weight: 900;
+      }
+
+      .room-pending-section {
+        display: grid;
+        gap: 6px;
+        border-top: 1px solid rgba(190, 202, 220, 0.12);
+        padding-top: 8px;
+      }
+
+      .room-pending-label {
+        color: #f1f4f8;
+        font-size: 10px;
+        font-weight: 850;
+        text-transform: uppercase;
+      }
+
+      .room-pending-list {
+        display: grid;
+        gap: 6px;
+      }
+
+      .room-pending-row {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) auto auto;
+        align-items: center;
+        gap: 6px;
+      }
+
+      .room-pending-name {
+        min-width: 0;
+        color: #dce5f2;
+        font-size: 11px;
+        font-weight: 800;
+        overflow-wrap: anywhere;
+      }
+
+      .room-pending-row button {
+        border: 1px solid rgba(190, 202, 220, 0.18);
+        border-radius: 6px;
+        padding: 4px 6px;
+        color: #f1f4f8;
+        background: rgba(31, 42, 55, 0.9);
+        cursor: pointer;
+        font: inherit;
+        font-size: 10px;
+        font-weight: 900;
+      }
+
+      .room-pending-row button[data-reject-player] {
+        border-color: rgba(236, 72, 85, 0.36);
+        color: #ffd0d0;
+        background: rgba(64, 26, 31, 0.9);
       }
 
       .summary-checkbox {
@@ -2837,6 +2932,10 @@ function createPanel(): {
             </div>
             <p data-room-status-summary class="summary-note"></p>
             <div data-room-players-list class="room-players-list"></div>
+            <div data-room-pending-section class="room-pending-section" hidden>
+              <span data-room-pending-label class="room-pending-label">Pedidos de entrada</span>
+              <div data-room-pending-list class="room-pending-list"></div>
+            </div>
             <label data-summary-storyteller-row class="summary-checkbox" hidden>
               <input data-summary-hide-character-name type="checkbox" />
               <span data-summary-hide-character-label>Fazer rolagem como Narrador</span>
@@ -2962,6 +3061,9 @@ function createPanel(): {
   const roomPlayersSummary = shadow.querySelector("[data-room-players-summary]");
   const roomStatusSummary = shadow.querySelector("[data-room-status-summary]");
   const roomPlayersList = shadow.querySelector("[data-room-players-list]");
+  const roomPendingSection = shadow.querySelector("[data-room-pending-section]");
+  const roomPendingLabel = shadow.querySelector("[data-room-pending-label]");
+  const roomPendingList = shadow.querySelector("[data-room-pending-list]");
   const summaryStorytellerRow = shadow.querySelector("[data-summary-storyteller-row]");
   const summaryHideCharacterNameInput = shadow.querySelector("[data-summary-hide-character-name]");
   const summaryHideCharacterLabel = shadow.querySelector("[data-summary-hide-character-label]");
@@ -3007,6 +3109,9 @@ function createPanel(): {
     !(roomPlayersSummary instanceof HTMLElement) ||
     !(roomStatusSummary instanceof HTMLParagraphElement) ||
     !(roomPlayersList instanceof HTMLDivElement) ||
+    !(roomPendingSection instanceof HTMLDivElement) ||
+    !(roomPendingLabel instanceof HTMLSpanElement) ||
+    !(roomPendingList instanceof HTMLDivElement) ||
     !(summaryStorytellerRow instanceof HTMLLabelElement) ||
     !(summaryHideCharacterNameInput instanceof HTMLInputElement) ||
     !(summaryHideCharacterLabel instanceof HTMLSpanElement) ||
@@ -3108,6 +3213,35 @@ function createPanel(): {
     void sendRuntimeMessage({ kind: "popup:disconnect" });
   });
 
+  roomPendingList.addEventListener("click", (event) => {
+    const action = event.target instanceof Element ? event.target.closest("button[data-approve-player], button[data-reject-player]") : null;
+    if (!(action instanceof HTMLButtonElement)) {
+      return;
+    }
+
+    const clientId = action.dataset.clientId;
+    if (!clientId) {
+      return;
+    }
+
+    const kind = action.hasAttribute("data-approve-player") ? "popup:approve-player" : "popup:reject-player";
+    void sendRuntimeMessage({ kind, clientId } as { kind: "popup:approve-player" | "popup:reject-player"; clientId: string });
+  });
+
+  roomPlayersList.addEventListener("click", (event) => {
+    const action = event.target instanceof Element ? event.target.closest("button[data-kick-player]") : null;
+    if (!(action instanceof HTMLButtonElement)) {
+      return;
+    }
+
+    const clientId = action.dataset.clientId;
+    if (!clientId || !window.confirm(t("kickPlayer"))) {
+      return;
+    }
+
+    void sendRuntimeMessage({ kind: "popup:kick-player", clientId });
+  });
+
   hideCharacterNameInput.addEventListener("change", () => {
     setStorytellerRollPreference(hideCharacterNameInput.checked);
   });
@@ -3185,6 +3319,9 @@ function createPanel(): {
     roomPlayersSummary,
     roomStatusSummary,
     roomPlayersList,
+    roomPendingSection,
+    roomPendingLabel,
+    roomPendingList,
     summaryStorytellerRow,
     summaryHideCharacterNameInput,
     summaryHideCharacterLabel,
@@ -3254,9 +3391,11 @@ function renderPanel(): void {
   const roomLocked = isRoomLocked();
   const isHost = config.roomRole === "host";
   const roomConnected = connectionState.status === "connected";
-  panel.roomSummary.hidden = !roomConnected;
-  panel.roomForm.hidden = roomConnected;
-  panel.storytellerRow.hidden = roomConnected || !isHost;
+  const roomPending = connectionState.status === "pending";
+  const showRoomSummary = roomConnected || roomPending;
+  panel.roomSummary.hidden = !showRoomSummary;
+  panel.roomForm.hidden = showRoomSummary;
+  panel.storytellerRow.hidden = showRoomSummary || !isHost;
   panel.summaryStorytellerRow.hidden = !roomConnected || !isHost;
   panel.hostRoomButton.classList.toggle("active", isHost);
   panel.joinRoomButton.classList.toggle("active", !isHost);
@@ -3274,7 +3413,7 @@ function renderPanel(): void {
     panel.hideCharacterNameInput.checked = false;
     panel.summaryHideCharacterNameInput.checked = false;
   }
-  panel.connectRoomButton.disabled = connectionState.status === "connecting" || connectionState.status === "connected";
+  panel.connectRoomButton.disabled = connectionState.status === "connecting" || connectionState.status === "pending" || connectionState.status === "connected";
   panel.disconnectRoomButton.disabled = connectionState.status === "disconnected";
   panel.opacityInput.value = String(panelOpacity);
   panel.languageSelect.value = uiLanguage;
@@ -3408,21 +3547,27 @@ function renderRoomSummary(): void {
 
   const config = currentConfig ?? defaultConfig;
   const host = getRoomHost(connectionState.players);
+  const isHost = config.roomRole === "host" && connectionState.status === "connected";
+  const pendingPlayers = connectionState.pendingPlayers ?? [];
   panel.roomChannelSummaryLabel.textContent = t("tableRoom");
   panel.roomHostSummaryLabel.textContent = t("roomHost");
   panel.roomPlayersSummaryLabel.textContent = t("playersInRoom");
   panel.roomChannelSummary.textContent = config.channel || connectionState.roomId || "-";
   panel.roomHostSummary.textContent = host ? formatPresenceDisplayName(host, "player") : t("roomHostUnknown");
   panel.roomPlayersSummary.textContent = t("connectedPlayers", connectionState.players.length);
-  panel.roomStatusSummary.textContent = config.roomRole === "host" ? t("roomCreatedByYou") : t("roomJoinedByYou");
+  panel.roomStatusSummary.textContent =
+    connectionState.status === "pending" ? t("roomPendingByYou") : config.roomRole === "host" ? t("roomCreatedByYou") : t("roomJoinedByYou");
   panel.roomPlayersList.innerHTML =
     connectionState.players.length > 0
-      ? connectionState.players.map(renderRoomPlayerChip).join("")
+      ? connectionState.players.map((player) => renderRoomPlayerChip(player, isHost)).join("")
       : `<span class="room-player-chip">${escapeHtml(t("playersTooltipEmpty"))}</span>`;
+  panel.roomPendingLabel.textContent = t("pendingPlayers");
+  panel.roomPendingSection.hidden = !isHost || pendingPlayers.length === 0;
+  panel.roomPendingList.innerHTML = pendingPlayers.map(renderPendingPlayerRow).join("");
 }
 
 function isRoomLocked(): boolean {
-  return connectionState.status === "connected" || connectionState.status === "connecting";
+  return connectionState.status === "connected" || connectionState.status === "connecting" || connectionState.status === "pending";
 }
 
 function confirmHostedRoomExit(): boolean {
@@ -3471,11 +3616,26 @@ function formatPresenceDisplayName(
   return preferred || fallback || t("playersTooltipEmpty");
 }
 
-function renderRoomPlayerChip(player: ConnectionState["players"][number]): string {
+function renderRoomPlayerChip(player: ConnectionState["players"][number], canManagePlayers = false): string {
   const name = formatPresenceDisplayName(player, "character");
   const roleSuffix = player.roomRole === "host" ? ` ${t("hostRole")}` : "";
   const className = player.roomRole === "host" ? "room-player-chip host" : "room-player-chip";
-  return `<span class="${className}">${escapeHtml(name)}${roleSuffix ? ` <small>${escapeHtml(roleSuffix)}</small>` : ""}</span>`;
+  const canKick = canManagePlayers && player.roomRole !== "host" && player.clientId !== connectionState.clientId;
+  const kickButton = canKick
+    ? ` <button class="room-player-action" type="button" data-kick-player data-client-id="${escapeHtml(player.clientId)}">${escapeHtml(t("kickPlayer"))}</button>`
+    : "";
+  return `<span class="${className}">${escapeHtml(name)}${roleSuffix ? ` <small>${escapeHtml(roleSuffix)}</small>` : ""}${kickButton}</span>`;
+}
+
+function renderPendingPlayerRow(player: NonNullable<ConnectionState["pendingPlayers"]>[number]): string {
+  const name = player.characterName || player.playerName || t("playersTooltipEmpty");
+  return `
+    <div class="room-pending-row">
+      <span class="room-pending-name">${escapeHtml(name)}</span>
+      <button type="button" data-approve-player data-client-id="${escapeHtml(player.clientId)}">${escapeHtml(t("approvePlayer"))}</button>
+      <button type="button" data-reject-player data-client-id="${escapeHtml(player.clientId)}">${escapeHtml(t("rejectPlayer"))}</button>
+    </div>
+  `;
 }
 
 async function savePanelRoomConfig(): Promise<void> {
@@ -3695,6 +3855,18 @@ function translateConnectionDetail(value: string): string {
   }
   if (value === "Esta sala ja tem um narrador conectado.") {
     return t("roomHostExists");
+  }
+  if (value === "A sala ainda nao foi criada pelo narrador.") {
+    return t("roomNotFound");
+  }
+  if (value === "Aguardando aprovacao do narrador para entrar na sala.") {
+    return t("roomPendingByYou");
+  }
+  if (value === "O narrador recusou sua entrada na sala.") {
+    return t("approvalRejected");
+  }
+  if (value === "Voce foi removido da sala pelo narrador.") {
+    return t("kicked");
   }
 
   const closedMatch = value.match(/^Conexao com (.+) encerrada\. Tentando reconectar\.\.\.$/);
@@ -5783,7 +5955,7 @@ function renderOutcome(roll: RollEvent): string {
 type DisplayConnectionStatus = ConnectionState["status"] | "local";
 
 function getDisplayStatus(status: ConnectionState["status"]): DisplayConnectionStatus {
-  if (status === "connected" || status === "connecting") {
+  if (status === "connected" || status === "connecting" || status === "pending") {
     return status;
   }
 
@@ -5796,6 +5968,9 @@ function statusLabel(status: DisplayConnectionStatus): string {
   }
   if (status === "connecting") {
     return t("connecting");
+  }
+  if (status === "pending") {
+    return t("pending");
   }
   if (status === "local") {
     return t("localMode");

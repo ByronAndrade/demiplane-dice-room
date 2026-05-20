@@ -5,6 +5,7 @@ const maxMessageBytes = 64 * 1024;
 const maxRoomHistory = 100;
 const maxRoomPlayers = 20;
 const historyStorageKey = "history";
+const approvedStorageKey = "approvedPlayers";
 
 type DiceValue = {
   kind: "regular" | "hunger" | "unknown";
@@ -19,6 +20,13 @@ type PresencePlayer = {
   characterName?: string;
   roomRole?: "host" | "player";
   joinedAt: string;
+};
+
+type PendingPlayer = {
+  clientId: string;
+  playerName: string;
+  characterName?: string;
+  requestedAt: string;
 };
 
 type RollEvent = {
@@ -55,6 +63,12 @@ type RollMessage = {
   roll: RollEvent;
 };
 
+type PlayerControlMessage = {
+  type: "approve_player" | "reject_player" | "kick_player";
+  version: 1;
+  clientId: string;
+};
+
 type ServerMessage =
   | {
       type: "welcome";
@@ -69,6 +83,18 @@ type ServerMessage =
       version: 1;
       roomId: string;
       players: PresencePlayer[];
+    }
+  | {
+      type: "approval_required";
+      version: 1;
+      roomId: string;
+      message: string;
+    }
+  | {
+      type: "pending_players";
+      version: 1;
+      roomId: string;
+      pendingPlayers: PendingPlayer[];
     }
   | {
       type: "roll";
@@ -86,6 +112,7 @@ type ServerMessage =
 type ClientSession = {
   roomId: string;
   joinedAt: string;
+  requestedAt?: string;
   clientId?: string;
   playerName?: string;
   characterName?: string;
@@ -212,7 +239,12 @@ export class DiceRoomDurableObject extends DurableObject<Env> {
 
     const session = this.getReadySession(socket);
     if (!session) {
-      this.send(socket, errorMessage("not_joined", "Envie hello antes de publicar rolagens."));
+      this.send(socket, errorMessage("not_joined", "Aguardando entrada na sala antes de publicar rolagens."));
+      return;
+    }
+
+    if (isPlayerControlMessage(parsed.value)) {
+      await this.handlePlayerControl(socket, session, parsed.value);
       return;
     }
 
@@ -243,6 +275,8 @@ export class DiceRoomDurableObject extends DurableObject<Env> {
       }
 
       this.broadcastPresence(session.roomId);
+    } else if (session?.roomId && session.clientId) {
+      this.sendPendingPlayers(session.roomId);
     }
   }
 
@@ -257,6 +291,8 @@ export class DiceRoomDurableObject extends DurableObject<Env> {
       }
 
       this.broadcastPresence(session.roomId);
+    } else if (session?.roomId && session.clientId) {
+      this.sendPendingPlayers(session.roomId);
     }
   }
 
@@ -272,6 +308,21 @@ export class DiceRoomDurableObject extends DurableObject<Env> {
     const clientId = hello.clientId.trim();
     const playerName = hello.playerName.trim();
     const roomPlayerCount = this.getReadyCount(roomId, socket);
+    const roomRole = hello.roomRole === "host" ? "host" : "player";
+    if (roomRole === "host" && this.hasRoomHost(roomId, socket)) {
+      this.send(socket, errorMessage("room_host_exists", "Esta sala ja tem um narrador conectado."));
+      socket.close(1008, "room_host_exists");
+      this.sessions.delete(socket);
+      return;
+    }
+
+    if (roomRole === "player" && !this.hasRoomHost(roomId, socket)) {
+      this.send(socket, errorMessage("room_not_found", "A sala ainda nao foi criada pelo narrador."));
+      socket.close(1008, "room_not_found");
+      this.sessions.delete(socket);
+      return;
+    }
+
     if (roomPlayerCount >= maxRoomPlayers) {
       this.send(socket, errorMessage("room_full", `Sala cheia. O limite e de ${maxRoomPlayers} jogadores.`));
       socket.close(1008, "room_full");
@@ -279,11 +330,28 @@ export class DiceRoomDurableObject extends DurableObject<Env> {
       return;
     }
 
-    const roomRole = hello.roomRole === "host" ? "host" : "player";
-    if (roomRole === "host" && this.hasRoomHost(roomId, socket)) {
-      this.send(socket, errorMessage("room_host_exists", "Esta sala ja tem um narrador conectado."));
-      socket.close(1008, "room_host_exists");
-      this.sessions.delete(socket);
+    if (roomRole === "player" && !(await this.isPlayerApproved(clientId))) {
+      const pendingSession: ClientSession = {
+        roomId,
+        joinedAt: current?.joinedAt || new Date().toISOString(),
+        requestedAt: new Date().toISOString(),
+        clientId,
+        playerName,
+        characterName: hello.characterName?.trim() || undefined,
+        roomRole,
+        ready: false
+      };
+
+      this.replacePendingPlayer(roomId, clientId, socket);
+      this.sessions.set(socket, pendingSession);
+      socket.serializeAttachment(pendingSession);
+      this.send(socket, {
+        type: "approval_required",
+        version: 1,
+        roomId,
+        message: "Aguardando aprovacao do narrador para entrar na sala."
+      });
+      this.sendPendingPlayers(roomId);
       return;
     }
 
@@ -312,12 +380,123 @@ export class DiceRoomDurableObject extends DurableObject<Env> {
     this.broadcastPresence(roomId);
   }
 
+  private async handlePlayerControl(
+    socket: WebSocket,
+    hostSession: Required<Pick<ClientSession, "roomId" | "joinedAt" | "clientId" | "playerName">> & ClientSession,
+    message: PlayerControlMessage
+  ): Promise<void> {
+    if (hostSession.roomRole !== "host") {
+      this.send(socket, errorMessage("host_required", "Apenas o narrador pode gerenciar jogadores."));
+      return;
+    }
+
+    if (message.type === "approve_player") {
+      await this.approvePendingPlayer(socket, hostSession.roomId, message.clientId);
+      return;
+    }
+
+    if (message.type === "reject_player") {
+      this.rejectPendingPlayer(socket, hostSession.roomId, message.clientId);
+      return;
+    }
+
+    this.kickRoomPlayer(socket, hostSession.roomId, message.clientId, hostSession.clientId);
+  }
+
+  private async approvePendingPlayer(hostSocket: WebSocket, roomId: string, clientId: string): Promise<void> {
+    const pendingSocket = this.findPendingSocket(roomId, clientId);
+    const pendingSession = pendingSocket ? this.sessions.get(pendingSocket) ?? normalizeSession(pendingSocket.deserializeAttachment()) : undefined;
+    if (!pendingSocket || !pendingSession?.clientId || !pendingSession.playerName) {
+      this.send(hostSocket, errorMessage("pending_not_found", "Pedido de entrada nao encontrado."));
+      this.sendPendingPlayers(roomId);
+      return;
+    }
+    const approvedClientId = pendingSession.clientId;
+
+    if (this.getReadyCount(roomId) >= maxRoomPlayers) {
+      this.send(pendingSocket, errorMessage("room_full", `Sala cheia. O limite e de ${maxRoomPlayers} jogadores.`));
+      pendingSocket.close(1008, "room_full");
+      this.sessions.delete(pendingSocket);
+      this.sendPendingPlayers(roomId);
+      return;
+    }
+
+    const session: ClientSession = {
+      ...pendingSession,
+      joinedAt: new Date().toISOString(),
+      requestedAt: undefined,
+      roomRole: "player",
+      ready: true
+    };
+
+    await this.markPlayerApproved(approvedClientId);
+    this.sessions.set(pendingSocket, session);
+    pendingSocket.serializeAttachment(session);
+    this.send(pendingSocket, {
+      type: "welcome",
+      version: 1,
+      roomId,
+      clientId: approvedClientId,
+      players: this.getPlayers(roomId),
+      history: await this.getHistory()
+    });
+    this.broadcastPresence(roomId);
+    this.sendPendingPlayers(roomId);
+  }
+
+  private rejectPendingPlayer(hostSocket: WebSocket, roomId: string, clientId: string): void {
+    const pendingSocket = this.findPendingSocket(roomId, clientId);
+    if (!pendingSocket) {
+      this.send(hostSocket, errorMessage("pending_not_found", "Pedido de entrada nao encontrado."));
+      this.sendPendingPlayers(roomId);
+      return;
+    }
+
+    this.send(pendingSocket, errorMessage("approval_rejected", "O narrador recusou sua entrada na sala."));
+    pendingSocket.close(1008, "approval_rejected");
+    this.sessions.delete(pendingSocket);
+    this.sendPendingPlayers(roomId);
+  }
+
+  private kickRoomPlayer(hostSocket: WebSocket, roomId: string, clientId: string, hostClientId: string): void {
+    if (clientId === hostClientId) {
+      this.send(hostSocket, errorMessage("invalid_kick", "Use Desconectar para fechar a sala."));
+      return;
+    }
+
+    const targetSocket = this.findReadySocket(roomId, clientId);
+    if (!targetSocket) {
+      this.send(hostSocket, errorMessage("player_not_found", "Jogador nao encontrado na sala."));
+      return;
+    }
+
+    this.send(targetSocket, errorMessage("kicked", "Voce foi removido da sala pelo narrador."));
+    targetSocket.close(1008, "kicked");
+    this.sessions.delete(targetSocket);
+    void this.unmarkPlayerApproved(clientId);
+    this.broadcastPresence(roomId);
+  }
+
   private broadcastPresence(roomId: string): void {
     this.broadcast(roomId, {
       type: "presence",
       version: 1,
       roomId,
       players: this.getPlayers(roomId)
+    });
+  }
+
+  private sendPendingPlayers(roomId: string): void {
+    const hostSocket = this.findHostSocket(roomId);
+    if (!hostSocket) {
+      return;
+    }
+
+    this.send(hostSocket, {
+      type: "pending_players",
+      version: 1,
+      roomId,
+      pendingPlayers: this.getPendingPlayers(roomId)
     });
   }
 
@@ -365,7 +544,31 @@ export class DiceRoomDurableObject extends DurableObject<Env> {
     return players;
   }
 
+  private getPendingPlayers(roomId: string): PendingPlayer[] {
+    const players: PendingPlayer[] = [];
+
+    for (const socket of this.ctx.getWebSockets()) {
+      const session = this.sessions.get(socket) ?? normalizeSession(socket.deserializeAttachment());
+      if (session?.ready || session?.roomId !== roomId || !session.clientId || !session.playerName) {
+        continue;
+      }
+
+      players.push({
+        clientId: session.clientId,
+        playerName: session.playerName,
+        characterName: session.characterName,
+        requestedAt: session.requestedAt || session.joinedAt
+      });
+    }
+
+    return players;
+  }
+
   private hasRoomHost(roomId: string, except?: WebSocket): boolean {
+    return Boolean(this.findHostSocket(roomId, except));
+  }
+
+  private findHostSocket(roomId: string, except?: WebSocket): WebSocket | undefined {
     for (const socket of this.ctx.getWebSockets()) {
       if (socket === except) {
         continue;
@@ -373,11 +576,44 @@ export class DiceRoomDurableObject extends DurableObject<Env> {
 
       const session = this.sessions.get(socket) ?? normalizeSession(socket.deserializeAttachment());
       if (session?.ready && session.roomId === roomId && session.roomRole === "host") {
-        return true;
+        return socket;
       }
     }
 
-    return false;
+    return undefined;
+  }
+
+  private findReadySocket(roomId: string, clientId: string): WebSocket | undefined {
+    for (const socket of this.ctx.getWebSockets()) {
+      const session = this.sessions.get(socket) ?? normalizeSession(socket.deserializeAttachment());
+      if (session?.ready && session.roomId === roomId && session.clientId === clientId) {
+        return socket;
+      }
+    }
+
+    return undefined;
+  }
+
+  private findPendingSocket(roomId: string, clientId: string): WebSocket | undefined {
+    for (const socket of this.ctx.getWebSockets()) {
+      const session = this.sessions.get(socket) ?? normalizeSession(socket.deserializeAttachment());
+      if (!session?.ready && session?.roomId === roomId && session.clientId === clientId) {
+        return socket;
+      }
+    }
+
+    return undefined;
+  }
+
+  private replacePendingPlayer(roomId: string, clientId: string, nextSocket: WebSocket): void {
+    const existingSocket = this.findPendingSocket(roomId, clientId);
+    if (!existingSocket || existingSocket === nextSocket) {
+      return;
+    }
+
+    this.send(existingSocket, errorMessage("approval_replaced", "Um novo pedido de entrada substituiu este."));
+    existingSocket.close(1001, "approval_replaced");
+    this.sessions.delete(existingSocket);
   }
 
   private getReadyCount(roomId: string, except?: WebSocket): number {
@@ -407,6 +643,28 @@ export class DiceRoomDurableObject extends DurableObject<Env> {
     return session as Required<Pick<ClientSession, "roomId" | "joinedAt" | "clientId" | "playerName">> & ClientSession;
   }
 
+  private async isPlayerApproved(clientId: string): Promise<boolean> {
+    const approved = await this.getApprovedPlayers();
+    return approved.includes(clientId);
+  }
+
+  private async markPlayerApproved(clientId: string): Promise<void> {
+    const approved = new Set(await this.getApprovedPlayers());
+    approved.add(clientId);
+    await this.ctx.storage.put(approvedStorageKey, [...approved].slice(-maxRoomPlayers * 4));
+  }
+
+  private async unmarkPlayerApproved(clientId: string): Promise<void> {
+    const approved = new Set(await this.getApprovedPlayers());
+    approved.delete(clientId);
+    await this.ctx.storage.put(approvedStorageKey, [...approved]);
+  }
+
+  private async getApprovedPlayers(): Promise<string[]> {
+    const approved = await this.ctx.storage.get<string[]>(approvedStorageKey);
+    return Array.isArray(approved) ? approved.filter((clientId) => typeof clientId === "string") : [];
+  }
+
   private async appendHistory(roomId: string, roll: RollEvent): Promise<void> {
     const history = await this.getHistory();
     if (history.some((item) => item.id === roll.id)) {
@@ -425,7 +683,7 @@ export class DiceRoomDurableObject extends DurableObject<Env> {
   private async closeRoom(roomId: string): Promise<void> {
     for (const socket of this.ctx.getWebSockets()) {
       const session = this.sessions.get(socket) ?? normalizeSession(socket.deserializeAttachment());
-      if (session?.roomId !== roomId || !session.ready) {
+      if (session?.roomId !== roomId) {
         continue;
       }
 
@@ -435,6 +693,7 @@ export class DiceRoomDurableObject extends DurableObject<Env> {
     }
 
     await this.ctx.storage.delete(historyStorageKey);
+    await this.ctx.storage.delete(approvedStorageKey);
   }
 }
 
@@ -475,6 +734,19 @@ function isRollMessage(value: unknown): value is RollMessage {
 
   const message = value as Partial<RollMessage>;
   return message.type === "roll" && message.version === protocolVersion && isRollEvent(message.roll);
+}
+
+function isPlayerControlMessage(value: unknown): value is PlayerControlMessage {
+  if (!value || typeof value !== "object") {
+    return false;
+  }
+
+  const message = value as Partial<PlayerControlMessage>;
+  return (
+    (message.type === "approve_player" || message.type === "reject_player" || message.type === "kick_player") &&
+    message.version === protocolVersion &&
+    isBoundedString(message.clientId, 8, 120)
+  );
 }
 
 function isRollEvent(value: unknown): value is RollEvent {
@@ -559,6 +831,7 @@ function normalizeSession(value: unknown): ClientSession | undefined {
   return {
     roomId: session.roomId,
     joinedAt: session.joinedAt,
+    requestedAt: typeof session.requestedAt === "string" ? session.requestedAt : undefined,
     clientId: typeof session.clientId === "string" ? session.clientId : undefined,
     playerName: typeof session.playerName === "string" ? session.playerName : undefined,
     characterName: typeof session.characterName === "string" ? session.characterName : undefined,

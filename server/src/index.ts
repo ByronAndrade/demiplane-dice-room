@@ -5,6 +5,7 @@ import { WebSocket, WebSocketServer } from "ws";
 import {
   clientMessageSchema,
   type HelloMessage,
+  type PendingPlayer,
   type PresencePlayer,
   type RollEvent,
   type ServerMessage
@@ -29,8 +30,24 @@ type Client = {
   joinedAt: string;
 };
 
+type PendingClient = {
+  socket: WebSocket;
+  clientId: string;
+  playerName: string;
+  characterName?: string;
+  roomId: string;
+  requestedAt: string;
+};
+
+type JoinResult =
+  | { state: "joined"; client: Client }
+  | { state: "pending"; pending: PendingClient }
+  | undefined;
+
 const rooms = new Map<string, Set<Client>>();
 const roomHistories = new Map<string, RollEvent[]>();
+const pendingRooms = new Map<string, Set<PendingClient>>();
+const approvedRoomClients = new Map<string, Set<string>>();
 
 const heartbeatInterval = setInterval(() => {
   const createdAt = new Date().toISOString();
@@ -59,6 +76,7 @@ const wss = new WebSocketServer({ server: httpServer });
 
 wss.on("connection", (socket, request) => {
   let client: Client | undefined;
+  let pendingClient: PendingClient | undefined;
 
   if (!hasValidRelayAccessKey(request)) {
     send(socket, errorMessage("relay_key_required", "Este relay exige uma chave de acesso."));
@@ -87,12 +105,46 @@ wss.on("connection", (socket, request) => {
     }
 
     if (parsed.data.type === "hello") {
-      client = joinRoom(socket, parsed.data, client);
+      if (client) {
+        leaveRoom(client);
+        client = undefined;
+      }
+      if (pendingClient) {
+        leavePendingRoom(pendingClient);
+        pendingClient = undefined;
+      }
+
+      const joinResult = joinRoom(socket, parsed.data);
+      if (joinResult?.state === "joined") {
+        client = joinResult.client;
+      } else if (joinResult?.state === "pending") {
+        pendingClient = joinResult.pending;
+      }
       return;
     }
 
+    client = client ?? findClientBySocket(socket);
+    if (client) {
+      pendingClient = undefined;
+    }
+
     if (!client) {
-      send(socket, errorMessage("not_joined", "Envie hello antes de publicar rolagens."));
+      send(socket, errorMessage("not_joined", "Aguardando entrada na sala antes de publicar rolagens."));
+      return;
+    }
+
+    if (parsed.data.type === "approve_player") {
+      approvePendingPlayer(client, parsed.data.clientId);
+      return;
+    }
+
+    if (parsed.data.type === "reject_player") {
+      rejectPendingPlayer(client, parsed.data.clientId);
+      return;
+    }
+
+    if (parsed.data.type === "kick_player") {
+      kickRoomPlayer(client, parsed.data.clientId);
       return;
     }
 
@@ -107,16 +159,28 @@ wss.on("connection", (socket, request) => {
   });
 
   socket.on("close", () => {
-    if (client) {
-      leaveRoom(client);
+    const activeClient = client ?? findClientBySocket(socket);
+    if (activeClient) {
+      leaveRoom(activeClient);
       client = undefined;
+    }
+    const activePendingClient = pendingClient ?? findPendingBySocket(socket);
+    if (activePendingClient) {
+      leavePendingRoom(activePendingClient);
+      pendingClient = undefined;
     }
   });
 
   socket.on("error", () => {
-    if (client) {
-      leaveRoom(client);
+    const activeClient = client ?? findClientBySocket(socket);
+    if (activeClient) {
+      leaveRoom(activeClient);
       client = undefined;
+    }
+    const activePendingClient = pendingClient ?? findPendingBySocket(socket);
+    if (activePendingClient) {
+      leavePendingRoom(activePendingClient);
+      pendingClient = undefined;
     }
   });
 });
@@ -192,23 +256,47 @@ function getHealthPayload(): { ok: true; rooms: number; players: number; relays:
   };
 }
 
-function joinRoom(socket: WebSocket, hello: HelloMessage, previous?: Client): Client | undefined {
-  if (previous) {
-    leaveRoom(previous);
-  }
-
+function joinRoom(socket: WebSocket, hello: HelloMessage): JoinResult {
   const roomId = createRoomId(hello.channel, hello.password);
   const room = rooms.get(roomId) ?? new Set<Client>();
+  const roomRole = hello.roomRole === "host" ? "host" : "player";
+
+  if (roomRole === "host" && hasRoomHost(roomId)) {
+    send(socket, errorMessage("room_host_exists", "Esta sala ja tem um narrador conectado."));
+    socket.close(1008, "room_host_exists");
+    return undefined;
+  }
+
+  if (roomRole === "player" && !hasRoomHost(roomId)) {
+    send(socket, errorMessage("room_not_found", "A sala ainda nao foi criada pelo narrador."));
+    socket.close(1008, "room_not_found");
+    return undefined;
+  }
+
   if (room.size >= maxRoomPlayers) {
     send(socket, errorMessage("room_full", `Sala cheia. O limite e de ${maxRoomPlayers} jogadores.`));
     socket.close(1008, "room_full");
     return undefined;
   }
 
-  if (hello.roomRole === "host" && hasRoomHost(roomId)) {
-    send(socket, errorMessage("room_host_exists", "Esta sala ja tem um narrador conectado."));
-    socket.close(1008, "room_host_exists");
-    return undefined;
+  if (roomRole === "player" && !isPlayerApproved(roomId, hello.clientId)) {
+    const pending: PendingClient = {
+      socket,
+      clientId: hello.clientId,
+      playerName: hello.playerName,
+      characterName: hello.characterName || undefined,
+      roomId,
+      requestedAt: new Date().toISOString()
+    };
+    addPendingPlayer(pending);
+    send(socket, {
+      type: "approval_required",
+      version: 1,
+      roomId,
+      message: "Aguardando aprovacao do narrador para entrar na sala."
+    });
+    sendPendingPlayers(roomId);
+    return { state: "pending", pending };
   }
 
   const client: Client = {
@@ -216,7 +304,7 @@ function joinRoom(socket: WebSocket, hello: HelloMessage, previous?: Client): Cl
     clientId: hello.clientId,
     playerName: hello.playerName,
     characterName: hello.characterName || undefined,
-    roomRole: hello.roomRole,
+    roomRole,
     roomId,
     joinedAt: new Date().toISOString()
   };
@@ -234,7 +322,114 @@ function joinRoom(socket: WebSocket, hello: HelloMessage, previous?: Client): Cl
   });
 
   broadcastPresence(roomId);
-  return client;
+  return { state: "joined", client };
+}
+
+function addPendingPlayer(pending: PendingClient): void {
+  const pendingRoom = pendingRooms.get(pending.roomId) ?? new Set<PendingClient>();
+  for (const existing of [...pendingRoom]) {
+    if (existing.clientId === pending.clientId) {
+      send(existing.socket, errorMessage("approval_replaced", "Um novo pedido de entrada substituiu este."));
+      existing.socket.close(1001, "approval_replaced");
+      pendingRoom.delete(existing);
+    }
+  }
+  pendingRoom.add(pending);
+  pendingRooms.set(pending.roomId, pendingRoom);
+}
+
+function approvePendingPlayer(host: Client, clientId: string): void {
+  if (host.roomRole !== "host") {
+    send(host.socket, errorMessage("host_required", "Apenas o narrador pode aprovar jogadores."));
+    return;
+  }
+
+  const pending = findPendingPlayer(host.roomId, clientId);
+  if (!pending) {
+    send(host.socket, errorMessage("pending_not_found", "Pedido de entrada nao encontrado."));
+    sendPendingPlayers(host.roomId);
+    return;
+  }
+
+  const room = rooms.get(host.roomId) ?? new Set<Client>();
+  if (room.size >= maxRoomPlayers) {
+    send(pending.socket, errorMessage("room_full", `Sala cheia. O limite e de ${maxRoomPlayers} jogadores.`));
+    pending.socket.close(1008, "room_full");
+    removePendingPlayer(pending);
+    sendPendingPlayers(host.roomId);
+    return;
+  }
+
+  removePendingPlayer(pending);
+  markPlayerApproved(host.roomId, pending.clientId);
+
+  const client: Client = {
+    socket: pending.socket,
+    clientId: pending.clientId,
+    playerName: pending.playerName,
+    characterName: pending.characterName,
+    roomRole: "player",
+    roomId: host.roomId,
+    joinedAt: new Date().toISOString()
+  };
+
+  room.add(client);
+  rooms.set(host.roomId, room);
+
+  send(client.socket, {
+    type: "welcome",
+    version: 1,
+    roomId: host.roomId,
+    clientId: client.clientId,
+    players: getPlayers(host.roomId),
+    history: getHistory(host.roomId)
+  });
+  broadcastPresence(host.roomId);
+  sendPendingPlayers(host.roomId);
+}
+
+function rejectPendingPlayer(host: Client, clientId: string): void {
+  if (host.roomRole !== "host") {
+    send(host.socket, errorMessage("host_required", "Apenas o narrador pode rejeitar jogadores."));
+    return;
+  }
+
+  const pending = findPendingPlayer(host.roomId, clientId);
+  if (!pending) {
+    send(host.socket, errorMessage("pending_not_found", "Pedido de entrada nao encontrado."));
+    sendPendingPlayers(host.roomId);
+    return;
+  }
+
+  send(pending.socket, errorMessage("approval_rejected", "O narrador recusou sua entrada na sala."));
+  pending.socket.close(1008, "approval_rejected");
+  removePendingPlayer(pending);
+  sendPendingPlayers(host.roomId);
+}
+
+function kickRoomPlayer(host: Client, clientId: string): void {
+  if (host.roomRole !== "host") {
+    send(host.socket, errorMessage("host_required", "Apenas o narrador pode expulsar jogadores."));
+    return;
+  }
+
+  if (clientId === host.clientId) {
+    send(host.socket, errorMessage("invalid_kick", "Use Desconectar para fechar a sala."));
+    return;
+  }
+
+  const room = rooms.get(host.roomId);
+  const target = room ? [...room].find((client) => client.clientId === clientId) : undefined;
+  if (!target) {
+    send(host.socket, errorMessage("player_not_found", "Jogador nao encontrado na sala."));
+    return;
+  }
+
+  send(target.socket, errorMessage("kicked", "Voce foi removido da sala pelo narrador."));
+  target.socket.close(1008, "kicked");
+  room?.delete(target);
+  unmarkPlayerApproved(host.roomId, target.clientId);
+  broadcastPresence(host.roomId);
 }
 
 function leaveRoom(client: Client): void {
@@ -258,19 +453,32 @@ function leaveRoom(client: Client): void {
   broadcastPresence(client.roomId);
 }
 
+function leavePendingRoom(pending: PendingClient): void {
+  removePendingPlayer(pending);
+  sendPendingPlayers(pending.roomId);
+}
+
 function closeRoom(roomId: string): void {
   const room = rooms.get(roomId);
-  if (!room) {
-    return;
-  }
-
-  for (const client of room) {
-    send(client.socket, errorMessage("room_closed", "O narrador saiu e a sala foi desfeita."));
-    client.socket.close(1001, "room_closed");
+  if (room) {
+    for (const client of room) {
+      send(client.socket, errorMessage("room_closed", "O narrador saiu e a sala foi desfeita."));
+      client.socket.close(1001, "room_closed");
+    }
   }
 
   rooms.delete(roomId);
   roomHistories.delete(roomId);
+  approvedRoomClients.delete(roomId);
+
+  const pendingRoom = pendingRooms.get(roomId);
+  if (pendingRoom) {
+    for (const pending of pendingRoom) {
+      send(pending.socket, errorMessage("room_closed", "O narrador saiu e a sala foi desfeita."));
+      pending.socket.close(1001, "room_closed");
+    }
+  }
+  pendingRooms.delete(roomId);
 }
 
 function broadcastPresence(roomId: string): void {
@@ -279,6 +487,20 @@ function broadcastPresence(roomId: string): void {
     version: 1,
     roomId,
     players: getPlayers(roomId)
+  });
+}
+
+function sendPendingPlayers(roomId: string): void {
+  const host = findRoomHost(roomId);
+  if (!host) {
+    return;
+  }
+
+  send(host.socket, {
+    type: "pending_players",
+    version: 1,
+    roomId,
+    pendingPlayers: getPendingPlayers(roomId)
   });
 }
 
@@ -327,8 +549,78 @@ function getPlayers(roomId: string): PresencePlayer[] {
 }
 
 function hasRoomHost(roomId: string): boolean {
+  return Boolean(findRoomHost(roomId));
+}
+
+function findRoomHost(roomId: string): Client | undefined {
   const room = rooms.get(roomId);
-  return Boolean(room && [...room].some((client) => client.roomRole === "host"));
+  return room ? [...room].find((client) => client.roomRole === "host") : undefined;
+}
+
+function findClientBySocket(socket: WebSocket): Client | undefined {
+  for (const room of rooms.values()) {
+    const client = [...room].find((candidate) => candidate.socket === socket);
+    if (client) {
+      return client;
+    }
+  }
+  return undefined;
+}
+
+function findPendingBySocket(socket: WebSocket): PendingClient | undefined {
+  for (const pendingRoom of pendingRooms.values()) {
+    const pending = [...pendingRoom].find((candidate) => candidate.socket === socket);
+    if (pending) {
+      return pending;
+    }
+  }
+  return undefined;
+}
+
+function findPendingPlayer(roomId: string, clientId: string): PendingClient | undefined {
+  const pendingRoom = pendingRooms.get(roomId);
+  return pendingRoom ? [...pendingRoom].find((pending) => pending.clientId === clientId) : undefined;
+}
+
+function removePendingPlayer(pending: PendingClient): void {
+  const pendingRoom = pendingRooms.get(pending.roomId);
+  if (!pendingRoom) {
+    return;
+  }
+
+  pendingRoom.delete(pending);
+  if (pendingRoom.size === 0) {
+    pendingRooms.delete(pending.roomId);
+  }
+}
+
+function getPendingPlayers(roomId: string): PendingPlayer[] {
+  const pendingRoom = pendingRooms.get(roomId);
+  if (!pendingRoom) {
+    return [];
+  }
+
+  return [...pendingRoom].map((pending) => ({
+    clientId: pending.clientId,
+    playerName: pending.playerName,
+    characterName: pending.characterName,
+    requestedAt: pending.requestedAt
+  }));
+}
+
+function isPlayerApproved(roomId: string, clientId: string): boolean {
+  return approvedRoomClients.get(roomId)?.has(clientId) === true;
+}
+
+function markPlayerApproved(roomId: string, clientId: string): void {
+  const approved = approvedRoomClients.get(roomId) ?? new Set<string>();
+  approved.add(clientId);
+  approvedRoomClients.set(roomId, approved);
+}
+
+function unmarkPlayerApproved(roomId: string, clientId: string): void {
+  const approved = approvedRoomClients.get(roomId);
+  approved?.delete(clientId);
 }
 
 function normalizeRoll(roll: RollEvent, client: Client): RollEvent {
