@@ -22,7 +22,7 @@ type RuntimeRequest =
   | { kind: "content:ready" }
   | { kind: "content:captured-roll"; roll: CapturedRoll };
 
-const localHistoryVersion = 7;
+const localHistoryVersion = 8;
 const liveRollStorageKey = "lastLiveRoll";
 const panelUiStorageKey = "diceRoomPanelUi";
 const protectedDefaultRelayHost = "demiplane-dice-room-relay.foxbyron.workers.dev";
@@ -213,6 +213,7 @@ async function connect(): Promise<void> {
           players: [],
           connectedAt: undefined
         });
+        void restoreLocalHistory();
         return;
       }
 
@@ -223,6 +224,7 @@ async function connect(): Promise<void> {
         players: [],
         connectedAt: undefined
       });
+      void restoreLocalHistory();
       return;
     }
 
@@ -266,6 +268,7 @@ async function disconnect(): Promise<void> {
     players: [],
     connectedAt: undefined
   });
+  await restoreLocalHistory();
 }
 
 async function publishCapturedRoll(captured: CapturedRoll): Promise<{ ok: true; delivered: string; roll: RollEvent }> {
@@ -336,7 +339,6 @@ function cleanDisplayName(value: string | undefined): string | undefined {
 function handleServerMessage(message: ServerMessage): void {
   switch (message.type) {
     case "welcome":
-      mergeHistory(message.history);
       setConnectionState({
         status: "connected",
         detail: "Conectado",
@@ -344,6 +346,7 @@ function handleServerMessage(message: ServerMessage): void {
         players: message.players,
         connectedAt: new Date().toISOString()
       });
+      replaceRoomHistory(message.history);
       return;
 
     case "presence":
@@ -393,6 +396,7 @@ function handleServerMessage(message: ServerMessage): void {
           players: [],
           connectedAt: undefined
         });
+        void restoreLocalHistory();
         return;
       }
       setConnectionState({
@@ -461,7 +465,7 @@ function rememberRoll(storedRoll: StoredRoll): void {
   setRecentRolls([storedRoll, ...recentRolls]);
 }
 
-function mergeHistory(history: RollEvent[]): void {
+function replaceRoomHistory(history: RollEvent[]): void {
   const storedHistory: StoredRoll[] = [...history]
     .filter(isUsefulRoll)
     .reverse()
@@ -471,11 +475,11 @@ function mergeHistory(history: RollEvent[]): void {
       delivery: "history"
     }));
 
-  setRecentRolls([...storedHistory, ...recentRolls]);
+  setRecentRolls(storedHistory, { persist: false });
   broadcastHistory();
 }
 
-function setRecentRolls(nextRolls: StoredRoll[]): void {
+function setRecentRolls(nextRolls: StoredRoll[], options: { persist?: boolean } = {}): void {
   const seen = new Set<string>();
   recentRolls = [];
 
@@ -496,7 +500,18 @@ function setRecentRolls(nextRolls: StoredRoll[]): void {
     }
   }
 
-  void chrome.storage.local.set({ recentRolls, localHistoryVersion });
+  if (options.persist ?? shouldPersistLocalHistory()) {
+    void chrome.storage.local.set({ recentRolls, localHistoryVersion });
+  }
+}
+
+function shouldPersistLocalHistory(): boolean {
+  return connectionState.status !== "connected" || !connectionState.roomId;
+}
+
+async function restoreLocalHistory(): Promise<void> {
+  recentRolls = await loadStoredRolls();
+  broadcastHistory();
 }
 
 function rememberLastLiveRoll(storedRoll: StoredRoll): void {
@@ -642,5 +657,29 @@ function isUsefulRoll(roll: RollEvent | undefined): roll is RollEvent {
 
 function isUsefulRollTitle(value: string): boolean {
   const title = value.trim();
-  return /^[A-Z][A-Z '-]{2,50}[ \t]*\+[ \t]*[A-Z][A-Z '-]{2,50}$/.test(title) || /^custom$/i.test(title);
+  return isMultiPartRollTitle(title) || isSingleTraitRollTitle(title) || /^custom(?:[ \t]*\([ \t]*re-?roll[ \t]*\))?$/i.test(title);
+}
+
+function isMultiPartRollTitle(value: string): boolean {
+  const parts = stripRerollTitleSuffix(value).split("+").map((part) => part.trim()).filter(Boolean);
+  return parts.length >= 2 && parts.length <= 6 && parts.every(isTraitTitlePart);
+}
+
+function isSingleTraitRollTitle(value: string): boolean {
+  const title = stripRerollTitleSuffix(value);
+  if (!isTraitTitlePart(title) || isMultiPartRollTitle(title)) {
+    return false;
+  }
+
+  return !/^(ADD DICE TO ROLL|ATTRIBUTES|CLEAR|COTERIE|CUSTOM|DETAILS|DETAILED|DICE POOL|DISCIPLINES|EXPAND|FLAWS|GAME RULES|GROUPS|HEALTH|HUMANITY|HUNGER|INVENTORY|LIBRARY|LOCAL|MENTAL|MERITS|NOTES|PHYSICAL|RE-ROLL|REROLL|ROLL|SELECT DICE TO REROLL|SKILLS|SOCIAL|SUCCESSES?|SUCCESS|WILLPOWER)$/i.test(
+    title
+  );
+}
+
+function isTraitTitlePart(value: string): boolean {
+  return /^[A-Z][A-Z '-]{1,50}$/i.test(value.trim());
+}
+
+function stripRerollTitleSuffix(value: string): string {
+  return value.replace(/\s+/g, " ").trim().replace(/[ \t]*\([ \t]*re-?roll[ \t]*\)$/i, "").trim();
 }

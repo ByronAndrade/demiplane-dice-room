@@ -55,7 +55,7 @@ const defaultDiceAnimationScale = 0.75;
 const minDiceAnimationScale = 0.45;
 const maxDiceAnimationScale = 1.15;
 const defaultRelayUrl = "wss://demiplane-dice-room-relay.foxbyron.workers.dev";
-const extensionUiVersion = "0.1.83";
+const extensionUiVersion = "0.1.84";
 const pageBridgeMessageSource = "demiplane-dice-room-page";
 const pageDiceRollResponseWaitMs = 1400;
 const pageDiceRollResponseTtlMs = 8_000;
@@ -510,7 +510,7 @@ function isRerollActionElement(element: Element): boolean {
   const label = normalizeText(
     [element.textContent ?? "", element.getAttribute("aria-label") ?? "", element.getAttribute("title") ?? ""].join(" ")
   );
-  return /\b(re-roll|reroll)\b/i.test(`${label} ${getElementContext(element)}`);
+  return /\b(re-roll|reroll)\b/i.test(label);
 }
 
 function findRollActionElement(target: Element): Element | undefined {
@@ -905,7 +905,7 @@ function extractRoll(element: Element): CapturedRoll | undefined {
 
   const successes = parseNumber(rawText, /(?:successes|success|sucessos?|sucesso)\D{0,12}(\d{1,3})/i);
   const total = parseNumber(rawText, /(?:total|resultado)\D{0,12}(-?\d{1,4})/i);
-  const rollTitle = parseRollTitle(rawText, lines);
+  const rollTitle = parseRollTitle(rawText, lines, element);
 
   if (!rollTitle || successes === null) {
     return undefined;
@@ -1053,7 +1053,7 @@ function findRicherRollElement(
       .map((line) => line.trim())
       .filter(Boolean);
 
-    if (isSameSingleRollBlock(rawText, lines, rollTitle, successes)) {
+    if (isSameSingleRollBlock(current, rawText, lines, rollTitle, successes)) {
       const dice = parseDice(current, lines, successes);
       const score = dice.length * 10 + lines.length + Math.min(rawText.length, 600) / 600;
       if (!best || score > best.score) {
@@ -1068,12 +1068,18 @@ function findRicherRollElement(
   return best;
 }
 
-function isSameSingleRollBlock(rawText: string, lines: string[], rollTitle: string, successes: number): boolean {
+function isSameSingleRollBlock(
+  element: Element,
+  rawText: string,
+  lines: string[],
+  rollTitle: string,
+  successes: number
+): boolean {
   if (rawText.length < 6 || rawText.length > 4000 || isControlBlock(rawText)) {
     return false;
   }
 
-  const candidateTitle = parseRollTitle(rawText, lines);
+  const candidateTitle = parseRollTitle(rawText, lines, element);
   if (candidateTitle !== rollTitle) {
     return false;
   }
@@ -1103,7 +1109,7 @@ function looksLikeCompleteRoll(element: Element, text: string, lines: string[]):
 
   const className = String(element.getAttribute("class") ?? "").toLowerCase();
   const hasHistoryClass = /dice-history|history-item/.test(className);
-  const rollTitle = parseRollTitle(text, lines);
+  const rollTitle = parseRollTitle(text, lines, element);
   const hasTitle = rollTitle !== undefined;
   const successValues = getSuccessValues(text);
   const hasSuccessValue = successValues.length === 1;
@@ -1156,7 +1162,12 @@ function findTitle(lines: string[]): string | undefined {
   return title ?? lines.find((line) => line.length <= 120);
 }
 
-function parseRollTitle(text: string, lines: string[]): string | undefined {
+function parseRollTitle(text: string, lines: string[], element?: Element): string | undefined {
+  const demiplaneTitle = element ? readDemiplaneRollTitle(element) : undefined;
+  if (demiplaneTitle) {
+    return demiplaneTitle;
+  }
+
   const lineTitle = lines.find((line) => isAttributeSkillTitle(line));
   if (lineTitle) {
     return normalizeRollTitle(lineTitle);
@@ -1173,30 +1184,49 @@ function parseRollTitle(text: string, lines: string[]): string | undefined {
   }
 
   const rolledMatch = text.match(
-    /\brolled[ \t]+([A-Z][A-Z '-]{1,50})(?:[ \t]*\+[ \t]*([A-Z][A-Z '-]{1,50}))?([ \t]*\([ \t]*re-?roll[ \t]*\))?(?=$|\s|[.:])/i
+    /\brolled[ \t]+([A-Z][A-Z '-]{1,50}(?:[ \t]*\+[ \t]*[A-Z][A-Z '-]{1,50}){0,5})([ \t]*\([ \t]*re-?roll[ \t]*\))?(?=$|\s|[.:])/i
   );
   if (rolledMatch) {
-    const title = rolledMatch[2]
-      ? `${rolledMatch[1].trim()} + ${rolledMatch[2].trim()}${rolledMatch[3] ?? ""}`
-      : `${rolledMatch[1].trim()}${rolledMatch[3] ?? ""}`;
+    const title = `${rolledMatch[1].trim()}${rolledMatch[2] ?? ""}`;
     if (isAttributeSkillTitle(title) || isSingleTraitRollTitle(title) || isCustomRollTitle(title)) {
       return normalizeRollTitle(title);
     }
   }
 
   const match = text.match(
-    /(?:^|\n)[ \t]*([A-Z][A-Z '-]{2,50})[ \t]*\+[ \t]*([A-Z][A-Z '-]{2,50})([ \t]*\([ \t]*re-?roll[ \t]*\))?(?=$|\s|[.:])/i
+    /(?:^|\n)[ \t]*([A-Z][A-Z '-]{1,50}(?:[ \t]*\+[ \t]*[A-Z][A-Z '-]{1,50}){1,5})([ \t]*\([ \t]*re-?roll[ \t]*\))?(?=$|\s|[.:])/i
   );
   if (!match) {
     return undefined;
   }
 
-  return normalizeRollTitle(`${match[1].trim()} + ${match[2].trim()}${match[3] ?? ""}`);
+  return normalizeRollTitle(`${match[1].trim()}${match[2] ?? ""}`);
+}
+
+function readDemiplaneRollTitle(element: Element): string | undefined {
+  const selectors = ".dice-history-name, .history-item-calculated__value.dice-history-name";
+  const candidates: Element[] = [];
+
+  if (element.matches(selectors)) {
+    candidates.push(element);
+  }
+
+  candidates.push(...element.querySelectorAll(selectors));
+
+  for (const candidate of candidates) {
+    const title = normalizeText(candidate.textContent ?? "");
+    if (isUsefulRollTitle(title)) {
+      return normalizeRollTitle(title);
+    }
+  }
+
+  return undefined;
 }
 
 function isAttributeSkillTitle(value: string): boolean {
   const title = stripRerollTitleSuffix(value);
-  return /^[A-Z][A-Z '-]{2,50}[ \t]*\+[ \t]*[A-Z][A-Z '-]{2,50}$/i.test(title);
+  const parts = title.split("+").map((part) => part.trim()).filter(Boolean);
+  return parts.length >= 2 && parts.length <= 6 && parts.every(isTraitTitlePart);
 }
 
 function isCustomRollTitle(value: string): boolean {
@@ -1205,13 +1235,17 @@ function isCustomRollTitle(value: string): boolean {
 
 function isSingleTraitRollTitle(value: string): boolean {
   const title = stripRerollTitleSuffix(value);
-  if (!/^[A-Z][A-Z '-]{1,50}$/i.test(title) || isAttributeSkillTitle(title) || isCustomRollTitle(title)) {
+  if (!isTraitTitlePart(title) || isAttributeSkillTitle(title) || isCustomRollTitle(title)) {
     return false;
   }
 
   return !/^(ADD DICE TO ROLL|ATTRIBUTES|CLEAR|COTERIE|CUSTOM|DETAILS|DETAILED|DICE POOL|DISCIPLINES|EXPAND|FLAWS|GAME RULES|GROUPS|HEALTH|HUMANITY|HUNGER|INVENTORY|LIBRARY|LOCAL|MENTAL|MERITS|NOTES|PHYSICAL|RE-ROLL|REROLL|ROLL|SELECT DICE TO REROLL|SKILLS|SOCIAL|SUCCESSES?|SUCCESS|WILLPOWER)$/i.test(
     title
   );
+}
+
+function isTraitTitlePart(value: string): boolean {
+  return /^[A-Z][A-Z '-]{1,50}$/i.test(value.trim());
 }
 
 function isUsefulRollTitle(value: string): boolean {
@@ -1223,17 +1257,17 @@ function getUniqueRollTitles(text: string): string[] {
   const titles: string[] = [];
   for (const line of text.split("\n")) {
     const lineMatch = line.match(
-      /^[ \t]*([A-Z][A-Z '-]{2,50})[ \t]*\+[ \t]*([A-Z][A-Z '-]{2,50})([ \t]*\([ \t]*re-?roll[ \t]*\))?(?=$|\s|[.:])/i
+      /^[ \t]*([A-Z][A-Z '-]{1,50}(?:[ \t]*\+[ \t]*[A-Z][A-Z '-]{1,50}){1,5})([ \t]*\([ \t]*re-?roll[ \t]*\))?(?=$|\s|[.:])/i
     );
     if (lineMatch) {
-      titles.push(normalizeRollTitle(`${lineMatch[1].trim()} + ${lineMatch[2].trim()}${lineMatch[3] ?? ""}`));
+      titles.push(normalizeRollTitle(`${lineMatch[1].trim()}${lineMatch[2] ?? ""}`));
     }
   }
 
   for (const match of text.matchAll(
-    /\brolled[ \t]+([A-Z][A-Z '-]{2,50})[ \t]*\+[ \t]*([A-Z][A-Z '-]{2,50})([ \t]*\([ \t]*re-?roll[ \t]*\))?(?=$|\s|[.:])/gi
+    /\brolled[ \t]+([A-Z][A-Z '-]{1,50}(?:[ \t]*\+[ \t]*[A-Z][A-Z '-]{1,50}){1,5})([ \t]*\([ \t]*re-?roll[ \t]*\))?(?=$|\s|[.:])/gi
   )) {
-    titles.push(normalizeRollTitle(`${match[1].trim()} + ${match[2].trim()}${match[3] ?? ""}`));
+    titles.push(normalizeRollTitle(`${match[1].trim()}${match[2] ?? ""}`));
   }
 
   return [...new Set(titles)];
