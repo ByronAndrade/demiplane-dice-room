@@ -149,6 +149,7 @@ const inputs = {
   showOwnRolls: requireElement("#showOwnRolls", HTMLInputElement),
   enableDiceAnimation: requireElement("#enableDiceAnimation", HTMLInputElement)
 };
+const hideCharacterNameRow = inputs.hideCharacterName.closest("label");
 
 void loadState();
 
@@ -351,7 +352,8 @@ function updateRoomMode(): void {
   createRoomButton.classList.toggle("active", roomMode === "host");
   joinRoomButton.classList.toggle("active", roomMode === "join");
   roomModeHint.textContent = roomMode === "host" ? t("hostHint") : t("joinHint");
-  inputs.hideCharacterName.disabled = roomMode !== "host" || lastState?.status === "connected" || lastState?.status === "connecting";
+  setElementHidden(hideCharacterNameRow, roomMode !== "host");
+  inputs.hideCharacterName.disabled = roomMode !== "host";
   if (roomMode !== "host") {
     inputs.hideCharacterName.checked = false;
   }
@@ -364,7 +366,13 @@ function updateRoomLock(locked: boolean): void {
   inputs.password.disabled = locked;
   inputs.serverUrl.disabled = locked;
   inputs.relayKey.disabled = locked;
-  inputs.hideCharacterName.disabled = locked || roomMode !== "host";
+  inputs.hideCharacterName.disabled = roomMode !== "host";
+}
+
+function setElementHidden(element: Element | null, hidden: boolean): void {
+  if (element instanceof HTMLElement) {
+    element.hidden = hidden;
+  }
 }
 
 function confirmHostedRoomExit(): boolean {

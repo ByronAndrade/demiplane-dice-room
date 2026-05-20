@@ -55,7 +55,7 @@ const defaultDiceAnimationScale = 0.75;
 const minDiceAnimationScale = 0.45;
 const maxDiceAnimationScale = 1.15;
 const defaultRelayUrl = "wss://demiplane-dice-room-relay.foxbyron.workers.dev";
-const extensionUiVersion = "0.1.82";
+const extensionUiVersion = "0.1.83";
 const pageBridgeMessageSource = "demiplane-dice-room-page";
 const pageDiceRollResponseWaitMs = 1400;
 const pageDiceRollResponseTtlMs = 8_000;
@@ -496,10 +496,14 @@ function handlePotentialRollAction(event: PointerEvent): void {
     return;
   }
 
+  if (isRerollActionElement(rollAction)) {
+    return;
+  }
+
   pendingDicePoolHint = readCurrentDicePoolHint(rollAction);
   pendingPageDiceRollStartedAt = Date.now() - 50;
   pendingPageDiceRollResponses = [];
-  armCapture(isRerollActionElement(rollAction) ? 18_000 : 6000);
+  armCapture(6000);
 }
 
 function isRerollActionElement(element: Element): boolean {
@@ -940,6 +944,11 @@ function hasRollDetailsText(text: string): boolean {
 }
 
 function getCurrentSheetCharacterName(): string | undefined {
+  const exactName = getExactSheetCharacterName();
+  if (exactName) {
+    return exactName;
+  }
+
   const candidates: string[] = [];
 
   const selector = [
@@ -961,7 +970,7 @@ function getCurrentSheetCharacterName(): string | undefined {
       continue;
     }
 
-    const candidate = normalizeCharacterNameCandidate(element.innerText || element.textContent || "");
+    const candidate = normalizeCharacterNameCandidate(element.textContent || element.innerText || "");
     if (candidate) {
       candidates.push(candidate);
     }
@@ -973,6 +982,30 @@ function getCurrentSheetCharacterName(): string | undefined {
   }
 
   return candidates.find(Boolean);
+}
+
+function getExactSheetCharacterName(): string | undefined {
+  const selectors = [".text-block.character-name .text-block__text", ".character-name .text-block__text"];
+
+  for (const selector of selectors) {
+    for (const element of document.querySelectorAll(selector)) {
+      if (!(element instanceof HTMLElement) || !isVisibleElement(element)) {
+        continue;
+      }
+
+      const rect = element.getBoundingClientRect();
+      if (rect.top > Math.max(260, window.innerHeight * 0.35)) {
+        continue;
+      }
+
+      const candidate = normalizeCharacterNameCandidate(element.textContent || "");
+      if (candidate) {
+        return candidate;
+      }
+    }
+  }
+
+  return undefined;
 }
 
 function normalizeCharacterNameCandidate(value: string): string | undefined {
@@ -2065,6 +2098,9 @@ function createPanel(): {
   roomPlayersSummary: HTMLElement;
   roomStatusSummary: HTMLParagraphElement;
   roomPlayersList: HTMLDivElement;
+  summaryStorytellerRow: HTMLLabelElement;
+  summaryHideCharacterNameInput: HTMLInputElement;
+  summaryHideCharacterLabel: HTMLSpanElement;
   summaryDisconnectButton: HTMLButtonElement;
   hostRoomButton: HTMLButtonElement;
   joinRoomButton: HTMLButtonElement;
@@ -2130,6 +2166,10 @@ function createPanel(): {
 
       * {
         box-sizing: border-box;
+      }
+
+      [hidden] {
+        display: none !important;
       }
 
       .panel {
@@ -2432,6 +2472,24 @@ function createPanel(): {
         border-color: rgba(80, 188, 126, 0.38);
         color: #bdf4d2;
         background: rgba(24, 53, 38, 0.68);
+      }
+
+      .room-player-chip small {
+        color: inherit;
+        opacity: 0.78;
+        font-size: 10px;
+      }
+
+      .summary-checkbox {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        color: #dce5f2;
+        font-weight: 850;
+      }
+
+      .summary-checkbox input {
+        width: auto;
       }
 
       .summary-disconnect {
@@ -2745,6 +2803,10 @@ function createPanel(): {
             </div>
             <p data-room-status-summary class="summary-note"></p>
             <div data-room-players-list class="room-players-list"></div>
+            <label data-summary-storyteller-row class="summary-checkbox" hidden>
+              <input data-summary-hide-character-name type="checkbox" />
+              <span data-summary-hide-character-label>Fazer rolagem como Narrador</span>
+            </label>
           </div>
           <button data-summary-disconnect class="summary-disconnect" type="button">Desconectar</button>
         </div>
@@ -2866,6 +2928,9 @@ function createPanel(): {
   const roomPlayersSummary = shadow.querySelector("[data-room-players-summary]");
   const roomStatusSummary = shadow.querySelector("[data-room-status-summary]");
   const roomPlayersList = shadow.querySelector("[data-room-players-list]");
+  const summaryStorytellerRow = shadow.querySelector("[data-summary-storyteller-row]");
+  const summaryHideCharacterNameInput = shadow.querySelector("[data-summary-hide-character-name]");
+  const summaryHideCharacterLabel = shadow.querySelector("[data-summary-hide-character-label]");
   const summaryDisconnectButton = shadow.querySelector("[data-summary-disconnect]");
   const hostRoomButton = shadow.querySelector("[data-host-room]");
   const joinRoomButton = shadow.querySelector("[data-join-room]");
@@ -2908,6 +2973,9 @@ function createPanel(): {
     !(roomPlayersSummary instanceof HTMLElement) ||
     !(roomStatusSummary instanceof HTMLParagraphElement) ||
     !(roomPlayersList instanceof HTMLDivElement) ||
+    !(summaryStorytellerRow instanceof HTMLLabelElement) ||
+    !(summaryHideCharacterNameInput instanceof HTMLInputElement) ||
+    !(summaryHideCharacterLabel instanceof HTMLSpanElement) ||
     !(summaryDisconnectButton instanceof HTMLButtonElement) ||
     !(hostRoomButton instanceof HTMLButtonElement) ||
     !(joinRoomButton instanceof HTMLButtonElement) ||
@@ -3002,6 +3070,14 @@ function createPanel(): {
     void sendRuntimeMessage({ kind: "popup:disconnect" });
   });
 
+  hideCharacterNameInput.addEventListener("change", () => {
+    setStorytellerRollPreference(hideCharacterNameInput.checked);
+  });
+
+  summaryHideCharacterNameInput.addEventListener("change", () => {
+    setStorytellerRollPreference(summaryHideCharacterNameInput.checked);
+  });
+
   opacityInput.addEventListener("input", () => {
     panelOpacity = Number.parseFloat(opacityInput.value);
     opacityValue.textContent = `${Math.round(panelOpacity * 100)}%`;
@@ -3071,6 +3147,9 @@ function createPanel(): {
     roomPlayersSummary,
     roomStatusSummary,
     roomPlayersList,
+    summaryStorytellerRow,
+    summaryHideCharacterNameInput,
+    summaryHideCharacterLabel,
     summaryDisconnectButton,
     hostRoomButton,
     joinRoomButton,
@@ -3139,7 +3218,8 @@ function renderPanel(): void {
   const roomConnected = connectionState.status === "connected";
   panel.roomSummary.hidden = !roomConnected;
   panel.roomForm.hidden = roomConnected;
-  panel.storytellerRow.hidden = !isHost;
+  panel.storytellerRow.hidden = roomConnected || !isHost;
+  panel.summaryStorytellerRow.hidden = !roomConnected || !isHost;
   panel.hostRoomButton.classList.toggle("active", isHost);
   panel.joinRoomButton.classList.toggle("active", !isHost);
   panel.hostRoomButton.disabled = roomLocked;
@@ -3150,8 +3230,11 @@ function renderPanel(): void {
   panel.relayKeyInput.disabled = roomLocked;
   panel.hideCharacterNameInput.disabled = roomLocked || !isHost;
   panel.hideCharacterNameInput.checked = isHost && config.hideCharacterName;
+  panel.summaryHideCharacterNameInput.disabled = !roomConnected || !isHost;
+  panel.summaryHideCharacterNameInput.checked = isHost && config.hideCharacterName;
   if (!isHost) {
     panel.hideCharacterNameInput.checked = false;
+    panel.summaryHideCharacterNameInput.checked = false;
   }
   panel.connectRoomButton.disabled = connectionState.status === "connecting" || connectionState.status === "connected";
   panel.disconnectRoomButton.disabled = connectionState.status === "disconnected";
@@ -3187,6 +3270,7 @@ function renderPanel(): void {
   if (hideCharacterLabel instanceof HTMLSpanElement) {
     hideCharacterLabel.textContent = t("hideCharacterName");
   }
+  panel.summaryHideCharacterLabel.textContent = t("hideCharacterName");
   const channelLabel = panel.host.shadowRoot?.querySelector("[data-settings-channel-label]");
   if (channelLabel instanceof HTMLSpanElement) {
     channelLabel.textContent = t("channel");
@@ -3260,6 +3344,23 @@ function renderPanel(): void {
   }
 
   panel.list.innerHTML = visibleRolls.map(renderRoll).join("");
+}
+
+function setStorytellerRollPreference(enabled: boolean): void {
+  const config = currentConfig ?? defaultConfig;
+  const nextValue = config.roomRole === "host" && enabled;
+  currentConfig = {
+    ...config,
+    hideCharacterName: nextValue
+  };
+
+  if (panel) {
+    panel.hideCharacterNameInput.checked = nextValue;
+    panel.summaryHideCharacterNameInput.checked = nextValue;
+  }
+
+  renderPanel();
+  void savePanelRoomConfig();
 }
 
 function renderRoomSummary(): void {
