@@ -55,7 +55,7 @@ const defaultDiceAnimationScale = 0.75;
 const minDiceAnimationScale = 0.45;
 const maxDiceAnimationScale = 1.15;
 const defaultRelayUrl = "wss://demiplane-dice-room-relay.foxbyron.workers.dev";
-const extensionUiVersion = "0.1.78";
+const extensionUiVersion = "0.1.79";
 const pageBridgeMessageSource = "demiplane-dice-room-page";
 const pageDiceRollResponseWaitMs = 1400;
 const pageDiceRollResponseTtlMs = 8_000;
@@ -1977,8 +1977,16 @@ function createPanel(): {
         display: none;
       }
 
+      :host([data-settings="true"]) .list {
+        display: none;
+      }
+
       :host([data-collapsed="true"]) .panel {
         width: min(300px, calc(100vw - 32px));
+      }
+
+      :host([data-settings="true"]) .panel {
+        max-height: min(760px, calc(100vh - 32px));
       }
 
       * {
@@ -1988,9 +1996,9 @@ function createPanel(): {
       .panel {
         width: min(360px, calc(100vw - 32px));
         max-height: min(520px, calc(100vh - 32px));
-        display: grid;
-        grid-template-rows: auto 1fr;
-        overflow: visible;
+        display: flex;
+        flex-direction: column;
+        overflow: hidden;
         border: 1px solid rgba(190, 202, 220, 0.22);
         border-radius: 8px;
         color: #f4f6fa;
@@ -2178,11 +2186,16 @@ function createPanel(): {
       }
 
       .settings-panel {
+        min-height: 0;
+        max-height: calc(100vh - 92px);
+        overflow-y: auto;
         border-top: 1px solid rgba(190, 202, 220, 0.14);
         padding: 10px 12px;
         color: #c9d2df;
         background: rgba(255, 255, 255, 0.025);
         font-size: 12px;
+        scrollbar-color: rgba(190, 202, 220, 0.42) rgba(255, 255, 255, 0.04);
+        scrollbar-width: thin;
       }
 
       .settings-row {
