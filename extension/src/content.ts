@@ -55,7 +55,7 @@ const defaultDiceAnimationScale = 0.75;
 const minDiceAnimationScale = 0.45;
 const maxDiceAnimationScale = 1.15;
 const defaultRelayUrl = "wss://demiplane-dice-room-relay.foxbyron.workers.dev";
-const extensionUiVersion = "0.1.84";
+const extensionUiVersion = "0.1.85";
 const pageBridgeMessageSource = "demiplane-dice-room-page";
 const pageDiceRollResponseWaitMs = 1400;
 const pageDiceRollResponseTtlMs = 8_000;
@@ -3040,6 +3040,7 @@ function createPanel(): {
   toggle.addEventListener("click", () => {
     collapsed = !collapsed;
     if (!collapsed) {
+      settingsOpen = false;
       markRollsSeen(getVisibleRolls());
     }
     renderPanel();
@@ -3048,6 +3049,9 @@ function createPanel(): {
 
   settings.addEventListener("click", () => {
     settingsOpen = !settingsOpen;
+    if (settingsOpen) {
+      collapsed = true;
+    }
     renderPanel();
     void savePanelUiState();
   });

@@ -22,8 +22,9 @@ type RuntimeRequest =
   | { kind: "content:ready" }
   | { kind: "content:captured-roll"; roll: CapturedRoll };
 
-const localHistoryVersion = 8;
+const localHistoryVersion = 9;
 const liveRollStorageKey = "lastLiveRoll";
+const roomHistoryStorageKey = "roomHistories";
 const panelUiStorageKey = "diceRoomPanelUi";
 const protectedDefaultRelayHost = "demiplane-dice-room-relay.foxbyron.workers.dev";
 
@@ -32,6 +33,7 @@ let reconnectTimer: number | undefined;
 let manualDisconnect = true;
 let forcedDisconnectDetail: string | undefined;
 let recentRolls: StoredRoll[] = [];
+let activeHistoryRoomId: string | undefined;
 
 let connectionState: ConnectionState = {
   status: "disconnected",
@@ -213,6 +215,7 @@ async function connect(): Promise<void> {
           players: [],
           connectedAt: undefined
         });
+        activeHistoryRoomId = undefined;
         void restoreLocalHistory();
         return;
       }
@@ -224,6 +227,7 @@ async function connect(): Promise<void> {
         players: [],
         connectedAt: undefined
       });
+      activeHistoryRoomId = undefined;
       void restoreLocalHistory();
       return;
     }
@@ -268,6 +272,7 @@ async function disconnect(): Promise<void> {
     players: [],
     connectedAt: undefined
   });
+  activeHistoryRoomId = undefined;
   await restoreLocalHistory();
 }
 
@@ -295,6 +300,9 @@ async function publishCapturedRoll(captured: CapturedRoll): Promise<{ ok: true; 
   };
 
   const canSend = socket?.readyState === WebSocket.OPEN && connectionState.status === "connected";
+  if (canSend && connectionState.roomId && !activeHistoryRoomId) {
+    activeHistoryRoomId = connectionState.roomId;
+  }
   const delivery = canSend ? "sent" : "local";
   rememberRoll({
     roll,
@@ -346,7 +354,7 @@ function handleServerMessage(message: ServerMessage): void {
         players: message.players,
         connectedAt: new Date().toISOString()
       });
-      replaceRoomHistory(message.history);
+      void syncRoomHistory(message.roomId, message.history);
       return;
 
     case "presence":
@@ -396,6 +404,7 @@ function handleServerMessage(message: ServerMessage): void {
           players: [],
           connectedAt: undefined
         });
+        activeHistoryRoomId = undefined;
         void restoreLocalHistory();
         return;
       }
@@ -465,7 +474,7 @@ function rememberRoll(storedRoll: StoredRoll): void {
   setRecentRolls([storedRoll, ...recentRolls]);
 }
 
-function replaceRoomHistory(history: RollEvent[]): void {
+async function syncRoomHistory(roomId: string, history: RollEvent[]): Promise<void> {
   const storedHistory: StoredRoll[] = [...history]
     .filter(isUsefulRoll)
     .reverse()
@@ -474,8 +483,11 @@ function replaceRoomHistory(history: RollEvent[]): void {
       origin: "remote",
       delivery: "history"
     }));
+  const cachedHistory = activeHistoryRoomId === roomId ? recentRolls : await loadSessionRoomHistory(roomId);
+  const mergedHistory = [...storedHistory, ...cachedHistory].sort(compareStoredRollsNewestFirst);
 
-  setRecentRolls(storedHistory, { persist: false });
+  activeHistoryRoomId = roomId;
+  setRecentRolls(mergedHistory, { persist: false });
   broadcastHistory();
 }
 
@@ -502,6 +514,8 @@ function setRecentRolls(nextRolls: StoredRoll[], options: { persist?: boolean } 
 
   if (options.persist ?? shouldPersistLocalHistory()) {
     void chrome.storage.local.set({ recentRolls, localHistoryVersion });
+  } else if (activeHistoryRoomId) {
+    void saveSessionRoomHistory(activeHistoryRoomId, recentRolls);
   }
 }
 
@@ -512,6 +526,15 @@ function shouldPersistLocalHistory(): boolean {
 async function restoreLocalHistory(): Promise<void> {
   recentRolls = await loadStoredRolls();
   broadcastHistory();
+}
+
+function compareStoredRollsNewestFirst(a: StoredRoll, b: StoredRoll): number {
+  return getRollTimestamp(b.roll) - getRollTimestamp(a.roll);
+}
+
+function getRollTimestamp(roll: RollEvent): number {
+  const value = Date.parse(roll.createdAt);
+  return Number.isFinite(value) ? value : 0;
 }
 
 function rememberLastLiveRoll(storedRoll: StoredRoll): void {
@@ -537,6 +560,46 @@ async function loadStoredRolls(): Promise<StoredRoll[]> {
   }
 
   return Array.isArray(stored.recentRolls) ? (stored.recentRolls as StoredRoll[]).filter((item) => isUsefulRoll(item.roll)) : [];
+}
+
+async function loadSessionRoomHistory(roomId: string): Promise<StoredRoll[]> {
+  const storage = getSessionStorage();
+  if (!storage) {
+    return [];
+  }
+
+  const stored = await storage.get({ [roomHistoryStorageKey]: {} });
+  const roomHistories = stored[roomHistoryStorageKey] as Record<string, StoredRoll[]> | undefined;
+  const history = roomHistories?.[roomId];
+  return Array.isArray(history) ? history.filter((item) => isUsefulRoll(item.roll)).slice(0, 100) : [];
+}
+
+async function saveSessionRoomHistory(roomId: string, history: StoredRoll[]): Promise<void> {
+  const storage = getSessionStorage();
+  if (!storage) {
+    return;
+  }
+
+  const stored = await storage.get({ [roomHistoryStorageKey]: {} });
+  const roomHistories = normalizeRoomHistoryMap(stored[roomHistoryStorageKey]);
+  roomHistories[roomId] = history.slice(0, 100);
+
+  const roomIds = Object.keys(roomHistories);
+  for (const staleRoomId of roomIds.slice(0, Math.max(0, roomIds.length - 8))) {
+    if (staleRoomId !== roomId) {
+      delete roomHistories[staleRoomId];
+    }
+  }
+
+  await storage.set({ [roomHistoryStorageKey]: roomHistories });
+}
+
+function normalizeRoomHistoryMap(value: unknown): Record<string, StoredRoll[]> {
+  return value && typeof value === "object" ? { ...(value as Record<string, StoredRoll[]>) } : {};
+}
+
+function getSessionStorage(): chrome.storage.StorageArea | undefined {
+  return (chrome.storage as typeof chrome.storage & { session?: chrome.storage.StorageArea }).session;
 }
 
 function broadcastHistory(): void {
