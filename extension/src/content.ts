@@ -55,7 +55,7 @@ const defaultDiceAnimationScale = 0.75;
 const minDiceAnimationScale = 0.45;
 const maxDiceAnimationScale = 1.15;
 const defaultRelayUrl = "wss://demiplane-dice-room-relay.foxbyron.workers.dev";
-const extensionUiVersion = "0.1.87";
+const extensionUiVersion = "0.1.88";
 const pageBridgeMessageSource = "demiplane-dice-room-page";
 const pageDiceRollResponseWaitMs = 1400;
 const pageDiceRollResponseTtlMs = 8_000;
@@ -3597,7 +3597,7 @@ function formatPlayersTooltip(players: ConnectionState["players"]): string {
   return players
     .map((player) => {
       const displayName = formatPresenceDisplayName(player, "character");
-      const roleSuffix = player.roomRole === "host" ? ` (${t("hostRole")})` : "";
+      const roleSuffix = shouldShowPresenceRole(displayName, player) ? ` (${t("hostRole")})` : "";
       return `${displayName}${roleSuffix}`;
     })
     .join("\n");
@@ -3618,13 +3618,21 @@ function formatPresenceDisplayName(
 
 function renderRoomPlayerChip(player: ConnectionState["players"][number], canManagePlayers = false): string {
   const name = formatPresenceDisplayName(player, "character");
-  const roleSuffix = player.roomRole === "host" ? ` ${t("hostRole")}` : "";
+  const roleSuffix = shouldShowPresenceRole(name, player) ? ` ${t("hostRole")}` : "";
   const className = player.roomRole === "host" ? "room-player-chip host" : "room-player-chip";
   const canKick = canManagePlayers && player.roomRole !== "host" && player.clientId !== connectionState.clientId;
   const kickButton = canKick
     ? ` <button class="room-player-action" type="button" data-kick-player data-client-id="${escapeHtml(player.clientId)}">${escapeHtml(t("kickPlayer"))}</button>`
     : "";
   return `<span class="${className}">${escapeHtml(name)}${roleSuffix ? ` <small>${escapeHtml(roleSuffix)}</small>` : ""}${kickButton}</span>`;
+}
+
+function shouldShowPresenceRole(displayName: string, player: ConnectionState["players"][number]): boolean {
+  return player.roomRole === "host" && normalizeDisplayName(displayName) !== normalizeDisplayName(t("hostRole"));
+}
+
+function normalizeDisplayName(value: string): string {
+  return value.trim().toLocaleLowerCase();
 }
 
 function renderPendingPlayerRow(player: NonNullable<ConnectionState["pendingPlayers"]>[number]): string {
@@ -6152,9 +6160,8 @@ function outcomeLabel(outcome: RollOutcome): string {
 }
 
 function describeRoll(roll: RollEvent): string {
-  const actor = roll.characterName || roll.playerName;
   const result = describeResult(roll);
-  return `${actor} ${t("tested")} ${roll.rollTitle}. ${result}`;
+  return `${t("tested")} ${roll.rollTitle}. ${result}`;
 }
 
 function describeResult(roll: RollEvent): string {

@@ -402,10 +402,14 @@ function formatPlayersTooltip(players: ConnectionState["players"]): string {
   return players
     .map((player) => {
       const displayName = player.characterName || player.playerName;
-      const roleSuffix = player.roomRole === "host" ? ` (${t("hostRole")})` : "";
+      const roleSuffix = shouldShowPresenceRole(displayName, player) ? ` (${t("hostRole")})` : "";
       return `${displayName}${roleSuffix}`;
     })
     .join("\n");
+}
+
+function shouldShowPresenceRole(displayName: string, player: ConnectionState["players"][number]): boolean {
+  return player.roomRole === "host" && displayName.trim().toLocaleLowerCase() !== t("hostRole").trim().toLocaleLowerCase();
 }
 
 function shouldShowRoll(roll: RollEvent, delivery: string): boolean {
