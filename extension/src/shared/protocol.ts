@@ -126,9 +126,13 @@ export async function createRoomId(channel: string, password = ""): Promise<stri
     .slice(0, 32);
 }
 
-export function createRoomSocketUrl(serverUrl: string, roomId: string): string {
+export function createRoomSocketUrl(serverUrl: string, roomId: string, relayKey = ""): string {
   const url = new URL(serverUrl);
   url.searchParams.set("room", roomId);
+  const trimmedRelayKey = relayKey.trim();
+  if (trimmedRelayKey) {
+    url.searchParams.set("key", trimmedRelayKey);
+  }
   return url.toString();
 }
 

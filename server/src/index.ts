@@ -14,7 +14,9 @@ const port = Number.parseInt(process.env.PORT ?? "8787", 10);
 const host = process.env.HOST ?? "0.0.0.0";
 const maxMessageBytes = 64 * 1024;
 const maxRoomHistory = 100;
+const maxRoomPlayers = 20;
 const adminToken = process.env.DICE_ROOM_ADMIN_TOKEN ?? "";
+const relayAccessKey = process.env.DICE_ROOM_RELAY_KEY?.trim() ?? "";
 let runtimePublicRelayUrl = "";
 
 type Client = {
@@ -54,8 +56,14 @@ const httpServer = createServer((request, response) => {
 
 const wss = new WebSocketServer({ server: httpServer });
 
-wss.on("connection", (socket) => {
+wss.on("connection", (socket, request) => {
   let client: Client | undefined;
+
+  if (!hasValidRelayAccessKey(request)) {
+    send(socket, errorMessage("relay_key_required", "Este relay exige uma chave de acesso."));
+    socket.close(1008, "relay_key_required");
+    return;
+  }
 
   socket.on("message", (data) => {
     const raw = data.toString("utf8");
@@ -172,21 +180,30 @@ async function handlePublicRelayUrlRequest(request: IncomingMessage, response: S
   sendJson(response, 200, { ok: true, relays: getRelayUrls() });
 }
 
-function getHealthPayload(): { ok: true; rooms: number; players: number; relays: string[] } {
+function getHealthPayload(): { ok: true; rooms: number; players: number; relays: string[]; accessKeyRequired: boolean; roomLimit: number } {
   return {
     ok: true,
     rooms: rooms.size,
     players: getTotalPlayers(),
-    relays: getRelayUrls()
+    relays: getRelayUrls(),
+    accessKeyRequired: Boolean(relayAccessKey),
+    roomLimit: maxRoomPlayers
   };
 }
 
-function joinRoom(socket: WebSocket, hello: HelloMessage, previous?: Client): Client {
+function joinRoom(socket: WebSocket, hello: HelloMessage, previous?: Client): Client | undefined {
   if (previous) {
     leaveRoom(previous);
   }
 
   const roomId = createRoomId(hello.channel, hello.password);
+  const room = rooms.get(roomId) ?? new Set<Client>();
+  if (room.size >= maxRoomPlayers) {
+    send(socket, errorMessage("room_full", `Sala cheia. O limite e de ${maxRoomPlayers} jogadores.`));
+    socket.close(1008, "room_full");
+    return undefined;
+  }
+
   const client: Client = {
     socket,
     clientId: hello.clientId,
@@ -196,7 +213,6 @@ function joinRoom(socket: WebSocket, hello: HelloMessage, previous?: Client): Cl
     joinedAt: new Date().toISOString()
   };
 
-  const room = rooms.get(roomId) ?? new Set<Client>();
   room.add(client);
   rooms.set(roomId, room);
 
@@ -256,6 +272,15 @@ function send(socket: WebSocket, message: ServerMessage): void {
   if (socket.readyState === WebSocket.OPEN) {
     socket.send(JSON.stringify(message));
   }
+}
+
+function hasValidRelayAccessKey(request: IncomingMessage): boolean {
+  if (!relayAccessKey) {
+    return true;
+  }
+
+  const requestUrl = new URL(request.url ?? "/", `http://${request.headers.host ?? "localhost"}`);
+  return requestUrl.searchParams.get("key") === relayAccessKey;
 }
 
 function getPlayers(roomId: string): PresencePlayer[] {
@@ -511,13 +536,15 @@ function renderStatusPage(): string {
         <div class="stats">
           <div class="stat"><strong id="room-count">${rooms.size}</strong> salas ativas</div>
           <div class="stat"><strong id="player-count">${getTotalPlayers()}</strong> jogadores conectados</div>
+          <div class="stat"><strong>${maxRoomPlayers}</strong> limite por sala</div>
+          <div class="stat"><strong>${relayAccessKey ? "Sim" : "Nao"}</strong> chave exigida</div>
         </div>
 
         <h2>Enderecos do relay</h2>
         <ul id="relay-list">${relayRows}</ul>
 
         <div class="help">
-          <p>O endereco <code>ws://localhost:${port}</code> serve para testar nesta maquina. Para a mesa online, prefira o endereco publico <code>wss://...</code>. Quando houver um servidor 24/7, todos continuam usando o mesmo campo Relay da extensao.</p>
+          <p>O endereco <code>ws://localhost:${port}</code> serve para testar nesta maquina. Para a mesa online, prefira o endereco publico <code>wss://...</code>. Se este relay exigir chave, informe tambem a chave do relay na extensao.</p>
         </div>
       </section>
     </main>

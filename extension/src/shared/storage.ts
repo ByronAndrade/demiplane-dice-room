@@ -4,6 +4,7 @@ const legacyDefaultRelayUrl = "ws://localhost:8787";
 
 export type ExtensionConfig = {
   serverUrl: string;
+  relayKey: string;
   playerName: string;
   characterName: string;
   channel: string;
@@ -16,6 +17,7 @@ export type ExtensionConfig = {
 
 export const defaultConfig: ExtensionConfig = {
   serverUrl: getDefaultRelayUrl(),
+  relayKey: "",
   playerName: "",
   characterName: "",
   channel: "",
@@ -56,6 +58,7 @@ export async function getClientId(): Promise<string> {
 function normalizeConfig(value: Partial<ExtensionConfig>): ExtensionConfig {
   return {
     serverUrl: normalizeServerUrl(value.serverUrl),
+    relayKey: cleanString(value.relayKey),
     playerName: cleanString(value.playerName),
     characterName: cleanString(value.characterName),
     channel: cleanString(value.channel),

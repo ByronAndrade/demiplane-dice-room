@@ -51,6 +51,14 @@ npm run deploy:relay:cloudflare
 
 Depois use a URL `wss://...workers.dev` no campo `Relay` da extensao. Assim ninguem precisa abrir o launcher local durante a sessao.
 
+Se o relay online for publico, proteja-o com uma chave:
+
+```bash
+relay-cloudflare/node_modules/.bin/wrangler secret put DICE_ROOM_RELAY_KEY --name demiplane-dice-room-relay
+```
+
+Cada sala aceita ate 20 jogadores conectados. A chave do relay fica fora do Git e deve ser passada apenas para quem pode usar aquele Worker.
+
 Para gerar a extensao ja apontando para esse relay:
 
 ```bash
@@ -86,9 +94,10 @@ Veja [docs/hosting-and-browser-support.md](docs/hosting-and-browser-support.md) 
 1. Abra uma ficha em `https://app.demiplane.com/nexus/*/character-sheet/*`.
 2. Abra o popup da extensao.
 3. Informe nome do jogador, canal e senha. O pacote padrao ja usa o relay online `wss://demiplane-dice-room-relay.foxbyron.workers.dev`. Para teste na mesma maquina, `ws://localhost:8787` funciona; para fallback temporario, o launcher ainda pode gerar um `wss://...trycloudflare.com`.
-4. Clique em `Conectar`.
-5. Repita em outra janela/perfil de navegador com o mesmo canal e senha.
-6. Use o botao `Teste` ou faca uma rolagem no Demiplane.
+4. Se o relay estiver protegido, informe tambem a chave do relay.
+5. Clique em `Conectar`.
+6. Repita em outra janela/perfil de navegador com o mesmo canal, senha e chave de relay.
+7. Use o botao `Teste` ou faca uma rolagem no Demiplane.
 
 ## Status
 

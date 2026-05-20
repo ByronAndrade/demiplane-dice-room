@@ -2,16 +2,17 @@
 
 ## Fluxo recomendado: relay online
 
-Para mesas remotas, o fluxo mais simples e usar um relay online 24/7. Com isso, ninguem precisa abrir o `.cmd` antes da sessao: todos instalam a extensao, usam o mesmo endereco `wss://...`, e entram na sala pelo nome e senha combinados.
+Para mesas remotas, o fluxo mais simples e usar um relay online 24/7. Com isso, ninguem precisa abrir o `.cmd` antes da sessao: todos instalam a extensao, usam o mesmo endereco `wss://...`, informam a chave do relay quando houver, e entram na sala pelo nome e senha combinados.
 
-O pacote `relay-cloudflare` prepara esse modo usando Cloudflare Workers + Durable Objects, que mantem uma instancia isolada por sala.
+O pacote `relay-cloudflare` prepara esse modo usando Cloudflare Workers + Durable Objects, que mantem uma instancia isolada por sala. Cada sala aceita ate 20 jogadores conectados.
 
 ```bash
-npx wrangler login
+relay-cloudflare/node_modules/.bin/wrangler login
+relay-cloudflare/node_modules/.bin/wrangler secret put DICE_ROOM_RELAY_KEY --name demiplane-dice-room-relay
 npm run deploy:relay:cloudflare
 ```
 
-O deploy retorna uma URL HTTPS. No campo `Relay` da extensao, use a mesma URL como WebSocket seguro:
+Use uma chave longa e aleatoria no secret `DICE_ROOM_RELAY_KEY`. Essa chave nao deve ser versionada no Git. O deploy retorna uma URL HTTPS. No campo `Relay` da extensao, use a mesma URL como WebSocket seguro:
 
 ```text
 wss://demiplane-dice-room-relay.SEUSUBDOMINIO.workers.dev
@@ -19,8 +20,8 @@ wss://demiplane-dice-room-relay.SEUSUBDOMINIO.workers.dev
 
 Depois disso, o fluxo de uso fica:
 
-1. O narrador abre a ficha, abre a extensao, escolhe nome da sala e senha, e clica em `Criar sala` / `Conectar`.
-2. Os jogadores usam o mesmo relay online, digitam o mesmo nome de sala e senha, e clicam em `Entrar em sala` / `Conectar`.
+1. O narrador abre a ficha, abre a extensao, escolhe nome da sala e senha, informa a chave do relay se o relay for protegido, e clica em `Criar sala` / `Conectar`.
+2. Os jogadores usam o mesmo relay online, a mesma chave do relay, o mesmo nome de sala e a mesma senha, e clicam em `Entrar em sala` / `Conectar`.
 3. As rolagens passam a ecoar para todos na mesma sala.
 
 O launcher local continua existindo como fallback de teste ou para uma sessao temporaria.
@@ -30,6 +31,37 @@ Para distribuir a extensao ja configurada com o relay online, gere o pacote assi
 ```bash
 DICE_ROOM_DEFAULT_RELAY=wss://demiplane-dice-room-relay.SEUSUBDOMINIO.workers.dev npm run package:extension
 ```
+
+Nao coloque a chave do relay dentro do pacote publico da extensao. Distribua a chave apenas para as mesas autorizadas, ou peca que cada grupo configure o proprio Worker/relay local.
+
+## Relay protegido
+
+O relay aceita uma chave opcional. Quando o secret `DICE_ROOM_RELAY_KEY` existe no Cloudflare Worker, toda conexao WebSocket precisa enviar a mesma chave no parametro `key`. A extensao faz isso automaticamente a partir do campo `Chave do relay`.
+
+Exemplo de URL final gerada internamente pela extensao:
+
+```text
+wss://demiplane-dice-room-relay.SEUSUBDOMINIO.workers.dev?room=HASH_DA_SALA&key=CHAVE
+```
+
+No relay local Node.js, a mesma regra funciona se a variavel `DICE_ROOM_RELAY_KEY` estiver definida. Sem essa variavel, o relay local continua aberto para facilitar testes.
+
+```bash
+DICE_ROOM_RELAY_KEY=sua-chave npm run host:relay
+```
+
+## Distribuicao gratuita
+
+O caminho gratuito mais simples e publicar os ZIPs em um GitHub Release do proprio projeto:
+
+```text
+artifacts/demiplane-dice-room-<versao>-chromium.zip
+artifacts/demiplane-dice-room-<versao>-firefox.zip
+```
+
+Esse modelo nao cobra nada, mas os navegadores Chromium continuam exigindo instalacao por modo desenvolvedor quando a extensao vem por ZIP. Tambem nao ha atualizacao automatica: quando uma nova versao sair, os jogadores baixam o ZIP novo e carregam a pasta atualizada.
+
+Para instalacao com botao unico e atualizacao automatica, o caminho e loja de extensoes. A publicacao em loja pode ter exigencias de conta, revisao, assinatura e politicas de privacidade conforme o navegador.
 
 ## Rodar o relay durante a sessao
 
@@ -150,6 +182,8 @@ Todos os jogadores de uma mesa devem usar o mesmo canal e a mesma senha. O relay
 ```text
 wss://demiplane-dice-room-relay.foxbyron.workers.dev
 ```
+
+Esse relay padrao pode exigir uma chave de acesso. Sem a chave, use um relay proprio ou o relay local.
 
 ## Navegadores
 

@@ -29,6 +29,7 @@ const messages = {
     channelLabel: "Canal da mesa",
     passwordLabel: "Senha da sala",
     relayLabel: "Relay",
+    relayKeyLabel: "Chave do relay",
     roomFlowTitle: "Sala da mesa",
     createRoom: "Criar sala",
     joinRoom: "Entrar em sala",
@@ -68,7 +69,9 @@ const messages = {
     missingConfig: "Informe nome do jogador e canal da mesa.",
     connectingRelay: "Conectando ao relay...",
     enteringRoom: "Entrando na sala...",
-    invalidRelayMessage: "Relay enviou uma mensagem invalida."
+    invalidRelayMessage: "Relay enviou uma mensagem invalida.",
+    missingRelayKey: "Informe a chave do relay ou use um relay proprio/local.",
+    roomFull: "Sala cheia. O limite e de 20 jogadores."
   },
   en: {
     playerNameLabel: "Player name",
@@ -77,6 +80,7 @@ const messages = {
     channelLabel: "Table channel",
     passwordLabel: "Room password",
     relayLabel: "Relay",
+    relayKeyLabel: "Relay key",
     roomFlowTitle: "Table room",
     createRoom: "Create room",
     joinRoom: "Join room",
@@ -116,7 +120,9 @@ const messages = {
     missingConfig: "Enter a player name and table channel.",
     connectingRelay: "Connecting to relay...",
     enteringRoom: "Entering room...",
-    invalidRelayMessage: "Relay sent an invalid message."
+    invalidRelayMessage: "Relay sent an invalid message.",
+    missingRelayKey: "Enter the relay key or use your own/local relay.",
+    roomFull: "Room is full. The limit is 20 players."
   }
 };
 
@@ -127,6 +133,7 @@ let renderedRoll: { roll: RollEvent; delivery: string } | undefined;
 
 const inputs = {
   serverUrl: requireElement("#serverUrl", HTMLInputElement),
+  relayKey: requireElement("#relayKey", HTMLInputElement),
   playerName: requireElement("#playerName", HTMLInputElement),
   characterName: requireElement("#characterName", HTMLInputElement),
   hideCharacterName: requireElement("#hideCharacterName", HTMLInputElement),
@@ -237,6 +244,7 @@ async function saveSettings(): Promise<void> {
 
 function fillConfig(config: ExtensionConfig): void {
   inputs.serverUrl.value = config.serverUrl;
+  inputs.relayKey.value = config.relayKey;
   inputs.playerName.value = config.playerName;
   inputs.characterName.value = config.characterName;
   inputs.hideCharacterName.checked = config.hideCharacterName;
@@ -249,6 +257,7 @@ function fillConfig(config: ExtensionConfig): void {
 function readConfig(): ExtensionConfig {
   return {
     serverUrl: inputs.serverUrl.value.trim(),
+    relayKey: inputs.relayKey.value.trim(),
     playerName: inputs.playerName.value.trim(),
     characterName: inputs.characterName.value.trim(),
     hideCharacterName: inputs.hideCharacterName.checked,
@@ -477,6 +486,15 @@ function translateConnectionDetail(value: string): string {
   }
   if (value === "Relay enviou uma mensagem invalida.") {
     return t("invalidRelayMessage");
+  }
+  if (value === "Informe a chave do relay ou use um relay proprio/local.") {
+    return t("missingRelayKey");
+  }
+  if (value === "Este relay exige uma chave de acesso.") {
+    return t("missingRelayKey");
+  }
+  if (value === "Sala cheia. O limite e de 20 jogadores.") {
+    return t("roomFull");
   }
 
   const closedMatch = value.match(/^Conexao com (.+) encerrada\. Tentando reconectar\.\.\.$/);

@@ -3,6 +3,7 @@ import { DurableObject } from "cloudflare:workers";
 const protocolVersion = 1;
 const maxMessageBytes = 64 * 1024;
 const maxRoomHistory = 100;
+const maxRoomPlayers = 20;
 const historyStorageKey = "history";
 
 type DiceValue = {
@@ -91,6 +92,7 @@ type ClientSession = {
 
 export interface Env {
   DICE_ROOM_ROOMS: DurableObjectNamespace<DiceRoomDurableObject>;
+  DICE_ROOM_RELAY_KEY?: string;
 }
 
 export default {
@@ -98,11 +100,29 @@ export default {
     const url = new URL(request.url);
 
     if (url.pathname === "/health") {
-      return json({ ok: true, relay: "cloudflare", websocket: true });
+      return json({
+        ok: true,
+        relay: "cloudflare",
+        websocket: true,
+        accessKeyRequired: Boolean(normalizeRelayKey(env.DICE_ROOM_RELAY_KEY)),
+        roomLimit: maxRoomPlayers
+      });
     }
 
     if (request.headers.get("upgrade")?.toLowerCase() !== "websocket") {
       return renderStatusPage(url);
+    }
+
+    const requiredRelayKey = normalizeRelayKey(env.DICE_ROOM_RELAY_KEY);
+    if (requiredRelayKey && url.searchParams.get("key") !== requiredRelayKey) {
+      return json(
+        {
+          ok: false,
+          error: "relay_key_required",
+          message: "Este relay exige uma chave de acesso."
+        },
+        403
+      );
     }
 
     const roomId = normalizeRoomId(url.searchParams.get("room"));
@@ -238,6 +258,14 @@ export class DiceRoomDurableObject extends DurableObject<Env> {
 
     const clientId = hello.clientId.trim();
     const playerName = hello.playerName.trim();
+    const roomPlayerCount = this.getReadyCount(roomId, socket);
+    if (roomPlayerCount >= maxRoomPlayers) {
+      this.send(socket, errorMessage("room_full", `Sala cheia. O limite e de ${maxRoomPlayers} jogadores.`));
+      socket.close(1008, "room_full");
+      this.sessions.delete(socket);
+      return;
+    }
+
     const session: ClientSession = {
       roomId,
       joinedAt: current?.joinedAt || new Date().toISOString(),
@@ -312,6 +340,23 @@ export class DiceRoomDurableObject extends DurableObject<Env> {
     }
 
     return players;
+  }
+
+  private getReadyCount(roomId: string, except?: WebSocket): number {
+    let count = 0;
+
+    for (const socket of this.ctx.getWebSockets()) {
+      if (socket === except) {
+        continue;
+      }
+
+      const session = this.sessions.get(socket) ?? normalizeSession(socket.deserializeAttachment());
+      if (session?.ready && session.roomId === roomId) {
+        count += 1;
+      }
+    }
+
+    return count;
   }
 
   private getReadySession(socket: WebSocket): Required<Pick<ClientSession, "roomId" | "joinedAt" | "clientId" | "playerName">> &
@@ -442,6 +487,11 @@ function normalizeRoomId(value: string | null): string | undefined {
   return roomId && /^[a-f0-9]{32}$/.test(roomId) ? roomId : undefined;
 }
 
+function normalizeRelayKey(value: unknown): string | undefined {
+  const key = typeof value === "string" ? value.trim() : "";
+  return key || undefined;
+}
+
 function normalizeSession(value: unknown): ClientSession | undefined {
   if (!value || typeof value !== "object") {
     return undefined;
@@ -495,6 +545,7 @@ function json(payload: unknown, status = 200): Response {
 
 function renderStatusPage(url: URL): Response {
   const relayUrl = `wss://${url.host}`;
+  const roomLimit = maxRoomPlayers;
   return new Response(
     `<!doctype html>
 <html lang="pt-BR">
@@ -518,6 +569,7 @@ function renderStatusPage(url: URL): Response {
       <h1>Demiplane Dice Room Relay</h1>
       <p>Use este endereco no campo Relay da extensao:</p>
       <p><code>${escapeHtml(relayUrl)}</code></p>
+      <p>Se este relay estiver protegido, informe tambem a chave do relay na extensao. Cada sala aceita ate ${roomLimit} jogadores conectados.</p>
       <p>A sala continua sendo definida pelo nome do canal e pela senha dentro da extensao.</p>
     </main>
   </body>

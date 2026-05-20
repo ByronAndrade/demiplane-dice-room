@@ -55,7 +55,7 @@ const defaultDiceAnimationScale = 0.75;
 const minDiceAnimationScale = 0.45;
 const maxDiceAnimationScale = 1.15;
 const defaultRelayUrl = "wss://demiplane-dice-room-relay.foxbyron.workers.dev";
-const extensionUiVersion = "0.1.77";
+const extensionUiVersion = "0.1.78";
 const pageBridgeMessageSource = "demiplane-dice-room-page";
 const pageDiceRollResponseWaitMs = 1400;
 const pageDiceRollResponseTtlMs = 8_000;
@@ -139,6 +139,7 @@ const messages = {
     hideCharacterName: "Ocultar personagem como Narrador",
     channel: "Canal",
     password: "Senha",
+    relayKey: "Chave do relay",
     save: "Salvar",
     connect: "Conectar",
     disconnect: "Desconectar",
@@ -184,6 +185,8 @@ const messages = {
     enteringRoom: "Entrando na sala...",
     invalidRelayMessage: "Relay enviou uma mensagem invalida.",
     relayUnavailable: "Relay indisponivel",
+    missingRelayKey: "Informe a chave do relay ou use um relay proprio/local.",
+    roomFull: "Sala cheia. O limite e de 20 jogadores.",
     runServer: "No terminal do projeto, rode",
     reconnectHint: "Depois aguarde a reconexao ou clique em Conectar no popup.",
     disconnectedDiagnostic: "Abra o popup da extensao e clique em Conectar. Relay configurado:"
@@ -208,6 +211,7 @@ const messages = {
     hideCharacterName: "Hide character as Storyteller",
     channel: "Channel",
     password: "Password",
+    relayKey: "Relay key",
     save: "Save",
     connect: "Connect",
     disconnect: "Disconnect",
@@ -253,6 +257,8 @@ const messages = {
     enteringRoom: "Entering room...",
     invalidRelayMessage: "Relay sent an invalid message.",
     relayUnavailable: "Relay unavailable",
+    missingRelayKey: "Enter the relay key or use your own/local relay.",
+    roomFull: "Room is full. The limit is 20 players.",
     runServer: "In the project terminal, run",
     reconnectHint: "Then wait for reconnection or click Connect in the popup.",
     disconnectedDiagnostic: "Open the extension popup and click Connect. Configured relay:"
@@ -333,6 +339,7 @@ async function initializeContentScript(): Promise<void> {
 
     const configKeys: Array<keyof ExtensionConfig> = [
       "serverUrl",
+      "relayKey",
       "playerName",
       "characterName",
       "hideCharacterName",
@@ -350,6 +357,7 @@ async function initializeContentScript(): Promise<void> {
     currentConfig = {
       ...previousConfig,
       serverUrl: changes.serverUrl ? String(changes.serverUrl.newValue ?? "") : previousConfig.serverUrl,
+      relayKey: changes.relayKey ? String(changes.relayKey.newValue ?? "") : previousConfig.relayKey,
       playerName: changes.playerName ? String(changes.playerName.newValue ?? "") : previousConfig.playerName,
       characterName: changes.characterName ? String(changes.characterName.newValue ?? "") : previousConfig.characterName,
       hideCharacterName: changes.hideCharacterName ? changes.hideCharacterName.newValue === true : previousConfig.hideCharacterName,
@@ -1926,6 +1934,7 @@ function createPanel(): {
   channelInput: HTMLInputElement;
   passwordInput: HTMLInputElement;
   relayInput: HTMLInputElement;
+  relayKeyInput: HTMLInputElement;
   saveRoomButton: HTMLButtonElement;
   connectRoomButton: HTMLButtonElement;
   disconnectRoomButton: HTMLButtonElement;
@@ -2478,6 +2487,12 @@ function createPanel(): {
           </label>
           <input id="dice-room-relay" data-relay type="url" autocomplete="off" />
         </div>
+        <div class="settings-row">
+          <label for="dice-room-relay-key">
+            <span data-settings-relay-key-label>Chave do relay</span>
+          </label>
+          <input id="dice-room-relay-key" data-relay-key type="password" autocomplete="off" />
+        </div>
         <div class="settings-actions">
           <button data-save-room type="button">Salvar</button>
           <button data-connect-room type="button">Conectar</button>
@@ -2544,6 +2559,7 @@ function createPanel(): {
   const channelInput = shadow.querySelector("[data-channel]");
   const passwordInput = shadow.querySelector("[data-password]");
   const relayInput = shadow.querySelector("[data-relay]");
+  const relayKeyInput = shadow.querySelector("[data-relay-key]");
   const saveRoomButton = shadow.querySelector("[data-save-room]");
   const connectRoomButton = shadow.querySelector("[data-connect-room]");
   const disconnectRoomButton = shadow.querySelector("[data-disconnect-room]");
@@ -2571,6 +2587,7 @@ function createPanel(): {
     !(channelInput instanceof HTMLInputElement) ||
     !(passwordInput instanceof HTMLInputElement) ||
     !(relayInput instanceof HTMLInputElement) ||
+    !(relayKeyInput instanceof HTMLInputElement) ||
     !(saveRoomButton instanceof HTMLButtonElement) ||
     !(connectRoomButton instanceof HTMLButtonElement) ||
     !(disconnectRoomButton instanceof HTMLButtonElement) ||
@@ -2679,6 +2696,7 @@ function createPanel(): {
     channelInput,
     passwordInput,
     relayInput,
+    relayKeyInput,
     saveRoomButton,
     connectRoomButton,
     disconnectRoomButton,
@@ -2729,6 +2747,9 @@ function renderPanel(): void {
   if (activePanelElement !== panel.relayInput) {
     panel.relayInput.value = config.serverUrl;
   }
+  if (activePanelElement !== panel.relayKeyInput) {
+    panel.relayKeyInput.value = config.relayKey;
+  }
   panel.hideCharacterNameInput.checked = config.hideCharacterName;
   panel.connectRoomButton.disabled = connectionState.status === "connecting" || connectionState.status === "connected";
   panel.disconnectRoomButton.disabled = connectionState.status === "disconnected";
@@ -2772,6 +2793,10 @@ function renderPanel(): void {
   const relayLabel = panel.host.shadowRoot?.querySelector("[data-settings-relay-label]");
   if (relayLabel instanceof HTMLSpanElement) {
     relayLabel.textContent = t("relay");
+  }
+  const relayKeyLabel = panel.host.shadowRoot?.querySelector("[data-settings-relay-key-label]");
+  if (relayKeyLabel instanceof HTMLSpanElement) {
+    relayKeyLabel.textContent = t("relayKey");
   }
   panel.saveRoomButton.textContent = t("save");
   panel.connectRoomButton.textContent = t("connect");
@@ -2844,6 +2869,7 @@ async function savePanelRoomConfig(): Promise<void> {
     hideCharacterName: panel.hideCharacterNameInput.checked,
     channel: panel.channelInput.value.trim(),
     password: panel.passwordInput.value,
+    relayKey: panel.relayKeyInput.value.trim(),
     showOwnRolls: panel.showOwnRollsInput.checked,
     enableDiceAnimation: panel.diceAnimationInput.checked
   };
@@ -3031,6 +3057,15 @@ function translateConnectionDetail(value: string): string {
   }
   if (value === "Relay enviou uma mensagem invalida.") {
     return t("invalidRelayMessage");
+  }
+  if (value === "Informe a chave do relay ou use um relay proprio/local.") {
+    return t("missingRelayKey");
+  }
+  if (value === "Este relay exige uma chave de acesso.") {
+    return t("missingRelayKey");
+  }
+  if (value === "Sala cheia. O limite e de 20 jogadores.") {
+    return t("roomFull");
   }
 
   const closedMatch = value.match(/^Conexao com (.+) encerrada\. Tentando reconectar\.\.\.$/);

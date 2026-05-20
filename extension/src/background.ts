@@ -25,6 +25,7 @@ type RuntimeRequest =
 const localHistoryVersion = 7;
 const liveRollStorageKey = "lastLiveRoll";
 const panelUiStorageKey = "diceRoomPanelUi";
+const protectedDefaultRelayHost = "demiplane-dice-room-relay.foxbyron.workers.dev";
 
 let socket: WebSocket | undefined;
 let reconnectTimer: number | undefined;
@@ -112,6 +113,17 @@ async function connect(): Promise<void> {
     return;
   }
 
+  if (requiresRelayKey(config)) {
+    setConnectionState({
+      status: "error",
+      detail: "Informe a chave do relay ou use um relay proprio/local.",
+      roomId: undefined,
+      players: [],
+      connectedAt: undefined
+    });
+    return;
+  }
+
   clearReconnectTimer();
   manualDisconnect = false;
   await saveConfig({ ...config, autoConnect: true });
@@ -132,7 +144,7 @@ async function connect(): Promise<void> {
   const publicCharacterName = await getPublicCharacterName(config);
   let socketUrl: string;
   try {
-    socketUrl = createRoomSocketUrl(config.serverUrl, await createRoomId(config.channel, config.password));
+    socketUrl = createRoomSocketUrl(config.serverUrl, await createRoomId(config.channel, config.password), config.relayKey);
   } catch {
     setConnectionState({
       status: "error",
@@ -482,6 +494,18 @@ function broadcastHistory(): void {
 function sendSocketMessage(message: unknown): void {
   if (socket?.readyState === WebSocket.OPEN) {
     socket.send(JSON.stringify(message));
+  }
+}
+
+function requiresRelayKey(config: ExtensionConfig): boolean {
+  if (config.relayKey) {
+    return false;
+  }
+
+  try {
+    return new URL(config.serverUrl).hostname === protectedDefaultRelayHost;
+  } catch {
+    return false;
   }
 }
 
