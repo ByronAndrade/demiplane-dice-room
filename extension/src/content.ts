@@ -55,7 +55,7 @@ const defaultDiceAnimationScale = 0.75;
 const minDiceAnimationScale = 0.45;
 const maxDiceAnimationScale = 1.15;
 const defaultRelayUrl = "wss://demiplane-dice-room-relay.foxbyron.workers.dev";
-const extensionUiVersion = "0.1.79";
+const extensionUiVersion = "0.1.80";
 const pageBridgeMessageSource = "demiplane-dice-room-page";
 const pageDiceRollResponseWaitMs = 1400;
 const pageDiceRollResponseTtlMs = 8_000;
@@ -132,6 +132,12 @@ const messages = {
     openSettings: "Abrir configuracoes do painel",
     closeSettings: "Fechar configuracoes do painel",
     openDiagnostic: "Abrir diagnostico de conexao",
+    roomMode: "Modo",
+    createRoom: "Criar",
+    joinRoom: "Entrar",
+    hostRole: "Narrador",
+    playersTooltipEmpty: "Nenhum jogador conectado",
+    leaveHostedRoomConfirm: "Voce criou esta sala. Se sair agora, a sala sera desfeita para todos os jogadores. Sair mesmo assim?",
     waiting: "Aguardando rolagens",
     roomSettings: "Sala da mesa",
     playerName: "Nome do jogador",
@@ -187,6 +193,8 @@ const messages = {
     relayUnavailable: "Relay indisponivel",
     missingRelayKey: "Informe a chave do relay ou use um relay proprio/local.",
     roomFull: "Sala cheia. O limite e de 20 jogadores.",
+    roomClosed: "O narrador saiu e a sala foi desfeita.",
+    roomHostExists: "Esta sala ja tem um narrador conectado.",
     runServer: "No terminal do projeto, rode",
     reconnectHint: "Depois aguarde a reconexao ou clique em Conectar no popup.",
     disconnectedDiagnostic: "Abra o popup da extensao e clique em Conectar. Relay configurado:"
@@ -204,6 +212,12 @@ const messages = {
     openSettings: "Open panel settings",
     closeSettings: "Close panel settings",
     openDiagnostic: "Open connection diagnostics",
+    roomMode: "Mode",
+    createRoom: "Create",
+    joinRoom: "Join",
+    hostRole: "Storyteller",
+    playersTooltipEmpty: "No players connected",
+    leaveHostedRoomConfirm: "You created this room. Leaving now will close it for every player. Leave anyway?",
     waiting: "Waiting for rolls",
     roomSettings: "Table room",
     playerName: "Player name",
@@ -259,6 +273,8 @@ const messages = {
     relayUnavailable: "Relay unavailable",
     missingRelayKey: "Enter the relay key or use your own/local relay.",
     roomFull: "Room is full. The limit is 20 players.",
+    roomClosed: "The Storyteller left and the room was closed.",
+    roomHostExists: "This room already has a Storyteller connected.",
     runServer: "In the project terminal, run",
     reconnectHint: "Then wait for reconnection or click Connect in the popup.",
     disconnectedDiagnostic: "Open the extension popup and click Connect. Configured relay:"
@@ -299,6 +315,7 @@ async function initializeContentScript(): Promise<void> {
   window.setTimeout(baselineCurrentRolls, 2200);
   document.addEventListener("pointerdown", handlePotentialRollAction, true);
   document.addEventListener("pointerdown", unlockDiceAudio, { capture: true, once: true });
+  window.addEventListener("beforeunload", warnBeforeHostedRoomCloses);
 
   void sendRuntimeMessage<{ ok: true; state?: ConnectionState; recentRolls?: StoredRoll[]; config?: ExtensionConfig }>({
     kind: "content:ready"
@@ -342,6 +359,7 @@ async function initializeContentScript(): Promise<void> {
       "relayKey",
       "playerName",
       "characterName",
+      "roomRole",
       "hideCharacterName",
       "channel",
       "password",
@@ -360,6 +378,7 @@ async function initializeContentScript(): Promise<void> {
       relayKey: changes.relayKey ? String(changes.relayKey.newValue ?? "") : previousConfig.relayKey,
       playerName: changes.playerName ? String(changes.playerName.newValue ?? "") : previousConfig.playerName,
       characterName: changes.characterName ? String(changes.characterName.newValue ?? "") : previousConfig.characterName,
+      roomRole: changes.roomRole ? (changes.roomRole.newValue === "host" ? "host" : "player") : previousConfig.roomRole,
       hideCharacterName: changes.hideCharacterName ? changes.hideCharacterName.newValue === true : previousConfig.hideCharacterName,
       channel: changes.channel ? String(changes.channel.newValue ?? "") : previousConfig.channel,
       password: changes.password ? String(changes.password.newValue ?? "") : previousConfig.password,
@@ -809,15 +828,13 @@ function collectRollCandidates(): Array<{ element: Element; captured: CapturedRo
   );
 
   const candidates: Array<{ element: Element; captured: CapturedRoll }> = [];
-  const signatures = new Set<string>();
 
   for (const element of smallestElements) {
     const captured = extractRoll(element);
-    if (!captured || signatures.has(captured.signature)) {
+    if (!captured) {
       continue;
     }
 
-    signatures.add(captured.signature);
     candidates.push({ element, captured });
   }
 
@@ -1819,9 +1836,12 @@ function addRoll(roll: RollEvent, origin: "local" | "remote", delivery: string):
   rolls.splice(20);
   renderPanel();
 
-  if (delivery !== "history" && shouldShowRoll({ roll, origin, delivery })) {
-    showLiveRoll(roll, delivery);
-    playDiceAnimation(roll);
+  if (delivery !== "history") {
+    const shouldShowToast = shouldShowLiveRoll({ roll, origin, delivery });
+    const animated = playDiceAnimation(roll, shouldShowToast ? () => showLiveRoll(roll, delivery) : undefined);
+    if (shouldShowToast && !animated) {
+      showLiveRoll(roll, delivery);
+    }
   }
 }
 
@@ -1895,6 +1915,10 @@ function shouldShowRoll(item: { roll: RollEvent; origin: "local" | "remote"; del
   return shouldShowOwnRolls() || hasSpecialOutcome(item.roll);
 }
 
+function shouldShowLiveRoll(item: { roll: RollEvent; origin: "local" | "remote"; delivery: string }): boolean {
+  return shouldShowRoll(item);
+}
+
 function shouldShowOwnRolls(): boolean {
   return currentConfig?.showOwnRolls === true;
 }
@@ -1919,6 +1943,7 @@ function isDisplayableRoll(roll: RollEvent): boolean {
 function createPanel(): {
   host: HTMLDivElement;
   status: HTMLButtonElement;
+  players: HTMLSpanElement;
   count: HTMLSpanElement;
   countLabel: HTMLSpanElement;
   list: HTMLOListElement;
@@ -1928,6 +1953,8 @@ function createPanel(): {
   header: HTMLElement;
   settings: HTMLButtonElement;
   settingsPanel: HTMLDivElement;
+  hostRoomButton: HTMLButtonElement;
+  joinRoomButton: HTMLButtonElement;
   playerNameInput: HTMLInputElement;
   characterNameInput: HTMLInputElement;
   hideCharacterNameInput: HTMLInputElement;
@@ -2054,6 +2081,21 @@ function createPanel(): {
         font-weight: 800;
         letter-spacing: 0;
         white-space: nowrap;
+      }
+
+      .players-chip {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        min-width: 24px;
+        height: 22px;
+        border: 1px solid rgba(190, 202, 220, 0.18);
+        border-radius: 999px;
+        padding: 0 7px;
+        color: #cbd5e1;
+        background: rgba(255, 255, 255, 0.045);
+        font-size: 11px;
+        font-weight: 850;
       }
 
       .status {
@@ -2254,6 +2296,35 @@ function createPanel(): {
 
       .settings-row input[type="checkbox"] {
         width: auto;
+      }
+
+      .mode-actions {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 7px;
+      }
+
+      .mode-actions button {
+        min-height: 30px;
+        border: 1px solid #384251;
+        border-radius: 6px;
+        padding: 6px 8px;
+        color: #cbd5e1;
+        background: #202730;
+        font: inherit;
+        font-weight: 850;
+        cursor: pointer;
+      }
+
+      .mode-actions button.active {
+        border-color: #2f7255;
+        color: #bdf4d2;
+        background: #183526;
+      }
+
+      .mode-actions button:disabled {
+        cursor: default;
+        opacity: 0.55;
       }
 
       .checkbox-row {
@@ -2457,6 +2528,7 @@ function createPanel(): {
         <div class="header-actions">
           <button data-status class="status" type="button" title="Abrir diagnostico">Desconectado</button>
           <span class="version-chip" title="Versao da extensao">v${extensionUiVersion}</span>
+          <span data-players class="players-chip" title="Jogadores na sala">0</span>
           <button data-settings-button class="icon-button" type="button" aria-label="Abrir configuracoes" data-tooltip="Abrir configuracoes">⚙</button>
           <button data-toggle class="toggle" type="button" aria-label="Abrir historico" data-tooltip="Abrir historico">^</button>
         </div>
@@ -2464,6 +2536,15 @@ function createPanel(): {
       <div data-diagnostic class="diagnostic"></div>
       <div data-settings-panel class="settings-panel">
         <p data-settings-room-label class="settings-title">Sala da mesa</p>
+        <div class="settings-row">
+          <label>
+            <span data-settings-room-mode-label>Modo</span>
+          </label>
+          <div class="mode-actions">
+            <button data-host-room type="button">Criar</button>
+            <button data-join-room type="button">Entrar</button>
+          </div>
+        </div>
         <div class="settings-row">
           <label for="dice-room-player-name">
             <span data-settings-player-label>Nome do jogador</span>
@@ -2558,6 +2639,7 @@ function createPanel(): {
   const panelRoot = shadow.querySelector(".panel");
   const header = shadow.querySelector(".header");
   const status = shadow.querySelector("[data-status]");
+  const players = shadow.querySelector("[data-players]");
   const count = shadow.querySelector("[data-count]");
   const countLabel = shadow.querySelector("[data-count-label]");
   const list = shadow.querySelector("[data-list]");
@@ -2565,6 +2647,8 @@ function createPanel(): {
   const diagnostic = shadow.querySelector("[data-diagnostic]");
   const settings = shadow.querySelector("[data-settings-button]");
   const settingsPanel = shadow.querySelector("[data-settings-panel]");
+  const hostRoomButton = shadow.querySelector("[data-host-room]");
+  const joinRoomButton = shadow.querySelector("[data-join-room]");
   const opacityInput = shadow.querySelector("[data-opacity]");
   const playerNameInput = shadow.querySelector("[data-player-name]");
   const characterNameInput = shadow.querySelector("[data-character-name]");
@@ -2586,6 +2670,7 @@ function createPanel(): {
     !(panelRoot instanceof HTMLElement) ||
     !(header instanceof HTMLElement) ||
     !(status instanceof HTMLButtonElement) ||
+    !(players instanceof HTMLSpanElement) ||
     !(count instanceof HTMLSpanElement) ||
     !(countLabel instanceof HTMLSpanElement) ||
     !(list instanceof HTMLOListElement) ||
@@ -2593,6 +2678,8 @@ function createPanel(): {
     !(diagnostic instanceof HTMLDivElement) ||
     !(settings instanceof HTMLButtonElement) ||
     !(settingsPanel instanceof HTMLDivElement) ||
+    !(hostRoomButton instanceof HTMLButtonElement) ||
+    !(joinRoomButton instanceof HTMLButtonElement) ||
     !(opacityInput instanceof HTMLInputElement) ||
     !(playerNameInput instanceof HTMLInputElement) ||
     !(characterNameInput instanceof HTMLInputElement) ||
@@ -2633,6 +2720,34 @@ function createPanel(): {
     void savePanelUiState();
   });
 
+  hostRoomButton.addEventListener("click", () => {
+    if (isRoomLocked()) {
+      return;
+    }
+
+    currentConfig = {
+      ...(currentConfig ?? defaultConfig),
+      roomRole: "host",
+      hideCharacterName: panel?.hideCharacterNameInput.checked ?? false
+    };
+    renderPanel();
+    void savePanelRoomConfig();
+  });
+
+  joinRoomButton.addEventListener("click", () => {
+    if (isRoomLocked()) {
+      return;
+    }
+
+    currentConfig = {
+      ...(currentConfig ?? defaultConfig),
+      roomRole: "player",
+      hideCharacterName: false
+    };
+    renderPanel();
+    void savePanelRoomConfig();
+  });
+
   saveRoomButton.addEventListener("click", () => {
     void savePanelRoomConfig();
   });
@@ -2642,6 +2757,10 @@ function createPanel(): {
   });
 
   disconnectRoomButton.addEventListener("click", () => {
+    if (!confirmHostedRoomExit()) {
+      return;
+    }
+
     void sendRuntimeMessage({ kind: "popup:disconnect" });
   });
 
@@ -2693,6 +2812,7 @@ function createPanel(): {
   return {
     host,
     status,
+    players,
     count,
     countLabel,
     list,
@@ -2702,6 +2822,8 @@ function createPanel(): {
     header,
     settings,
     settingsPanel,
+    hostRoomButton,
+    joinRoomButton,
     opacityInput,
     playerNameInput,
     characterNameInput,
@@ -2734,6 +2856,9 @@ function renderPanel(): void {
   panel.status.textContent = statusLabel(displayStatus);
   panel.status.className = `status status-${displayStatus}`;
   panel.status.title = t("openDiagnostic");
+  panel.players.textContent = String(connectionState.players.length);
+  panel.players.hidden = connectionState.status !== "connected";
+  panel.players.title = formatPlayersTooltip(connectionState.players);
   panel.count.textContent = String(unreadRolls.length);
   panel.countLabel.textContent = t("unreadCount", unreadRolls.length);
   panel.countLabel.hidden = unreadRolls.length === 0;
@@ -2763,7 +2888,18 @@ function renderPanel(): void {
   if (activePanelElement !== panel.relayKeyInput) {
     panel.relayKeyInput.value = config.relayKey;
   }
-  panel.hideCharacterNameInput.checked = config.hideCharacterName;
+  const roomLocked = isRoomLocked();
+  const isHost = config.roomRole === "host";
+  panel.hostRoomButton.classList.toggle("active", isHost);
+  panel.joinRoomButton.classList.toggle("active", !isHost);
+  panel.hostRoomButton.disabled = roomLocked;
+  panel.joinRoomButton.disabled = roomLocked;
+  panel.channelInput.disabled = roomLocked;
+  panel.passwordInput.disabled = roomLocked;
+  panel.relayInput.disabled = roomLocked;
+  panel.relayKeyInput.disabled = roomLocked;
+  panel.hideCharacterNameInput.disabled = roomLocked || !isHost;
+  panel.hideCharacterNameInput.checked = isHost && config.hideCharacterName;
   panel.connectRoomButton.disabled = connectionState.status === "connecting" || connectionState.status === "connected";
   panel.disconnectRoomButton.disabled = connectionState.status === "disconnected";
   panel.opacityInput.value = String(panelOpacity);
@@ -2783,6 +2919,12 @@ function renderPanel(): void {
   if (roomLabel instanceof HTMLParagraphElement) {
     roomLabel.textContent = t("roomSettings");
   }
+  const roomModeLabel = panel.host.shadowRoot?.querySelector("[data-settings-room-mode-label]");
+  if (roomModeLabel instanceof HTMLSpanElement) {
+    roomModeLabel.textContent = t("roomMode");
+  }
+  panel.hostRoomButton.textContent = t("createRoom");
+  panel.joinRoomButton.textContent = t("joinRoom");
   const playerLabel = panel.host.shadowRoot?.querySelector("[data-settings-player-label]");
   if (playerLabel instanceof HTMLSpanElement) {
     playerLabel.textContent = t("playerName");
@@ -2869,6 +3011,43 @@ function renderPanel(): void {
   panel.list.innerHTML = visibleRolls.map(renderRoll).join("");
 }
 
+function isRoomLocked(): boolean {
+  return connectionState.status === "connected" || connectionState.status === "connecting";
+}
+
+function confirmHostedRoomExit(): boolean {
+  const config = currentConfig ?? defaultConfig;
+  if (config.roomRole !== "host" || connectionState.status !== "connected") {
+    return true;
+  }
+
+  return window.confirm(t("leaveHostedRoomConfirm"));
+}
+
+function warnBeforeHostedRoomCloses(event: BeforeUnloadEvent): void {
+  const config = currentConfig ?? defaultConfig;
+  if (config.roomRole !== "host" || connectionState.status !== "connected") {
+    return;
+  }
+
+  event.preventDefault();
+  event.returnValue = "";
+}
+
+function formatPlayersTooltip(players: ConnectionState["players"]): string {
+  if (players.length === 0) {
+    return t("playersTooltipEmpty");
+  }
+
+  return players
+    .map((player) => {
+      const displayName = player.characterName || player.playerName;
+      const roleSuffix = player.roomRole === "host" ? ` (${t("hostRole")})` : "";
+      return `${displayName}${roleSuffix}`;
+    })
+    .join("\n");
+}
+
 async function savePanelRoomConfig(): Promise<void> {
   if (!panel) {
     return;
@@ -2879,7 +3058,8 @@ async function savePanelRoomConfig(): Promise<void> {
     serverUrl: panel.relayInput.value.trim(),
     playerName: panel.playerNameInput.value.trim(),
     characterName: panel.characterNameInput.value.trim(),
-    hideCharacterName: panel.hideCharacterNameInput.checked,
+    roomRole: panel.hostRoomButton.classList.contains("active") ? "host" : "player",
+    hideCharacterName: panel.hostRoomButton.classList.contains("active") && panel.hideCharacterNameInput.checked,
     channel: panel.channelInput.value.trim(),
     password: panel.passwordInput.value,
     relayKey: panel.relayKeyInput.value.trim(),
@@ -3079,6 +3259,12 @@ function translateConnectionDetail(value: string): string {
   }
   if (value === "Sala cheia. O limite e de 20 jogadores.") {
     return t("roomFull");
+  }
+  if (value === "O narrador saiu e a sala foi desfeita.") {
+    return t("roomClosed");
+  }
+  if (value === "Esta sala ja tem um narrador conectado.") {
+    return t("roomHostExists");
   }
 
   const closedMatch = value.match(/^Conexao com (.+) encerrada\. Tentando reconectar\.\.\.$/);
@@ -3305,6 +3491,7 @@ type DiceAnimationLayer = {
   desiredResultNormal: THREE.Vector3;
   raycaster: THREE.Raycaster;
   pointer: THREE.Vector2;
+  batchCompletionCallbacks: Map<number, () => void>;
   drag?: DiceDragState;
   animationFrame: number;
   lastFrame: number;
@@ -3468,6 +3655,7 @@ function createDiceAnimationLayer(): DiceAnimationLayer {
     desiredResultNormal: new THREE.Vector3(0, 0, 1),
     raycaster: new THREE.Raycaster(),
     pointer: new THREE.Vector2(),
+    batchCompletionCallbacks: new Map<number, () => void>(),
     animationFrame: 0,
     lastFrame: performance.now()
   };
@@ -3481,14 +3669,31 @@ function createDiceAnimationLayer(): DiceAnimationLayer {
   return layer;
 }
 
-function playDiceAnimation(roll: RollEvent): void {
+function playDiceAnimation(roll: RollEvent, onComplete?: () => void): boolean {
   if (!shouldAnimateDice() || !diceAnimationLayer || roll.dice.length === 0) {
-    return;
+    return false;
   }
 
   const layer = diceAnimationLayer;
   const dice = roll.dice.slice(0, maxAnimatedDice);
   const batchId = (diceAnimationBatchSequence += 1);
+  if (onComplete) {
+    let fallbackTimer = 0;
+    let completed = false;
+    const complete = () => {
+      if (completed) {
+        return;
+      }
+      completed = true;
+      window.clearTimeout(fallbackTimer);
+      layer.batchCompletionCallbacks.delete(batchId);
+      onComplete();
+    };
+    fallbackTimer = window.setTimeout(() => {
+      complete();
+    }, diceHardSettleMs + diceAnimationMs + diceFadeMs + 2500);
+    layer.batchCompletionCallbacks.set(batchId, complete);
+  }
   const animatedDice = dice.map((die, index) => createAnimatedDie(die, index, dice.length, batchId, layer));
   for (const die of animatedDice) {
     layer.activeDice.add(die);
@@ -3496,6 +3701,7 @@ function playDiceAnimation(roll: RollEvent): void {
   }
   playDiceRollSound(animatedDice.length);
   ensureDiceAnimationLoop();
+  return true;
 }
 
 function ensureDiceAnimationLoop(): void {
@@ -3695,9 +3901,11 @@ function updateAnimatedDice(layer: DiceAnimationLayer, now: number, dt: number):
     }
 
     if (die.resultRevealed && resultAge > diceAnimationMs) {
+      const batchId = die.batchId;
       layer.scene.remove(die.group);
       disposeAnimatedDie(die.group, layer.d10Model);
       layer.activeDice.delete(die);
+      completeDiceBatchIfDone(layer, batchId);
     }
   }
 
@@ -3706,6 +3914,19 @@ function updateAnimatedDice(layer: DiceAnimationLayer, now: number, dt: number):
   for (const die of layer.activeDice) {
     die.group.position.set(die.x, die.y, die.z);
   }
+}
+
+function completeDiceBatchIfDone(layer: DiceAnimationLayer, batchId: number): void {
+  if ([...layer.activeDice].some((die) => die.batchId === batchId)) {
+    return;
+  }
+
+  const complete = layer.batchCompletionCallbacks.get(batchId);
+  if (!complete) {
+    return;
+  }
+
+  complete();
 }
 
 function createD10Geometry(): D10Model {

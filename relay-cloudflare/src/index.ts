@@ -17,6 +17,7 @@ type PresencePlayer = {
   clientId: string;
   playerName: string;
   characterName?: string;
+  roomRole?: "host" | "player";
   joinedAt: string;
 };
 
@@ -43,6 +44,7 @@ type HelloMessage = {
   clientId: string;
   playerName: string;
   characterName?: string;
+  roomRole?: "host" | "player";
   channel: string;
   password?: string;
 };
@@ -87,6 +89,7 @@ type ClientSession = {
   clientId?: string;
   playerName?: string;
   characterName?: string;
+  roomRole?: "host" | "player";
   ready?: boolean;
 };
 
@@ -234,6 +237,11 @@ export class DiceRoomDurableObject extends DurableObject<Env> {
     socket.close(code, reason);
 
     if (session?.ready) {
+      if (session.roomRole === "host") {
+        void this.closeRoom(session.roomId);
+        return;
+      }
+
       this.broadcastPresence(session.roomId);
     }
   }
@@ -243,6 +251,11 @@ export class DiceRoomDurableObject extends DurableObject<Env> {
     this.sessions.delete(socket);
 
     if (session?.ready) {
+      if (session.roomRole === "host") {
+        void this.closeRoom(session.roomId);
+        return;
+      }
+
       this.broadcastPresence(session.roomId);
     }
   }
@@ -266,12 +279,21 @@ export class DiceRoomDurableObject extends DurableObject<Env> {
       return;
     }
 
+    const roomRole = hello.roomRole === "host" ? "host" : "player";
+    if (roomRole === "host" && this.hasRoomHost(roomId, socket)) {
+      this.send(socket, errorMessage("room_host_exists", "Esta sala ja tem um narrador conectado."));
+      socket.close(1008, "room_host_exists");
+      this.sessions.delete(socket);
+      return;
+    }
+
     const session: ClientSession = {
       roomId,
       joinedAt: current?.joinedAt || new Date().toISOString(),
       clientId,
       playerName,
       characterName: hello.characterName?.trim() || undefined,
+      roomRole,
       ready: true
     };
 
@@ -335,11 +357,27 @@ export class DiceRoomDurableObject extends DurableObject<Env> {
         clientId: session.clientId,
         playerName: session.playerName,
         characterName: session.characterName,
+        roomRole: session.roomRole ?? "player",
         joinedAt: session.joinedAt
       });
     }
 
     return players;
+  }
+
+  private hasRoomHost(roomId: string, except?: WebSocket): boolean {
+    for (const socket of this.ctx.getWebSockets()) {
+      if (socket === except) {
+        continue;
+      }
+
+      const session = this.sessions.get(socket) ?? normalizeSession(socket.deserializeAttachment());
+      if (session?.ready && session.roomId === roomId && session.roomRole === "host") {
+        return true;
+      }
+    }
+
+    return false;
   }
 
   private getReadyCount(roomId: string, except?: WebSocket): number {
@@ -383,6 +421,21 @@ export class DiceRoomDurableObject extends DurableObject<Env> {
     const history = await this.ctx.storage.get<RollEvent[]>(historyStorageKey);
     return Array.isArray(history) ? history.filter(isUsefulRoll) : [];
   }
+
+  private async closeRoom(roomId: string): Promise<void> {
+    for (const socket of this.ctx.getWebSockets()) {
+      const session = this.sessions.get(socket) ?? normalizeSession(socket.deserializeAttachment());
+      if (session?.roomId !== roomId || !session.ready) {
+        continue;
+      }
+
+      this.send(socket, errorMessage("room_closed", "O narrador saiu e a sala foi desfeita."));
+      this.sessions.delete(socket);
+      socket.close(1001, "room_closed");
+    }
+
+    await this.ctx.storage.delete(historyStorageKey);
+  }
 }
 
 function normalizeRoll(
@@ -409,6 +462,7 @@ function isHelloMessage(value: unknown): value is HelloMessage {
     isBoundedString(message.clientId, 8, 120) &&
     isBoundedString(message.playerName, 1, 80) &&
     isBoundedString(message.channel, 1, 120) &&
+    (message.roomRole === undefined || message.roomRole === "host" || message.roomRole === "player") &&
     (message.characterName === undefined || isBoundedString(message.characterName, 0, 80)) &&
     (message.password === undefined || isBoundedString(message.password, 0, 240))
   );
@@ -508,6 +562,7 @@ function normalizeSession(value: unknown): ClientSession | undefined {
     clientId: typeof session.clientId === "string" ? session.clientId : undefined,
     playerName: typeof session.playerName === "string" ? session.playerName : undefined,
     characterName: typeof session.characterName === "string" ? session.characterName : undefined,
+    roomRole: session.roomRole === "host" ? "host" : "player",
     ready: session.ready === true
   };
 }

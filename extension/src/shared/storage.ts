@@ -7,6 +7,7 @@ export type ExtensionConfig = {
   relayKey: string;
   playerName: string;
   characterName: string;
+  roomRole: "host" | "player";
   channel: string;
   password: string;
   autoConnect: boolean;
@@ -20,6 +21,7 @@ export const defaultConfig: ExtensionConfig = {
   relayKey: "",
   playerName: "",
   characterName: "",
+  roomRole: "player",
   channel: "",
   password: "",
   autoConnect: false,
@@ -61,6 +63,7 @@ function normalizeConfig(value: Partial<ExtensionConfig>): ExtensionConfig {
     relayKey: cleanString(value.relayKey),
     playerName: cleanString(value.playerName),
     characterName: cleanString(value.characterName),
+    roomRole: value.roomRole === "host" ? "host" : "player",
     channel: cleanString(value.channel),
     password: typeof value.password === "string" ? value.password : "",
     autoConnect: value.autoConnect === true,

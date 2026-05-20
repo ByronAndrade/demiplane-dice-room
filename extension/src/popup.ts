@@ -33,8 +33,11 @@ const messages = {
     roomFlowTitle: "Sala da mesa",
     createRoom: "Criar sala",
     joinRoom: "Entrar em sala",
+    hostRole: "Narrador",
+    playersTooltipEmpty: "Nenhum jogador conectado",
     hostHint: "Para criar: escolha nome/senha e conecte em um relay online. Passe o nome e a senha para a mesa. O launcher local fica como fallback.",
     joinHint: "Para entrar: use o nome e a senha da sala que o narrador criou. Se todos usam o relay online, nao precisa abrir servidor local.",
+    leaveHostedRoomConfirm: "Voce criou esta sala. Se sair agora, a sala sera desfeita para todos os jogadores. Sair mesmo assim?",
     showOwnRollsLabel: "Mostrar minhas rolagens",
     showOwnRollsHelp: "O Demiplane ja mostra sua rolagem; deixe desligado para ver so a sala. Interpretacoes especiais ainda aparecem.",
     enableDiceAnimationLabel: "Animacao dos dados",
@@ -71,7 +74,9 @@ const messages = {
     enteringRoom: "Entrando na sala...",
     invalidRelayMessage: "Relay enviou uma mensagem invalida.",
     missingRelayKey: "Informe a chave do relay ou use um relay proprio/local.",
-    roomFull: "Sala cheia. O limite e de 20 jogadores."
+    roomFull: "Sala cheia. O limite e de 20 jogadores.",
+    roomClosed: "O narrador saiu e a sala foi desfeita.",
+    roomHostExists: "Esta sala ja tem um narrador conectado."
   },
   en: {
     playerNameLabel: "Player name",
@@ -84,8 +89,11 @@ const messages = {
     roomFlowTitle: "Table room",
     createRoom: "Create room",
     joinRoom: "Join room",
+    hostRole: "Storyteller",
+    playersTooltipEmpty: "No players connected",
     hostHint: "To create: choose a room name/password and connect to an online relay. Share the name and password with the table. The local launcher remains a fallback.",
     joinHint: "To join: use the room name and password created by the Storyteller. If everyone uses the online relay, no local server is needed.",
+    leaveHostedRoomConfirm: "You created this room. Leaving now will close it for every player. Leave anyway?",
     showOwnRollsLabel: "Show my own rolls",
     showOwnRollsHelp: "Demiplane already shows your roll; leave this off to see only the room. Special interpretations still appear.",
     enableDiceAnimationLabel: "Dice animation",
@@ -122,7 +130,9 @@ const messages = {
     enteringRoom: "Entering room...",
     invalidRelayMessage: "Relay sent an invalid message.",
     missingRelayKey: "Enter the relay key or use your own/local relay.",
-    roomFull: "Room is full. The limit is 20 players."
+    roomFull: "Room is full. The limit is 20 players.",
+    roomClosed: "The Storyteller left and the room was closed.",
+    roomHostExists: "This room already has a Storyteller connected."
   }
 };
 
@@ -165,6 +175,10 @@ connectButton.addEventListener("click", () => {
 });
 
 disconnectButton.addEventListener("click", () => {
+  if (!confirmHostedRoomExit()) {
+    return;
+  }
+
   void sendRuntimeMessage({ kind: "popup:disconnect" });
 });
 
@@ -175,6 +189,7 @@ createRoomButton.addEventListener("click", () => {
 
 joinRoomButton.addEventListener("click", () => {
   roomMode = "join";
+  inputs.hideCharacterName.checked = false;
   updateRoomMode();
 });
 
@@ -247,11 +262,13 @@ function fillConfig(config: ExtensionConfig): void {
   inputs.relayKey.value = config.relayKey;
   inputs.playerName.value = config.playerName;
   inputs.characterName.value = config.characterName;
-  inputs.hideCharacterName.checked = config.hideCharacterName;
+  roomMode = config.roomRole === "host" ? "host" : "join";
+  inputs.hideCharacterName.checked = roomMode === "host" && config.hideCharacterName;
   inputs.channel.value = config.channel;
   inputs.password.value = config.password;
   inputs.showOwnRolls.checked = config.showOwnRolls;
   inputs.enableDiceAnimation.checked = config.enableDiceAnimation;
+  updateRoomMode();
 }
 
 function readConfig(): ExtensionConfig {
@@ -260,7 +277,8 @@ function readConfig(): ExtensionConfig {
     relayKey: inputs.relayKey.value.trim(),
     playerName: inputs.playerName.value.trim(),
     characterName: inputs.characterName.value.trim(),
-    hideCharacterName: inputs.hideCharacterName.checked,
+    roomRole: roomMode === "host" ? "host" : "player",
+    hideCharacterName: roomMode === "host" && inputs.hideCharacterName.checked,
     channel: inputs.channel.value.trim(),
     password: inputs.password.value,
     autoConnect: false,
@@ -275,9 +293,11 @@ function renderState(state: ConnectionState): void {
   statusPill.textContent = statusLabel(displayStatus);
   statusPill.className = `status status-${displayStatus}`;
   playerCount.textContent = String(state.players.length);
+  playerCount.title = formatPlayersTooltip(state.players);
   detail.textContent = getDisplayDetail(state);
   connectButton.disabled = state.status === "connecting" || state.status === "connected";
   disconnectButton.disabled = state.status === "disconnected";
+  updateRoomLock(state.status === "connected" || state.status === "connecting");
 }
 
 function renderLastRoll(roll: RollEvent, delivery: string): void {
@@ -335,6 +355,42 @@ function updateRoomMode(): void {
   createRoomButton.classList.toggle("active", roomMode === "host");
   joinRoomButton.classList.toggle("active", roomMode === "join");
   roomModeHint.textContent = roomMode === "host" ? t("hostHint") : t("joinHint");
+  inputs.hideCharacterName.disabled = roomMode !== "host" || lastState?.status === "connected" || lastState?.status === "connecting";
+  if (roomMode !== "host") {
+    inputs.hideCharacterName.checked = false;
+  }
+}
+
+function updateRoomLock(locked: boolean): void {
+  createRoomButton.disabled = locked;
+  joinRoomButton.disabled = locked;
+  inputs.channel.disabled = locked;
+  inputs.password.disabled = locked;
+  inputs.serverUrl.disabled = locked;
+  inputs.relayKey.disabled = locked;
+  inputs.hideCharacterName.disabled = locked || roomMode !== "host";
+}
+
+function confirmHostedRoomExit(): boolean {
+  if (roomMode !== "host" || lastState?.status !== "connected") {
+    return true;
+  }
+
+  return window.confirm(t("leaveHostedRoomConfirm"));
+}
+
+function formatPlayersTooltip(players: ConnectionState["players"]): string {
+  if (players.length === 0) {
+    return t("playersTooltipEmpty");
+  }
+
+  return players
+    .map((player) => {
+      const displayName = player.characterName || player.playerName;
+      const roleSuffix = player.roomRole === "host" ? ` (${t("hostRole")})` : "";
+      return `${displayName}${roleSuffix}`;
+    })
+    .join("\n");
 }
 
 function shouldShowRoll(roll: RollEvent, delivery: string): boolean {
@@ -495,6 +551,12 @@ function translateConnectionDetail(value: string): string {
   }
   if (value === "Sala cheia. O limite e de 20 jogadores.") {
     return t("roomFull");
+  }
+  if (value === "O narrador saiu e a sala foi desfeita.") {
+    return t("roomClosed");
+  }
+  if (value === "Esta sala ja tem um narrador conectado.") {
+    return t("roomHostExists");
   }
 
   const closedMatch = value.match(/^Conexao com (.+) encerrada\. Tentando reconectar\.\.\.$/);

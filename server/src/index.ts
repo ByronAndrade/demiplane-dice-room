@@ -24,6 +24,7 @@ type Client = {
   clientId: string;
   playerName: string;
   characterName?: string;
+  roomRole: "host" | "player";
   roomId: string;
   joinedAt: string;
 };
@@ -204,11 +205,18 @@ function joinRoom(socket: WebSocket, hello: HelloMessage, previous?: Client): Cl
     return undefined;
   }
 
+  if (hello.roomRole === "host" && hasRoomHost(roomId)) {
+    send(socket, errorMessage("room_host_exists", "Esta sala ja tem um narrador conectado."));
+    socket.close(1008, "room_host_exists");
+    return undefined;
+  }
+
   const client: Client = {
     socket,
     clientId: hello.clientId,
     playerName: hello.playerName,
     characterName: hello.characterName || undefined,
+    roomRole: hello.roomRole,
     roomId,
     joinedAt: new Date().toISOString()
   };
@@ -235,6 +243,11 @@ function leaveRoom(client: Client): void {
     return;
   }
 
+  if (client.roomRole === "host") {
+    closeRoom(client.roomId);
+    return;
+  }
+
   room.delete(client);
 
   if (room.size === 0) {
@@ -243,6 +256,21 @@ function leaveRoom(client: Client): void {
   }
 
   broadcastPresence(client.roomId);
+}
+
+function closeRoom(roomId: string): void {
+  const room = rooms.get(roomId);
+  if (!room) {
+    return;
+  }
+
+  for (const client of room) {
+    send(client.socket, errorMessage("room_closed", "O narrador saiu e a sala foi desfeita."));
+    client.socket.close(1001, "room_closed");
+  }
+
+  rooms.delete(roomId);
+  roomHistories.delete(roomId);
 }
 
 function broadcastPresence(roomId: string): void {
@@ -293,8 +321,14 @@ function getPlayers(roomId: string): PresencePlayer[] {
     clientId: client.clientId,
     playerName: client.playerName,
     characterName: client.characterName,
+    roomRole: client.roomRole,
     joinedAt: client.joinedAt
   }));
+}
+
+function hasRoomHost(roomId: string): boolean {
+  const room = rooms.get(roomId);
+  return Boolean(room && [...room].some((client) => client.roomRole === "host"));
 }
 
 function normalizeRoll(roll: RollEvent, client: Client): RollEvent {

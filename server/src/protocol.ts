@@ -8,6 +8,7 @@ export const helloMessageSchema = z.object({
   clientId: z.string().trim().min(8).max(120),
   playerName: z.string().trim().min(1).max(80),
   characterName: z.string().trim().max(80).optional().default(""),
+  roomRole: z.enum(["host", "player"]).optional().default("player"),
   channel: z.string().trim().min(1).max(120),
   password: z.string().max(240).optional().default("")
 });
@@ -55,6 +56,7 @@ export type PresencePlayer = {
   clientId: string;
   playerName: string;
   characterName?: string;
+  roomRole?: "host" | "player";
   joinedAt: string;
 };
 

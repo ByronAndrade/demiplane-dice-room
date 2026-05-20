@@ -30,6 +30,7 @@ const protectedDefaultRelayHost = "demiplane-dice-room-relay.foxbyron.workers.de
 let socket: WebSocket | undefined;
 let reconnectTimer: number | undefined;
 let manualDisconnect = true;
+let forcedDisconnectDetail: string | undefined;
 let recentRolls: StoredRoll[] = [];
 
 let connectionState: ConnectionState = {
@@ -126,6 +127,7 @@ async function connect(): Promise<void> {
 
   clearReconnectTimer();
   manualDisconnect = false;
+  forcedDisconnectDetail = undefined;
   await saveConfig({ ...config, autoConnect: true });
 
   if (socket) {
@@ -166,6 +168,7 @@ async function connect(): Promise<void> {
       clientId,
       playerName: config.playerName,
       characterName: publicCharacterName,
+      roomRole: config.roomRole,
       channel: config.channel,
       password: config.password
     });
@@ -200,6 +203,19 @@ async function connect(): Promise<void> {
     socket = undefined;
 
     if (manualDisconnect) {
+      if (forcedDisconnectDetail) {
+        const detail = forcedDisconnectDetail;
+        forcedDisconnectDetail = undefined;
+        setConnectionState({
+          status: "error",
+          detail,
+          roomId: undefined,
+          players: [],
+          connectedAt: undefined
+        });
+        return;
+      }
+
       setConnectionState({
         status: "disconnected",
         detail: "Desconectado",
@@ -233,6 +249,7 @@ async function connect(): Promise<void> {
 
 async function disconnect(): Promise<void> {
   manualDisconnect = true;
+  forcedDisconnectDetail = undefined;
   clearReconnectTimer();
   const config = await getConfig();
   await saveConfig({ ...config, autoConnect: false });
@@ -298,7 +315,7 @@ async function publishCapturedRoll(captured: CapturedRoll): Promise<{ ok: true; 
 }
 
 async function getPublicCharacterName(config: ExtensionConfig): Promise<string | undefined> {
-  if (!config.hideCharacterName) {
+  if (!config.hideCharacterName || config.roomRole !== "host") {
     return config.characterName || undefined;
   }
 
@@ -356,6 +373,23 @@ function handleServerMessage(message: ServerMessage): void {
       return;
 
     case "error":
+      if (isTerminalRoomError(message.code)) {
+        manualDisconnect = true;
+        forcedDisconnectDetail = message.message;
+        void getConfig().then((config) => saveConfig({ ...config, autoConnect: false }));
+        if (socket) {
+          socket.close();
+          socket = undefined;
+        }
+        setConnectionState({
+          status: "error",
+          detail: message.message,
+          roomId: undefined,
+          players: [],
+          connectedAt: undefined
+        });
+        return;
+      }
       setConnectionState({
         ...connectionState,
         status: "error",
@@ -363,6 +397,10 @@ function handleServerMessage(message: ServerMessage): void {
       });
       return;
   }
+}
+
+function isTerminalRoomError(code: string): boolean {
+  return code === "room_closed" || code === "room_full" || code === "room_host_exists";
 }
 
 async function bootstrap(): Promise<void> {
