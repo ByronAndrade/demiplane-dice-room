@@ -37,6 +37,7 @@ let manualDisconnect = true;
 let forcedDisconnectDetail: string | undefined;
 let recentRolls: StoredRoll[] = [];
 let activeHistoryRoomId: string | undefined;
+let pendingRoomRolls: RollEvent[] = [];
 
 let connectionState: ConnectionState = {
   status: "disconnected",
@@ -242,6 +243,7 @@ async function connect(): Promise<void> {
           connectedAt: undefined
         });
         activeHistoryRoomId = undefined;
+        pendingRoomRolls = [];
         void restoreLocalHistory();
         return;
       }
@@ -256,6 +258,7 @@ async function connect(): Promise<void> {
         connectedAt: undefined
       });
       activeHistoryRoomId = undefined;
+      pendingRoomRolls = [];
       void restoreLocalHistory();
       return;
     }
@@ -304,6 +307,7 @@ async function disconnect(): Promise<void> {
     connectedAt: undefined
   });
   activeHistoryRoomId = undefined;
+  pendingRoomRolls = [];
   await restoreLocalHistory();
 }
 
@@ -331,10 +335,11 @@ async function publishCapturedRoll(captured: CapturedRoll): Promise<{ ok: true; 
   };
 
   const canSend = socket?.readyState === WebSocket.OPEN && connectionState.status === "connected";
-  if (canSend && connectionState.roomId && !activeHistoryRoomId) {
-    activeHistoryRoomId = connectionState.roomId;
+  const shouldUseRoom = await shouldUseRoomDelivery(config);
+  if ((canSend || shouldUseRoom) && !activeHistoryRoomId) {
+    activeHistoryRoomId = connectionState.roomId || (await createRoomId(config.channel, config.password));
   }
-  const delivery = canSend ? "sent" : "local";
+  const delivery = canSend || shouldUseRoom ? "sent" : "local";
   rememberRoll({
     roll,
     origin: "local",
@@ -351,9 +356,46 @@ async function publishCapturedRoll(captured: CapturedRoll): Promise<{ ok: true; 
 
   if (canSend) {
     sendSocketMessage({ type: "roll", version: protocolVersion, roll });
+  } else if (shouldUseRoom) {
+    queueRoomRoll(roll);
+    void maybeAutoConnect();
   }
 
   return { ok: true, delivered: delivery, roll };
+}
+
+async function shouldUseRoomDelivery(config: ExtensionConfig): Promise<boolean> {
+  if (!config.autoConnect || !config.playerName || !config.channel) {
+    return false;
+  }
+
+  if (requiresRelayKey(config)) {
+    return false;
+  }
+
+  return true;
+}
+
+function queueRoomRoll(roll: RollEvent): void {
+  if (pendingRoomRolls.some((pendingRoll) => pendingRoll.id === roll.id)) {
+    return;
+  }
+
+  pendingRoomRolls.push(roll);
+  pendingRoomRolls = pendingRoomRolls.slice(-20);
+}
+
+function flushPendingRoomRolls(): void {
+  if (socket?.readyState !== WebSocket.OPEN || connectionState.status !== "connected") {
+    return;
+  }
+
+  const rollsToSend = pendingRoomRolls;
+  pendingRoomRolls = [];
+
+  for (const roll of rollsToSend) {
+    sendSocketMessage({ type: "roll", version: protocolVersion, roll });
+  }
 }
 
 async function getPublicCharacterName(config: ExtensionConfig, sheetCharacterName?: string): Promise<string | undefined> {
@@ -388,6 +430,7 @@ function handleServerMessage(message: ServerMessage): void {
         connectedAt: new Date().toISOString()
       });
       void syncRoomHistory(message.roomId, message.history);
+      flushPendingRoomRolls();
       return;
 
     case "presence":
@@ -459,6 +502,7 @@ function handleServerMessage(message: ServerMessage): void {
           connectedAt: undefined
         });
         activeHistoryRoomId = undefined;
+        pendingRoomRolls = [];
         void restoreLocalHistory();
         return;
       }
@@ -581,7 +625,7 @@ function setRecentRolls(nextRolls: StoredRoll[], options: { persist?: boolean } 
 }
 
 function shouldPersistLocalHistory(): boolean {
-  return connectionState.status !== "connected" || !connectionState.roomId;
+  return !activeHistoryRoomId && (connectionState.status !== "connected" || !connectionState.roomId);
 }
 
 async function restoreLocalHistory(): Promise<void> {
