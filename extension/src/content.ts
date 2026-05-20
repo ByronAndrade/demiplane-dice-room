@@ -55,7 +55,7 @@ const defaultDiceAnimationScale = 0.75;
 const minDiceAnimationScale = 0.45;
 const maxDiceAnimationScale = 1.15;
 const defaultRelayUrl = "wss://demiplane-dice-room-relay.foxbyron.workers.dev";
-const extensionUiVersion = "0.1.81";
+const extensionUiVersion = "0.1.82";
 const pageBridgeMessageSource = "demiplane-dice-room-page";
 const pageDiceRollResponseWaitMs = 1400;
 const pageDiceRollResponseTtlMs = 8_000;
@@ -139,6 +139,12 @@ const messages = {
     hostRole: "Narrador",
     playersTooltipEmpty: "Nenhum jogador conectado",
     leaveHostedRoomConfirm: "Voce criou esta sala. Se sair agora, a sala sera desfeita para todos os jogadores. Sair mesmo assim?",
+    tableRoom: "Mesa",
+    roomHost: "Narrador",
+    roomHostUnknown: "Aguardando narrador",
+    roomCreatedByYou: "Voce criou esta mesa.",
+    roomJoinedByYou: "Voce entrou nesta mesa.",
+    connectedPlayers: (count: number) => `${count} ${count === 1 ? "pessoa conectada" : "pessoas conectadas"}`,
     waiting: "Aguardando rolagens",
     roomSettings: "Sala da mesa",
     playerName: "Nome do jogador",
@@ -219,6 +225,12 @@ const messages = {
     hostRole: "Storyteller",
     playersTooltipEmpty: "No players connected",
     leaveHostedRoomConfirm: "You created this room. Leaving now will close it for every player. Leave anyway?",
+    tableRoom: "Room",
+    roomHost: "Storyteller",
+    roomHostUnknown: "Waiting for Storyteller",
+    roomCreatedByYou: "You created this room.",
+    roomJoinedByYou: "You joined this room.",
+    connectedPlayers: (count: number) => `${count} ${count === 1 ? "person connected" : "people connected"}`,
     waiting: "Waiting for rolls",
     roomSettings: "Table room",
     playerName: "Player name",
@@ -2042,6 +2054,18 @@ function createPanel(): {
   header: HTMLElement;
   settings: HTMLButtonElement;
   settingsPanel: HTMLDivElement;
+  roomSummary: HTMLDivElement;
+  roomForm: HTMLDivElement;
+  storytellerRow: HTMLDivElement;
+  roomChannelSummaryLabel: HTMLSpanElement;
+  roomChannelSummary: HTMLElement;
+  roomHostSummaryLabel: HTMLSpanElement;
+  roomHostSummary: HTMLElement;
+  roomPlayersSummaryLabel: HTMLSpanElement;
+  roomPlayersSummary: HTMLElement;
+  roomStatusSummary: HTMLParagraphElement;
+  roomPlayersList: HTMLDivElement;
+  summaryDisconnectButton: HTMLButtonElement;
   hostRoomButton: HTMLButtonElement;
   joinRoomButton: HTMLButtonElement;
   playerNameInput: HTMLInputElement;
@@ -2345,6 +2369,87 @@ function createPanel(): {
         text-transform: uppercase;
       }
 
+      .room-summary {
+        display: grid;
+        gap: 10px;
+      }
+
+      .room-summary-card {
+        display: grid;
+        gap: 8px;
+        border: 1px solid rgba(190, 202, 220, 0.14);
+        border-radius: 7px;
+        padding: 9px;
+        background: rgba(9, 12, 17, 0.42);
+      }
+
+      .summary-row {
+        display: grid;
+        grid-template-columns: minmax(72px, auto) 1fr;
+        gap: 10px;
+        align-items: baseline;
+      }
+
+      .summary-label {
+        color: #8e9aaa;
+        font-size: 10px;
+        font-weight: 850;
+        text-transform: uppercase;
+      }
+
+      .summary-value {
+        min-width: 0;
+        color: #f1f4f8;
+        font-weight: 850;
+        overflow-wrap: anywhere;
+        text-align: right;
+      }
+
+      .summary-note {
+        margin: 0;
+        color: #aab4c4;
+        font-size: 11px;
+        line-height: 1.35;
+      }
+
+      .room-players-list {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 5px;
+      }
+
+      .room-player-chip {
+        border: 1px solid rgba(190, 202, 220, 0.16);
+        border-radius: 999px;
+        padding: 3px 7px;
+        color: #dce5f2;
+        background: rgba(255, 255, 255, 0.045);
+        font-size: 11px;
+        font-weight: 800;
+      }
+
+      .room-player-chip.host {
+        border-color: rgba(80, 188, 126, 0.38);
+        color: #bdf4d2;
+        background: rgba(24, 53, 38, 0.68);
+      }
+
+      .summary-disconnect {
+        min-height: 32px;
+        border: 1px solid #68424a;
+        border-radius: 6px;
+        padding: 7px 9px;
+        color: #ffe3e7;
+        background: #352126;
+        font: inherit;
+        font-weight: 850;
+        cursor: pointer;
+      }
+
+      .summary-disconnect:hover {
+        background: #44262d;
+      }
+
       .settings-divider {
         margin-top: 12px;
         border-top: 1px solid rgba(190, 202, 220, 0.12);
@@ -2624,55 +2729,76 @@ function createPanel(): {
       <div data-diagnostic class="diagnostic"></div>
       <div data-settings-panel class="settings-panel">
         <p data-settings-room-label class="settings-title">Sala da mesa</p>
-        <div class="settings-row">
-          <label>
-            <span data-settings-room-mode-label>Modo</span>
-          </label>
-          <div class="mode-actions">
-            <button data-host-room type="button">Criar</button>
-            <button data-join-room type="button">Entrar</button>
+        <div data-room-summary class="room-summary" hidden>
+          <div class="room-summary-card">
+            <div class="summary-row">
+              <span data-room-channel-summary-label class="summary-label">Mesa</span>
+              <strong data-room-channel-summary class="summary-value"></strong>
+            </div>
+            <div class="summary-row">
+              <span data-room-host-summary-label class="summary-label">Narrador</span>
+              <strong data-room-host-summary class="summary-value"></strong>
+            </div>
+            <div class="summary-row">
+              <span data-room-players-summary-label class="summary-label">Jogadores</span>
+              <strong data-room-players-summary class="summary-value"></strong>
+            </div>
+            <p data-room-status-summary class="summary-note"></p>
+            <div data-room-players-list class="room-players-list"></div>
           </div>
+          <button data-summary-disconnect class="summary-disconnect" type="button">Desconectar</button>
         </div>
-        <div class="settings-row">
-          <label for="dice-room-player-name">
-            <span data-settings-player-label>Nome do jogador</span>
-          </label>
-          <input id="dice-room-player-name" data-player-name type="text" autocomplete="name" />
-        </div>
-        <div class="settings-row">
-          <label class="checkbox-row">
-            <input data-hide-character-name type="checkbox" />
-            <span data-settings-hide-character-label>Fazer rolagem como Narrador</span>
-          </label>
-        </div>
-        <div class="settings-row">
-          <label for="dice-room-channel">
-            <span data-settings-channel-label>Canal</span>
-          </label>
-          <input id="dice-room-channel" data-channel type="text" autocomplete="off" />
-        </div>
-        <div class="settings-row">
-          <label for="dice-room-password">
-            <span data-settings-password-label>Senha</span>
-          </label>
-          <input id="dice-room-password" data-password type="password" autocomplete="current-password" />
-        </div>
-        <div class="settings-row">
-          <label for="dice-room-relay">
-            <span data-settings-relay-label>Relay</span>
-          </label>
-          <input id="dice-room-relay" data-relay type="url" autocomplete="off" />
-        </div>
-        <div class="settings-row">
-          <label for="dice-room-relay-key">
-            <span data-settings-relay-key-label>Chave do relay</span>
-          </label>
-          <input id="dice-room-relay-key" data-relay-key type="password" autocomplete="off" />
-        </div>
-        <div class="settings-actions">
-          <button data-save-room type="button">Salvar</button>
-          <button data-connect-room type="button">Conectar</button>
-          <button data-disconnect-room type="button">Desconectar</button>
+        <div data-room-form class="room-form">
+          <div class="settings-row">
+            <label>
+              <span data-settings-room-mode-label>Modo</span>
+            </label>
+            <div class="mode-actions">
+              <button data-host-room type="button">Criar</button>
+              <button data-join-room type="button">Entrar</button>
+            </div>
+          </div>
+          <div class="settings-row">
+            <label for="dice-room-player-name">
+              <span data-settings-player-label>Nome do jogador</span>
+            </label>
+            <input id="dice-room-player-name" data-player-name type="text" autocomplete="name" />
+          </div>
+          <div data-storyteller-row class="settings-row">
+            <label class="checkbox-row">
+              <input data-hide-character-name type="checkbox" />
+              <span data-settings-hide-character-label>Fazer rolagem como Narrador</span>
+            </label>
+          </div>
+          <div class="settings-row">
+            <label for="dice-room-channel">
+              <span data-settings-channel-label>Canal</span>
+            </label>
+            <input id="dice-room-channel" data-channel type="text" autocomplete="off" />
+          </div>
+          <div class="settings-row">
+            <label for="dice-room-password">
+              <span data-settings-password-label>Senha</span>
+            </label>
+            <input id="dice-room-password" data-password type="password" autocomplete="current-password" />
+          </div>
+          <div class="settings-row">
+            <label for="dice-room-relay">
+              <span data-settings-relay-label>Relay</span>
+            </label>
+            <input id="dice-room-relay" data-relay type="url" autocomplete="off" />
+          </div>
+          <div class="settings-row">
+            <label for="dice-room-relay-key">
+              <span data-settings-relay-key-label>Chave do relay</span>
+            </label>
+            <input id="dice-room-relay-key" data-relay-key type="password" autocomplete="off" />
+          </div>
+          <div class="settings-actions">
+            <button data-save-room type="button">Salvar</button>
+            <button data-connect-room type="button">Conectar</button>
+            <button data-disconnect-room type="button">Desconectar</button>
+          </div>
         </div>
         <div class="settings-divider">
         <div class="settings-row">
@@ -2729,6 +2855,18 @@ function createPanel(): {
   const diagnostic = shadow.querySelector("[data-diagnostic]");
   const settings = shadow.querySelector("[data-settings-button]");
   const settingsPanel = shadow.querySelector("[data-settings-panel]");
+  const roomSummary = shadow.querySelector("[data-room-summary]");
+  const roomForm = shadow.querySelector("[data-room-form]");
+  const storytellerRow = shadow.querySelector("[data-storyteller-row]");
+  const roomChannelSummaryLabel = shadow.querySelector("[data-room-channel-summary-label]");
+  const roomChannelSummary = shadow.querySelector("[data-room-channel-summary]");
+  const roomHostSummaryLabel = shadow.querySelector("[data-room-host-summary-label]");
+  const roomHostSummary = shadow.querySelector("[data-room-host-summary]");
+  const roomPlayersSummaryLabel = shadow.querySelector("[data-room-players-summary-label]");
+  const roomPlayersSummary = shadow.querySelector("[data-room-players-summary]");
+  const roomStatusSummary = shadow.querySelector("[data-room-status-summary]");
+  const roomPlayersList = shadow.querySelector("[data-room-players-list]");
+  const summaryDisconnectButton = shadow.querySelector("[data-summary-disconnect]");
   const hostRoomButton = shadow.querySelector("[data-host-room]");
   const joinRoomButton = shadow.querySelector("[data-join-room]");
   const opacityInput = shadow.querySelector("[data-opacity]");
@@ -2759,6 +2897,18 @@ function createPanel(): {
     !(diagnostic instanceof HTMLDivElement) ||
     !(settings instanceof HTMLButtonElement) ||
     !(settingsPanel instanceof HTMLDivElement) ||
+    !(roomSummary instanceof HTMLDivElement) ||
+    !(roomForm instanceof HTMLDivElement) ||
+    !(storytellerRow instanceof HTMLDivElement) ||
+    !(roomChannelSummaryLabel instanceof HTMLSpanElement) ||
+    !(roomChannelSummary instanceof HTMLElement) ||
+    !(roomHostSummaryLabel instanceof HTMLSpanElement) ||
+    !(roomHostSummary instanceof HTMLElement) ||
+    !(roomPlayersSummaryLabel instanceof HTMLSpanElement) ||
+    !(roomPlayersSummary instanceof HTMLElement) ||
+    !(roomStatusSummary instanceof HTMLParagraphElement) ||
+    !(roomPlayersList instanceof HTMLDivElement) ||
+    !(summaryDisconnectButton instanceof HTMLButtonElement) ||
     !(hostRoomButton instanceof HTMLButtonElement) ||
     !(joinRoomButton instanceof HTMLButtonElement) ||
     !(opacityInput instanceof HTMLInputElement) ||
@@ -2844,6 +2994,14 @@ function createPanel(): {
     void sendRuntimeMessage({ kind: "popup:disconnect" });
   });
 
+  summaryDisconnectButton.addEventListener("click", () => {
+    if (!confirmHostedRoomExit()) {
+      return;
+    }
+
+    void sendRuntimeMessage({ kind: "popup:disconnect" });
+  });
+
   opacityInput.addEventListener("input", () => {
     panelOpacity = Number.parseFloat(opacityInput.value);
     opacityValue.textContent = `${Math.round(panelOpacity * 100)}%`;
@@ -2902,6 +3060,18 @@ function createPanel(): {
     header,
     settings,
     settingsPanel,
+    roomSummary,
+    roomForm,
+    storytellerRow,
+    roomChannelSummaryLabel,
+    roomChannelSummary,
+    roomHostSummaryLabel,
+    roomHostSummary,
+    roomPlayersSummaryLabel,
+    roomPlayersSummary,
+    roomStatusSummary,
+    roomPlayersList,
+    summaryDisconnectButton,
     hostRoomButton,
     joinRoomButton,
     opacityInput,
@@ -2966,6 +3136,10 @@ function renderPanel(): void {
   }
   const roomLocked = isRoomLocked();
   const isHost = config.roomRole === "host";
+  const roomConnected = connectionState.status === "connected";
+  panel.roomSummary.hidden = !roomConnected;
+  panel.roomForm.hidden = roomConnected;
+  panel.storytellerRow.hidden = !isHost;
   panel.hostRoomButton.classList.toggle("active", isHost);
   panel.joinRoomButton.classList.toggle("active", !isHost);
   panel.hostRoomButton.disabled = roomLocked;
@@ -2976,6 +3150,9 @@ function renderPanel(): void {
   panel.relayKeyInput.disabled = roomLocked;
   panel.hideCharacterNameInput.disabled = roomLocked || !isHost;
   panel.hideCharacterNameInput.checked = isHost && config.hideCharacterName;
+  if (!isHost) {
+    panel.hideCharacterNameInput.checked = false;
+  }
   panel.connectRoomButton.disabled = connectionState.status === "connecting" || connectionState.status === "connected";
   panel.disconnectRoomButton.disabled = connectionState.status === "disconnected";
   panel.opacityInput.value = String(panelOpacity);
@@ -2995,6 +3172,7 @@ function renderPanel(): void {
   if (roomLabel instanceof HTMLParagraphElement) {
     roomLabel.textContent = t("roomSettings");
   }
+  renderRoomSummary();
   const roomModeLabel = panel.host.shadowRoot?.querySelector("[data-settings-room-mode-label]");
   if (roomModeLabel instanceof HTMLSpanElement) {
     roomModeLabel.textContent = t("roomMode");
@@ -3028,6 +3206,7 @@ function renderPanel(): void {
   panel.saveRoomButton.textContent = t("save");
   panel.connectRoomButton.textContent = t("connect");
   panel.disconnectRoomButton.textContent = t("disconnect");
+  panel.summaryDisconnectButton.textContent = t("disconnect");
   const opacityValue = panel.host.shadowRoot?.querySelector("[data-opacity-value]");
   if (opacityValue instanceof HTMLSpanElement) {
     opacityValue.textContent = `${Math.round(panelOpacity * 100)}%`;
@@ -3083,6 +3262,26 @@ function renderPanel(): void {
   panel.list.innerHTML = visibleRolls.map(renderRoll).join("");
 }
 
+function renderRoomSummary(): void {
+  if (!panel) {
+    return;
+  }
+
+  const config = currentConfig ?? defaultConfig;
+  const host = getRoomHost(connectionState.players);
+  panel.roomChannelSummaryLabel.textContent = t("tableRoom");
+  panel.roomHostSummaryLabel.textContent = t("roomHost");
+  panel.roomPlayersSummaryLabel.textContent = t("playersInRoom");
+  panel.roomChannelSummary.textContent = config.channel || connectionState.roomId || "-";
+  panel.roomHostSummary.textContent = host ? formatPresenceDisplayName(host, "player") : t("roomHostUnknown");
+  panel.roomPlayersSummary.textContent = t("connectedPlayers", connectionState.players.length);
+  panel.roomStatusSummary.textContent = config.roomRole === "host" ? t("roomCreatedByYou") : t("roomJoinedByYou");
+  panel.roomPlayersList.innerHTML =
+    connectionState.players.length > 0
+      ? connectionState.players.map(renderRoomPlayerChip).join("")
+      : `<span class="room-player-chip">${escapeHtml(t("playersTooltipEmpty"))}</span>`;
+}
+
 function isRoomLocked(): boolean {
   return connectionState.status === "connected" || connectionState.status === "connecting";
 }
@@ -3113,11 +3312,31 @@ function formatPlayersTooltip(players: ConnectionState["players"]): string {
 
   return players
     .map((player) => {
-      const displayName = player.characterName || player.playerName;
+      const displayName = formatPresenceDisplayName(player, "character");
       const roleSuffix = player.roomRole === "host" ? ` (${t("hostRole")})` : "";
       return `${displayName}${roleSuffix}`;
     })
     .join("\n");
+}
+
+function getRoomHost(players: ConnectionState["players"]): ConnectionState["players"][number] | undefined {
+  return players.find((player) => player.roomRole === "host");
+}
+
+function formatPresenceDisplayName(
+  player: ConnectionState["players"][number],
+  preference: "player" | "character"
+): string {
+  const preferred = preference === "player" ? player.playerName : player.characterName;
+  const fallback = preference === "player" ? player.characterName : player.playerName;
+  return preferred || fallback || t("playersTooltipEmpty");
+}
+
+function renderRoomPlayerChip(player: ConnectionState["players"][number]): string {
+  const name = formatPresenceDisplayName(player, "character");
+  const roleSuffix = player.roomRole === "host" ? ` ${t("hostRole")}` : "";
+  const className = player.roomRole === "host" ? "room-player-chip host" : "room-player-chip";
+  return `<span class="${className}">${escapeHtml(name)}${roleSuffix ? ` <small>${escapeHtml(roleSuffix)}</small>` : ""}</span>`;
 }
 
 async function savePanelRoomConfig(): Promise<void> {
