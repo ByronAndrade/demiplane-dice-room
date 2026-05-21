@@ -66,12 +66,19 @@ export const leaveRoomMessageSchema = z.object({
   version: protocolVersionSchema
 });
 
+export const heartbeatMessageSchema = z.object({
+  type: z.literal("heartbeat"),
+  version: protocolVersionSchema,
+  createdAt: z.string().datetime()
+});
+
 export const clientMessageSchema = z.discriminatedUnion("type", [
   helloMessageSchema,
   rollMessageSchema,
   approvePlayerMessageSchema,
   rejectPlayerMessageSchema,
   kickPlayerMessageSchema,
+  heartbeatMessageSchema,
   leaveRoomMessageSchema
 ]);
 

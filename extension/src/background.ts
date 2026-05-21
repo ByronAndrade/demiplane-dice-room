@@ -30,9 +30,11 @@ const liveRollStorageKey = "lastLiveRoll";
 const roomHistoryStorageKey = "roomHistories";
 const panelUiStorageKey = "diceRoomPanelUi";
 const protectedDefaultRelayHost = "demiplane-dice-room-relay.foxbyron.workers.dev";
+const socketKeepAliveMs = 20_000;
 
 let socket: WebSocket | undefined;
 let reconnectTimer: number | undefined;
+let socketKeepAliveTimer: number | undefined;
 let manualDisconnect = true;
 let forcedDisconnectDetail: string | undefined;
 let recentRolls: StoredRoll[] = [];
@@ -189,6 +191,7 @@ async function connect(): Promise<void> {
   socket = nextSocket;
 
   nextSocket.addEventListener("open", () => {
+    startSocketKeepAlive(nextSocket);
     sendSocketMessage({
       type: "hello",
       version: protocolVersion,
@@ -228,6 +231,7 @@ async function connect(): Promise<void> {
     }
 
     socket = undefined;
+    stopSocketKeepAlive();
 
     if (manualDisconnect) {
       if (forcedDisconnectDetail) {
@@ -276,6 +280,7 @@ async function connect(): Promise<void> {
       return;
     }
 
+    stopSocketKeepAlive();
     setConnectionState({
       ...connectionState,
       status: "error",
@@ -296,6 +301,7 @@ async function disconnect(): Promise<void> {
     socket.close(1000, "leave_room");
     socket = undefined;
   }
+  stopSocketKeepAlive();
 
   setConnectionState({
     status: "disconnected",
@@ -398,6 +404,27 @@ function flushPendingRoomRolls(): void {
   }
 }
 
+function startSocketKeepAlive(activeSocket: WebSocket): void {
+  stopSocketKeepAlive();
+  socketKeepAliveTimer = setInterval(() => {
+    if (socket !== activeSocket || activeSocket.readyState !== WebSocket.OPEN) {
+      stopSocketKeepAlive();
+      return;
+    }
+
+    sendSocketMessage({ type: "heartbeat", version: protocolVersion, createdAt: new Date().toISOString() });
+  }, socketKeepAliveMs);
+}
+
+function stopSocketKeepAlive(): void {
+  if (!socketKeepAliveTimer) {
+    return;
+  }
+
+  clearInterval(socketKeepAliveTimer);
+  socketKeepAliveTimer = undefined;
+}
+
 async function getPublicCharacterName(config: ExtensionConfig, sheetCharacterName?: string): Promise<string | undefined> {
   if (!config.hideCharacterName || config.roomRole !== "host") {
     return cleanDisplayName(sheetCharacterName) || cleanDisplayName(config.characterName);
@@ -465,6 +492,10 @@ function handleServerMessage(message: ServerMessage): void {
       return;
 
     case "roll":
+      if (message.roll.clientId === connectionState.clientId) {
+        return;
+      }
+
       rememberRoll({
         roll: message.roll,
         origin: "remote",

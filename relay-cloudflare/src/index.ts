@@ -75,6 +75,12 @@ type LeaveRoomMessage = {
   version: 1;
 };
 
+type HeartbeatMessage = {
+  type: "heartbeat";
+  version: 1;
+  createdAt: string;
+};
+
 type ServerMessage =
   | {
       type: "welcome";
@@ -250,6 +256,10 @@ export class DiceRoomDurableObject extends DurableObject<Env> {
       return;
     }
 
+    if (isHeartbeatMessage(parsed.value)) {
+      return;
+    }
+
     const session = this.getReadySession(socket);
     if (!session) {
       this.send(socket, errorMessage("not_joined", "Aguardando entrada na sala antes de publicar rolagens."));
@@ -273,7 +283,7 @@ export class DiceRoomDurableObject extends DurableObject<Env> {
     }
 
     await this.appendHistory(session.roomId, roll);
-    this.broadcast(session.roomId, { type: "roll", version: 1, roomId: session.roomId, roll }, socket);
+    this.broadcast(session.roomId, { type: "roll", version: 1, roomId: session.roomId, roll });
   }
 
   webSocketClose(socket: WebSocket, code: number, reason: string): void {
@@ -852,6 +862,15 @@ function isLeaveRoomMessage(value: unknown): value is LeaveRoomMessage {
 
   const message = value as Partial<LeaveRoomMessage>;
   return message.type === "leave_room" && message.version === protocolVersion;
+}
+
+function isHeartbeatMessage(value: unknown): value is HeartbeatMessage {
+  if (!value || typeof value !== "object") {
+    return false;
+  }
+
+  const message = value as Partial<HeartbeatMessage>;
+  return message.type === "heartbeat" && message.version === protocolVersion && typeof message.createdAt === "string";
 }
 
 function isRollEvent(value: unknown): value is RollEvent {

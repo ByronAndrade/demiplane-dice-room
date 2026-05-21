@@ -143,6 +143,10 @@ wss.on("connection", (socket, request) => {
       return;
     }
 
+    if (parsed.data.type === "heartbeat") {
+      return;
+    }
+
     client = client ?? findClientBySocket(socket);
     if (client) {
       pendingClient = undefined;
@@ -175,7 +179,7 @@ wss.on("connection", (socket, request) => {
     }
 
     appendHistory(client.roomId, roll);
-    broadcast(client.roomId, { type: "roll", version: 1, roomId: client.roomId, roll }, client);
+    broadcast(client.roomId, { type: "roll", version: 1, roomId: client.roomId, roll });
   });
 
   socket.on("close", () => {

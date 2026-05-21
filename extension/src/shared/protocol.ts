@@ -117,6 +117,7 @@ export type ClientMessage =
   | { type: "approve_player"; version: 1; clientId: string }
   | { type: "reject_player"; version: 1; clientId: string }
   | { type: "kick_player"; version: 1; clientId: string }
+  | { type: "heartbeat"; version: 1; createdAt: string }
   | { type: "leave_room"; version: 1 };
 
 export type BackgroundMessage =
