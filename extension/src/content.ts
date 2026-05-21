@@ -55,7 +55,7 @@ const defaultDiceAnimationScale = 0.75;
 const minDiceAnimationScale = 0.45;
 const maxDiceAnimationScale = 1.15;
 const defaultRelayUrl = "wss://demiplane-dice-room-relay.foxbyron.workers.dev";
-const extensionUiVersion = "0.1.91";
+const extensionUiVersion = "0.1.92";
 const pageBridgeMessageSource = "demiplane-dice-room-page";
 const pageDiceRollResponseWaitMs = 1400;
 const pageDiceRollResponseTtlMs = 8_000;
@@ -368,7 +368,14 @@ async function initializeContentScript(): Promise<void> {
 
   chrome.runtime.onMessage.addListener((message: BackgroundMessage) => {
     if (message.kind === "background:connection-state") {
+      const revealPendingRequests = shouldRevealPendingRequests(message.state);
       connectionState = message.state;
+      if (revealPendingRequests) {
+        collapsed = true;
+        diagnosticOpen = false;
+        settingsOpen = true;
+        void savePanelUiState();
+      }
       renderPanel();
     }
 
@@ -3547,7 +3554,7 @@ function renderRoomSummary(): void {
 
   const config = currentConfig ?? defaultConfig;
   const host = getRoomHost(connectionState.players);
-  const isHost = config.roomRole === "host" && connectionState.status === "connected";
+  const isHost = isCurrentClientHost(connectionState);
   const pendingPlayers = connectionState.pendingPlayers ?? [];
   panel.roomChannelSummaryLabel.textContent = t("tableRoom");
   panel.roomHostSummaryLabel.textContent = t("roomHost");
@@ -3556,7 +3563,7 @@ function renderRoomSummary(): void {
   panel.roomHostSummary.textContent = host ? formatPresenceDisplayName(host, "player") : t("roomHostUnknown");
   panel.roomPlayersSummary.textContent = t("connectedPlayers", connectionState.players.length);
   panel.roomStatusSummary.textContent =
-    connectionState.status === "pending" ? t("roomPendingByYou") : config.roomRole === "host" ? t("roomCreatedByYou") : t("roomJoinedByYou");
+    connectionState.status === "pending" ? t("roomPendingByYou") : isHost ? t("roomCreatedByYou") : t("roomJoinedByYou");
   panel.roomPlayersList.innerHTML =
     connectionState.players.length > 0
       ? connectionState.players.map((player) => renderRoomPlayerChip(player, isHost)).join("")
@@ -3564,6 +3571,28 @@ function renderRoomSummary(): void {
   panel.roomPendingLabel.textContent = t("pendingPlayers");
   panel.roomPendingSection.hidden = !isHost || pendingPlayers.length === 0;
   panel.roomPendingList.innerHTML = pendingPlayers.map(renderPendingPlayerRow).join("");
+}
+
+function shouldRevealPendingRequests(nextState: ConnectionState): boolean {
+  const currentPendingCount = getPendingPlayerCount(connectionState);
+  const nextPendingCount = getPendingPlayerCount(nextState);
+  return nextPendingCount > currentPendingCount && isCurrentClientHost(nextState);
+}
+
+function getPendingPlayerCount(state: ConnectionState): number {
+  return state.pendingPlayers?.length ?? 0;
+}
+
+function isCurrentClientHost(state: ConnectionState): boolean {
+  if (state.status !== "connected") {
+    return false;
+  }
+
+  if (state.players.some((player) => player.clientId === state.clientId && player.roomRole === "host")) {
+    return true;
+  }
+
+  return (currentConfig ?? defaultConfig).roomRole === "host";
 }
 
 function isRoomLocked(): boolean {

@@ -12,6 +12,8 @@ const lastRoll = requireElement("#lastRoll", HTMLDivElement);
 const createRoomButton = requireElement("#createRoomButton", HTMLButtonElement);
 const joinRoomButton = requireElement("#joinRoomButton", HTMLButtonElement);
 const roomModeHint = requireElement("#roomModeHint", HTMLParagraphElement);
+const pendingRequests = requireElement("#pendingRequests", HTMLElement);
+const pendingRequestsList = requireElement("#pendingRequestsList", HTMLDivElement);
 const localizedElements = Array.from(document.querySelectorAll<HTMLElement>("[data-i18n]"));
 
 const panelUiStorageKey = "diceRoomPanelUi";
@@ -33,6 +35,9 @@ const messages = {
     createRoom: "Criar sala",
     joinRoom: "Entrar em sala",
     hostRole: "Narrador",
+    pendingPlayers: "Pedidos de entrada",
+    approvePlayer: "Aprovar",
+    rejectPlayer: "Recusar",
     playersTooltipEmpty: "Nenhum jogador conectado",
     hostHint: "Para criar: escolha nome/senha e conecte em um relay online. Passe o nome e a senha para a mesa. O launcher local fica como fallback.",
     joinHint: "Para entrar: use o nome e a senha da sala que o narrador criou. Se todos usam o relay online, nao precisa abrir servidor local.",
@@ -92,6 +97,9 @@ const messages = {
     createRoom: "Create room",
     joinRoom: "Join room",
     hostRole: "Storyteller",
+    pendingPlayers: "Join requests",
+    approvePlayer: "Approve",
+    rejectPlayer: "Reject",
     playersTooltipEmpty: "No players connected",
     hostHint: "To create: choose a room name/password and connect to an online relay. Share the name and password with the table. The local launcher remains a fallback.",
     joinHint: "To join: use the room name and password created by the Storyteller. If everyone uses the online relay, no local server is needed.",
@@ -209,6 +217,22 @@ testButton.addEventListener("click", () => {
   );
 });
 
+pendingRequestsList.addEventListener("click", (event) => {
+  const action =
+    event.target instanceof Element ? event.target.closest("button[data-approve-player], button[data-reject-player]") : null;
+  if (!(action instanceof HTMLButtonElement)) {
+    return;
+  }
+
+  const clientId = action.dataset.clientId;
+  if (!clientId) {
+    return;
+  }
+
+  const kind = action.hasAttribute("data-approve-player") ? "popup:approve-player" : "popup:reject-player";
+  void sendRuntimeMessage({ kind, clientId });
+});
+
 chrome.runtime.onMessage.addListener((message: BackgroundMessage) => {
   if (message.kind === "background:connection-state") {
     renderState(message.state);
@@ -303,6 +327,7 @@ function renderState(state: ConnectionState): void {
   connectButton.disabled = state.status === "connecting" || state.status === "pending" || state.status === "connected";
   disconnectButton.disabled = state.status === "disconnected";
   updateRoomLock(state.status === "connected" || state.status === "connecting" || state.status === "pending");
+  renderPendingRequests(state);
 }
 
 function renderLastRoll(roll: RollEvent, delivery: string): void {
@@ -406,6 +431,53 @@ function formatPlayersTooltip(players: ConnectionState["players"]): string {
       return `${displayName}${roleSuffix}`;
     })
     .join("\n");
+}
+
+function renderPendingRequests(state: ConnectionState): void {
+  const pendingPlayers = state.pendingPlayers ?? [];
+  const showPendingRequests = isCurrentClientHost(state) && pendingPlayers.length > 0;
+  pendingRequests.hidden = !showPendingRequests;
+  pendingRequestsList.replaceChildren();
+
+  if (!showPendingRequests) {
+    return;
+  }
+
+  for (const player of pendingPlayers) {
+    const row = document.createElement("div");
+    row.className = "pending-request-row";
+
+    const name = document.createElement("span");
+    name.className = "pending-request-name";
+    name.textContent = player.characterName || player.playerName || t("playersTooltipEmpty");
+
+    const approve = document.createElement("button");
+    approve.type = "button";
+    approve.dataset.approvePlayer = "";
+    approve.dataset.clientId = player.clientId;
+    approve.textContent = t("approvePlayer");
+
+    const reject = document.createElement("button");
+    reject.type = "button";
+    reject.dataset.rejectPlayer = "";
+    reject.dataset.clientId = player.clientId;
+    reject.textContent = t("rejectPlayer");
+
+    row.append(name, approve, reject);
+    pendingRequestsList.append(row);
+  }
+}
+
+function isCurrentClientHost(state: ConnectionState): boolean {
+  if (state.status !== "connected") {
+    return false;
+  }
+
+  if (state.players.some((player) => player.clientId === state.clientId && player.roomRole === "host")) {
+    return true;
+  }
+
+  return roomMode === "host";
 }
 
 function shouldShowPresenceRole(displayName: string, player: ConnectionState["players"][number]): boolean {

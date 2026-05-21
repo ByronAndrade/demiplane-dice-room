@@ -11,7 +11,7 @@
       <header class="header">
         <div>
           <p class="eyebrow">Demiplane</p>
-          <h1>Dice Room <span>0.1.91</span></h1>
+          <h1>Dice Room <span>0.1.92</span></h1>
         </div>
         <span id="statusPill" class="status status-disconnected">Desconectado</span>
       </header>
@@ -78,6 +78,11 @@
           <button id="disconnectButton" type="button" data-i18n="disconnect">Desconectar</button>
         </div>
       </form>
+
+      <section id="pendingRequests" class="pending-requests" hidden aria-live="polite">
+        <p data-i18n="pendingPlayers">Pedidos de entrada</p>
+        <div id="pendingRequestsList" class="pending-requests-list"></div>
+      </section>
 
       <section class="debug">
         <div>
