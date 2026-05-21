@@ -1062,7 +1062,31 @@ function isUsefulRoll(roll: RollEvent): boolean {
 
 function isUsefulRollTitle(value: string): boolean {
   const title = value.trim();
-  return /^[A-Z][A-Z '-]{2,50}[ \t]*\+[ \t]*[A-Z][A-Z '-]{2,50}$/.test(title) || /^custom$/i.test(title);
+  return isMultiPartRollTitle(title) || isSingleTraitRollTitle(title) || /^custom(?:[ \t]*\([ \t]*re-?roll[ \t]*\))?$/i.test(title);
+}
+
+function isMultiPartRollTitle(value: string): boolean {
+  const parts = stripRerollTitleSuffix(value).split("+").map((part) => part.trim()).filter(Boolean);
+  return parts.length >= 2 && parts.length <= 6 && parts.every(isTraitTitlePart);
+}
+
+function isSingleTraitRollTitle(value: string): boolean {
+  const title = stripRerollTitleSuffix(value);
+  if (!isTraitTitlePart(title) || isMultiPartRollTitle(title)) {
+    return false;
+  }
+
+  return !/^(ADD DICE TO ROLL|ATTRIBUTES|CLEAR|COTERIE|CUSTOM|DETAILS|DETAILED|DICE POOL|DISCIPLINES|EXPAND|FLAWS|GAME RULES|GROUPS|HEALTH|HUMANITY|HUNGER|INVENTORY|LIBRARY|LOCAL|MENTAL|MERITS|NOTES|PHYSICAL|RE-ROLL|REROLL|ROLL|SELECT DICE TO REROLL|SKILLS|SOCIAL|SUCCESSES?|SUCCESS|WILLPOWER)$/i.test(
+    title
+  );
+}
+
+function isTraitTitlePart(value: string): boolean {
+  return /^[A-Z][A-Z '-]{1,50}$/i.test(value.trim());
+}
+
+function stripRerollTitleSuffix(value: string): string {
+  return value.replace(/\s+/g, " ").trim().replace(/[ \t]*\([ \t]*re-?roll[ \t]*\)$/i, "").trim();
 }
 
 function createRoomId(channel: string, password = ""): string {

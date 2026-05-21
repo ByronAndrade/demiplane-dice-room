@@ -31,6 +31,7 @@ const roomHistoryStorageKey = "roomHistories";
 const panelUiStorageKey = "diceRoomPanelUi";
 const protectedDefaultRelayHost = "demiplane-dice-room-relay.foxbyron.workers.dev";
 const socketKeepAliveMs = 20_000;
+const maxPendingRoomRolls = 100;
 
 let socket: WebSocket | undefined;
 let reconnectTimer: number | undefined;
@@ -248,7 +249,7 @@ async function connect(): Promise<void> {
         });
         activeHistoryRoomId = undefined;
         pendingRoomRolls = [];
-        void restoreLocalHistory();
+        void restoreLocalHistory({ preserveLocalRoomRolls: true });
         return;
       }
 
@@ -263,7 +264,7 @@ async function connect(): Promise<void> {
       });
       activeHistoryRoomId = undefined;
       pendingRoomRolls = [];
-      void restoreLocalHistory();
+      void restoreLocalHistory({ preserveLocalRoomRolls: true });
       return;
     }
 
@@ -314,7 +315,7 @@ async function disconnect(): Promise<void> {
   });
   activeHistoryRoomId = undefined;
   pendingRoomRolls = [];
-  await restoreLocalHistory();
+  await restoreLocalHistory({ preserveLocalRoomRolls: true });
 }
 
 async function publishCapturedRoll(captured: CapturedRoll): Promise<{ ok: true; delivered: string; roll: RollEvent }> {
@@ -361,6 +362,7 @@ async function publishCapturedRoll(captured: CapturedRoll): Promise<{ ok: true; 
   });
 
   if (canSend) {
+    queueRoomRoll(roll);
     sendSocketMessage({ type: "roll", version: protocolVersion, roll });
   } else if (shouldUseRoom) {
     queueRoomRoll(roll);
@@ -388,7 +390,7 @@ function queueRoomRoll(roll: RollEvent): void {
   }
 
   pendingRoomRolls.push(roll);
-  pendingRoomRolls = pendingRoomRolls.slice(-20);
+  pendingRoomRolls = pendingRoomRolls.slice(-maxPendingRoomRolls);
 }
 
 function flushPendingRoomRolls(): void {
@@ -396,12 +398,13 @@ function flushPendingRoomRolls(): void {
     return;
   }
 
-  const rollsToSend = pendingRoomRolls;
-  pendingRoomRolls = [];
-
-  for (const roll of rollsToSend) {
+  for (const roll of pendingRoomRolls) {
     sendSocketMessage({ type: "roll", version: protocolVersion, roll });
   }
+}
+
+function forgetPendingRoomRoll(rollId: string): void {
+  pendingRoomRolls = pendingRoomRolls.filter((roll) => roll.id !== rollId);
 }
 
 function startSocketKeepAlive(activeSocket: WebSocket): void {
@@ -493,6 +496,7 @@ function handleServerMessage(message: ServerMessage): void {
 
     case "roll":
       if (message.roll.clientId === connectionState.clientId) {
+        forgetPendingRoomRoll(message.roll.id);
         return;
       }
 
@@ -534,7 +538,7 @@ function handleServerMessage(message: ServerMessage): void {
         });
         activeHistoryRoomId = undefined;
         pendingRoomRolls = [];
-        void restoreLocalHistory();
+        void restoreLocalHistory({ preserveLocalRoomRolls: true });
         return;
       }
       setConnectionState({
@@ -611,6 +615,11 @@ function rememberRoll(storedRoll: StoredRoll): void {
 }
 
 async function syncRoomHistory(roomId: string, history: RollEvent[]): Promise<void> {
+  const historyIds = new Set(history.map((roll) => roll.id));
+  if (historyIds.size > 0) {
+    pendingRoomRolls = pendingRoomRolls.filter((roll) => !historyIds.has(roll.id));
+  }
+
   const storedHistory: StoredRoll[] = [...history]
     .filter(isUsefulRoll)
     .reverse()
@@ -659,8 +668,20 @@ function shouldPersistLocalHistory(): boolean {
   return !activeHistoryRoomId && (connectionState.status !== "connected" || !connectionState.roomId);
 }
 
-async function restoreLocalHistory(): Promise<void> {
-  recentRolls = await loadStoredRolls();
+async function restoreLocalHistory(options: { preserveLocalRoomRolls?: boolean } = {}): Promise<void> {
+  const localRoomRolls = options.preserveLocalRoomRolls
+    ? recentRolls
+        .filter((item) => item.origin === "local" && item.delivery !== "history")
+        .map((item): StoredRoll => ({ ...item, delivery: "local" }))
+    : [];
+  const storedRolls = await loadStoredRolls();
+
+  if (localRoomRolls.length > 0) {
+    setRecentRolls([...localRoomRolls, ...storedRolls].sort(compareStoredRollsNewestFirst), { persist: true });
+  } else {
+    recentRolls = storedRolls;
+  }
+
   broadcastHistory();
 }
 
