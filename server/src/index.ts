@@ -174,7 +174,7 @@ wss.on("connection", (socket, request) => {
 
     const roll = normalizeRoll(parsed.data.roll, client);
     if (!isUsefulRoll(roll)) {
-      send(socket, errorMessage("ignored_roll", "Rolagem ignorada porque nao parece ser um resultado completo."));
+      send(socket, errorMessage("ignored_roll", "Rolagem ignorada porque nao parece ser um resultado completo.", roll.id));
       return;
     }
 
@@ -1098,8 +1098,8 @@ function createRoomId(channel: string, password = ""): string {
     .slice(0, 32);
 }
 
-function errorMessage(code: string, message: string): ServerMessage {
-  return { type: "error", version: 1, code, message };
+function errorMessage(code: string, message: string, rollId?: string): ServerMessage {
+  return rollId ? { type: "error", version: 1, code, message, rollId } : { type: "error", version: 1, code, message };
 }
 
 function readRequestBody(request: IncomingMessage): Promise<string> {

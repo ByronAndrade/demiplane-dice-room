@@ -109,6 +109,7 @@ export type ServerMessage =
       version: 1;
       code: string;
       message: string;
+      rollId?: string;
     };
 
 export type ClientMessage =

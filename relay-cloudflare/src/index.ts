@@ -119,6 +119,7 @@ type ServerMessage =
       version: 1;
       code: string;
       message: string;
+      rollId?: string;
     };
 
 type ClientSession = {
@@ -278,7 +279,7 @@ export class DiceRoomDurableObject extends DurableObject<Env> {
 
     const roll = normalizeRoll(parsed.value.roll, session);
     if (!isUsefulRoll(roll)) {
-      this.send(socket, errorMessage("ignored_roll", "Rolagem ignorada porque nao parece ser um resultado completo."));
+      this.send(socket, errorMessage("ignored_roll", "Rolagem ignorada porque nao parece ser um resultado completo.", roll.id));
       return;
     }
 
@@ -1000,8 +1001,8 @@ function isOptionalInteger(value: unknown, min: number, max: number): boolean {
   );
 }
 
-function errorMessage(code: string, message: string): ServerMessage {
-  return { type: "error", version: 1, code, message };
+function errorMessage(code: string, message: string, rollId?: string): ServerMessage {
+  return rollId ? { type: "error", version: 1, code, message, rollId } : { type: "error", version: 1, code, message };
 }
 
 function parseJson(raw: string): { ok: true; value: unknown } | { ok: false } {

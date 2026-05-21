@@ -407,6 +407,29 @@ function forgetPendingRoomRoll(rollId: string): void {
   pendingRoomRolls = pendingRoomRolls.filter((roll) => roll.id !== rollId);
 }
 
+function markPendingRoomRollRejected(rollId: string | undefined): void {
+  const rejectedRollId = rollId ?? pendingRoomRolls[0]?.id;
+  if (!rejectedRollId) {
+    return;
+  }
+
+  pendingRoomRolls = pendingRoomRolls.filter((roll) => roll.id !== rejectedRollId);
+  setRecentRolls(
+    recentRolls.map((item): StoredRoll =>
+      item.roll.id === rejectedRollId && item.origin === "local" && item.delivery === "sent"
+        ? { ...item, delivery: "local" }
+        : item
+    )
+  );
+
+  const rejectedRoll = recentRolls.find((item) => item.roll.id === rejectedRollId);
+  if (rejectedRoll) {
+    rememberLastLiveRoll(rejectedRoll);
+  }
+
+  broadcastHistory();
+}
+
 function startSocketKeepAlive(activeSocket: WebSocket): void {
   stopSocketKeepAlive();
   socketKeepAliveTimer = setInterval(() => {
@@ -519,6 +542,11 @@ function handleServerMessage(message: ServerMessage): void {
       return;
 
     case "error":
+      if (message.code === "ignored_roll") {
+        markPendingRoomRollRejected(message.rollId);
+        return;
+      }
+
       if (isTerminalRoomError(message.code)) {
         manualDisconnect = true;
         forcedDisconnectDetail = message.message;
