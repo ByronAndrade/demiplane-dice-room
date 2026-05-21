@@ -1,0 +1,393 @@
+import { spawn } from "node:child_process";
+import { randomUUID } from "node:crypto";
+import http from "node:http";
+import { once } from "node:events";
+import WebSocket from "ws";
+
+const externalServerUrl = process.env.SERVER_URL?.trim();
+const host = process.env.HOST ?? "127.0.0.1";
+const port = Number.parseInt(process.env.PORT ?? String(19_000 + Math.floor(Math.random() * 20_000)), 10);
+const serverUrl = externalServerUrl || `ws://${host}:${port}`;
+const statusUrl = `http://${host}:${port}/health`;
+const channel = process.env.CHANNEL ?? `room-flow-${Date.now()}`;
+const password = process.env.PASSWORD ?? randomUUID();
+const playerCount = Number.parseInt(process.env.PLAYER_COUNT ?? "3", 10);
+const scenarioTimeoutMs = Number.parseInt(process.env.SCENARIO_TIMEOUT_MS ?? "30000", 10);
+const clients = new Set();
+
+let serverProcess;
+
+async function main() {
+  try {
+    if (!externalServerUrl) {
+      serverProcess = startLocalRelay();
+      await waitForHealth();
+    }
+
+    await runScenario();
+    console.log(`OK room flow simulation passed with ${playerCount} players on ${serverUrl}`);
+  } finally {
+    for (const client of clients) {
+      client.close();
+    }
+
+    if (serverProcess) {
+      serverProcess.kill("SIGTERM");
+      await Promise.race([once(serverProcess, "exit"), delay(1500)]);
+    }
+  }
+}
+
+function startLocalRelay() {
+  const child = spawn(process.execPath, ["server/dist/index.js"], {
+    cwd: process.cwd(),
+    env: {
+      ...process.env,
+      HOST: host,
+      PORT: String(port)
+    },
+    stdio: ["ignore", "pipe", "pipe"]
+  });
+
+  child.stdout.on("data", (data) => {
+    if (process.env.VERBOSE_ROOM_FLOW) {
+      process.stdout.write(`[relay] ${data}`);
+    }
+  });
+  child.stderr.on("data", (data) => process.stderr.write(`[relay] ${data}`));
+  child.on("exit", (code, signal) => {
+    if (code !== 0 && signal !== "SIGTERM") {
+      console.error(`Relay exited unexpectedly with code ${code ?? signal}`);
+    }
+  });
+
+  return child;
+}
+
+async function waitForHealth() {
+  const startedAt = Date.now();
+  while (Date.now() - startedAt < 10_000) {
+    try {
+      const status = await getJson(statusUrl);
+      if (status.ok === true) {
+        return;
+      }
+    } catch {
+      // Server is still starting.
+    }
+    await delay(120);
+  }
+
+  throw new Error(`Relay did not become healthy at ${statusUrl}`);
+}
+
+async function runScenario() {
+  const hostClient = await connectClient({
+    clientId: `host-${randomUUID()}`,
+    playerName: "Byron",
+    characterName: "Narrador",
+    roomRole: "host"
+  });
+  const hostWelcome = await hostClient.waitFor((message) => message.type === "welcome", "host welcome");
+  assertEqual(hostWelcome.players.length, 1, "host starts alone in the room");
+
+  const players = [];
+  for (let index = 0; index < playerCount; index += 1) {
+    const player = await connectClient({
+      clientId: `player-${index + 1}-${randomUUID()}`,
+      playerName: ["Pablo", "Mina", "Theo"][index] ?? `Player ${index + 1}`,
+      characterName: ["Pablo", "Mina", "Theo"][index] ?? `Character ${index + 1}`,
+      roomRole: "player"
+    });
+    players.push(player);
+    await player.waitFor((message) => message.type === "approval_required", `${player.playerName} approval required`);
+    const pending = await hostClient.waitFor(
+      (message) => message.type === "pending_players" && message.pendingPlayers.some((item) => item.clientId === player.clientId),
+      `${player.playerName} visible to host without refresh`
+    );
+    assert(pending.pendingPlayers.length >= 1, "host receives pending player list");
+    hostClient.send({ type: "approve_player", version: 1, clientId: player.clientId });
+    await player.waitFor((message) => message.type === "welcome", `${player.playerName} welcome after approval`);
+  }
+
+  await waitForPresenceCount([hostClient, ...players], playerCount + 1);
+  const clearedPending = await hostClient.waitFor(
+    (message) => message.type === "pending_players" && message.pendingPlayers.length === 0,
+    "pending list clears after approvals"
+  );
+  assertEqual(clearedPending.pendingPlayers.length, 0, "pending requests clear after approval");
+
+  const hostRoll = createRoll(hostClient, "host-strength", "STRENGTH + ATHLETICS", 2);
+  hostClient.sendRoll(hostRoll);
+  await waitForRoll([hostClient, ...players], hostRoll.id, "host roll reaches everyone");
+
+  const playerRoll = createRoll(players[0], "player-resolve", "RESOLVE + AWARENESS", 1);
+  players[0].sendRoll(playerRoll);
+  await waitForRoll([hostClient, ...players], playerRoll.id, "player roll reaches host and table");
+
+  const ignoredRoll = createRoll(players[0], "ignored-dice-pool", "CUSTOM", null, {
+    rawText: "CUSTOM\nDICE POOL\nREGULAR HUNGER\nADD DICE TO ROLL"
+  });
+  players[0].sendRoll(ignoredRoll);
+  const ignoredError = await players[0].waitFor(
+    (message) => message.type === "error" && message.code === "ignored_roll",
+    "ignored roll error"
+  );
+  assertEqual(ignoredError.rollId, ignoredRoll.id, "ignored_roll includes the offending roll id");
+  assertEqual(players[0].socket.readyState, WebSocket.OPEN, "ignored roll does not close player socket");
+
+  const afterIgnoredRoll = createRoll(players[0], "after-ignored", "DEXTERITY + STEALTH", 3);
+  players[0].sendRoll(afterIgnoredRoll);
+  await waitForRoll([hostClient, ...players], afterIgnoredRoll.id, "player still publishes after ignored roll");
+
+  const repeatedCustomRolls = [
+    createRoll(players[1], "custom-repeat-1", "CUSTOM", 1, { rawText: "CUSTOM\nSUCCESS: 1\nDETAILS\n6" }),
+    createRoll(players[1], "custom-repeat-2", "CUSTOM", 1, { rawText: "CUSTOM\nSUCCESS: 1\nDETAILS\n6" })
+  ];
+  for (const roll of repeatedCustomRolls) {
+    players[1].sendRoll(roll);
+  }
+  await waitForRoll([hostClient, ...players], repeatedCustomRolls[0].id, "first repeated custom roll delivered");
+  await waitForRoll([hostClient, ...players], repeatedCustomRolls[1].id, "second repeated custom roll delivered");
+
+  const reconnectedPlayer = await reconnectClient(players[2]);
+  players[2] = reconnectedPlayer;
+  await waitForPresenceCount([hostClient, ...players], playerCount + 1);
+  const reconnectRoll = createRoll(reconnectedPlayer, "approved-reconnect", "WITS + TECHNOLOGY", 2);
+  reconnectedPlayer.sendRoll(reconnectRoll);
+  await waitForRoll([hostClient, ...players], reconnectRoll.id, "approved reconnected player can publish");
+
+  const reconnectedHost = await reconnectClient(hostClient);
+  await waitForPresenceCount([reconnectedHost, ...players], playerCount + 1);
+  const hostAfterReconnectRoll = createRoll(reconnectedHost, "host-reconnect", "CHARISMA + PERSUASION", 4);
+  reconnectedHost.sendRoll(hostAfterReconnectRoll);
+  await waitForRoll([reconnectedHost, ...players], hostAfterReconnectRoll.id, "host can publish after reconnect");
+
+  reconnectedHost.send({ type: "leave_room", version: 1 });
+  await Promise.all(
+    players.map((player) =>
+      player.waitFor((message) => message.type === "error" && message.code === "room_closed", `${player.playerName} room_closed`)
+    )
+  );
+}
+
+async function connectClient(identity) {
+  const client = new RoomClient(identity);
+  clients.add(client);
+  await client.connect();
+  return client;
+}
+
+async function reconnectClient(client) {
+  client.close();
+  clients.delete(client);
+  const nextClient = await connectClient({
+    clientId: client.clientId,
+    playerName: client.playerName,
+    characterName: client.characterName,
+    roomRole: client.roomRole
+  });
+  await nextClient.waitFor((message) => message.type === "welcome", `${client.playerName} reconnect welcome`);
+  return nextClient;
+}
+
+async function waitForPresenceCount(targetClients, expectedCount) {
+  await Promise.all(
+    targetClients.map((client) =>
+      client.waitFor(
+        (message) => message.type === "presence" && message.players.length === expectedCount,
+        `${client.playerName} sees ${expectedCount} players`
+      )
+    )
+  );
+}
+
+async function waitForRoll(targetClients, rollId, label) {
+  await Promise.all(
+    targetClients.map((client) =>
+      client.waitFor(
+        (message) => message.type === "roll" && message.roll.id === rollId,
+        `${label}: ${client.playerName}`
+      )
+    )
+  );
+}
+
+class RoomClient {
+  constructor({ clientId, playerName, characterName, roomRole }) {
+    this.clientId = clientId;
+    this.playerName = playerName;
+    this.characterName = characterName;
+    this.roomRole = roomRole;
+    this.messages = [];
+    this.waiters = new Set();
+  }
+
+  async connect() {
+    this.socket = new WebSocket(serverUrl);
+    this.socket.on("message", (data) => this.handleMessage(data));
+    this.socket.on("close", () => this.rejectWaiters(new Error(`${this.playerName} socket closed`)));
+    this.socket.on("error", (error) => this.rejectWaiters(error));
+    await once(this.socket, "open");
+    this.send({
+      type: "hello",
+      version: 1,
+      clientId: this.clientId,
+      playerName: this.playerName,
+      characterName: this.characterName,
+      roomRole: this.roomRole,
+      channel,
+      password
+    });
+  }
+
+  send(message) {
+    if (this.socket?.readyState !== WebSocket.OPEN) {
+      throw new Error(`${this.playerName} cannot send while socket is not open`);
+    }
+    this.socket.send(JSON.stringify(message));
+  }
+
+  sendRoll(roll) {
+    this.send({ type: "roll", version: 1, roll });
+  }
+
+  waitFor(predicate, label, timeoutMs = scenarioTimeoutMs) {
+    const existing = this.messages.find(predicate);
+    if (existing) {
+      return Promise.resolve(existing);
+    }
+
+    return new Promise((resolve, reject) => {
+      const waiter = { predicate, resolve, reject, label, timer: undefined };
+      waiter.timer = setTimeout(() => {
+        this.waiters.delete(waiter);
+        reject(new Error(`Timed out waiting for ${label}. Last messages: ${summarizeMessages(this.messages)}`));
+      }, timeoutMs);
+      this.waiters.add(waiter);
+    });
+  }
+
+  close() {
+    if (this.socket && this.socket.readyState === WebSocket.OPEN) {
+      this.socket.close();
+    }
+  }
+
+  handleMessage(data) {
+    const message = JSON.parse(data.toString("utf8"));
+    this.messages.push(message);
+    this.messages = this.messages.slice(-200);
+
+    for (const waiter of [...this.waiters]) {
+      if (!waiter.predicate(message)) {
+        continue;
+      }
+
+      clearTimeout(waiter.timer);
+      this.waiters.delete(waiter);
+      waiter.resolve(message);
+    }
+  }
+
+  rejectWaiters(error) {
+    for (const waiter of [...this.waiters]) {
+      clearTimeout(waiter.timer);
+      this.waiters.delete(waiter);
+      waiter.reject(error);
+    }
+  }
+}
+
+function createRoll(client, suffix, title, successes, overrides = {}) {
+  const id = `${client.clientId}:${suffix}:${Date.now()}:${randomUUID()}`;
+  const dice = overrides.dice ?? [
+    { kind: "regular", value: 10, sides: 10, face: "critical" },
+    { kind: "regular", value: 8, sides: 10, face: "success" },
+    { kind: "hunger", value: 2, sides: 10, face: "blank" }
+  ];
+
+  return {
+    type: "roll",
+    version: 1,
+    id,
+    clientId: client.clientId,
+    playerName: client.playerName,
+    characterName: client.characterName,
+    source: "demiplane",
+    system: "vampire",
+    rollTitle: title,
+    successes,
+    total: null,
+    dice,
+    rawText: overrides.rawText ?? `${title}\nSUCCESSES: ${successes}\nDETAILS\n10 8 2`,
+    createdAt: new Date().toISOString()
+  };
+}
+
+function assert(value, message) {
+  if (!value) {
+    throw new Error(message);
+  }
+}
+
+function assertEqual(actual, expected, message) {
+  if (actual !== expected) {
+    throw new Error(`${message}. Expected ${expected}, got ${actual}`);
+  }
+}
+
+function summarizeMessages(messages) {
+  return messages
+    .slice(-8)
+    .map((message) => {
+      if (message.type === "roll") {
+        return `roll:${message.roll?.id}`;
+      }
+      if (message.type === "error") {
+        return `error:${message.code}:${message.rollId ?? ""}`;
+      }
+      if (message.type === "pending_players") {
+        return `pending:${message.pendingPlayers?.length ?? 0}`;
+      }
+      if (message.type === "presence") {
+        return `presence:${message.players?.length ?? 0}`;
+      }
+      return message.type;
+    })
+    .join(", ");
+}
+
+function delay(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function getJson(url) {
+  return new Promise((resolve, reject) => {
+    const request = http.get(url, (response) => {
+      let body = "";
+      response.setEncoding("utf8");
+      response.on("data", (chunk) => {
+        body += chunk;
+      });
+      response.on("end", () => {
+        if ((response.statusCode ?? 0) < 200 || (response.statusCode ?? 0) >= 300) {
+          reject(new Error(`HTTP ${response.statusCode}: ${body}`));
+          return;
+        }
+
+        try {
+          resolve(JSON.parse(body));
+        } catch (error) {
+          reject(error);
+        }
+      });
+    });
+    request.on("error", reject);
+    request.setTimeout(3000, () => {
+      request.destroy(new Error(`Timed out requesting ${url}`));
+    });
+  });
+}
+
+await main();

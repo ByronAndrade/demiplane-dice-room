@@ -19,6 +19,7 @@
     "host:relay": "node scripts/start-relay.mjs",
     "package:extension": "npm run build:extension && node scripts/package-extension.mjs",
     "simulate:roll": "node server/scripts/send-test-roll.mjs",
+    "test:room-flow": "npm run build:server && node server/scripts/room-flow-test.mjs",
     "start:server": "npm run start --workspace server",
     "typecheck": "npm run typecheck --workspace server && npm run typecheck --workspace relay-cloudflare && npm run typecheck --workspace extension"
   },
