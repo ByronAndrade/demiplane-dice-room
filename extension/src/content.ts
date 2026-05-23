@@ -62,13 +62,14 @@ const defaultDiceAnimationScale = 0.75;
 const minDiceAnimationScale = 0.45;
 const maxDiceAnimationScale = 1.15;
 const defaultRelayUrl = "wss://demiplane-dice-room-relay.foxbyron.workers.dev";
-const extensionUiVersion = "0.1.97";
+const extensionUiVersion = "0.1.98";
 const pageBridgeMessageSource = "demiplane-dice-room-page";
 const pageDiceRollResponseWaitMs = 1400;
 const pageDiceRollResponseTtlMs = 8_000;
 const activeToastByActor = new Map<string, HTMLElement>();
 let collapsed = true;
 let settingsOpen = false;
+let compactPanel = false;
 let panelOpacity = 0.94;
 let diceAnimationScale = defaultDiceAnimationScale;
 let panelPosition: { left: number; top: number } | undefined;
@@ -138,6 +139,7 @@ const messages = {
     disconnected: "Desconectado",
     error: "Erro",
     localMode: "Local",
+    diceRoomTitle: "Sala de dados",
     clearDice: "Limpar dados",
     clearDiceDisabled: "Disponivel depois da revelacao dos dados",
     openHistory: "Mostrar historico de rolagens da sala",
@@ -238,6 +240,7 @@ const messages = {
     disconnected: "Disconnected",
     error: "Error",
     localMode: "Local",
+    diceRoomTitle: "Dice Room",
     clearDice: "Clear dice",
     clearDiceDisabled: "Available after the dice reveal",
     openHistory: "Show room roll history",
@@ -402,6 +405,7 @@ async function initializeContentScript(): Promise<void> {
       connectionState = message.state;
       if (revealPendingRequests) {
         collapsed = true;
+        compactPanel = false;
         diagnosticOpen = false;
         settingsOpen = true;
         void savePanelUiState();
@@ -2222,8 +2226,10 @@ function createPanel(): {
   count: HTMLSpanElement;
   countLabel: HTMLSpanElement;
   list: HTMLOListElement;
+  brandButton: HTMLButtonElement;
   clearDiceButton: HTMLButtonElement;
   toggle: HTMLButtonElement;
+  tooltip: HTMLDivElement;
   diagnostic: HTMLDivElement;
   panelRoot: HTMLElement;
   header: HTMLElement;
@@ -2290,6 +2296,45 @@ function createPanel(): {
         display: none;
       }
 
+      :host([data-compact="true"]) .panel {
+        width: 52px;
+        height: 52px;
+        max-height: none;
+        border-radius: 999px;
+        overflow: visible;
+      }
+
+      :host([data-compact="true"]) .header {
+        width: 52px;
+        height: 52px;
+        justify-content: center;
+        border-bottom: 0;
+        padding: 0;
+        cursor: default;
+      }
+
+      :host([data-compact="true"]) .title {
+        width: 100%;
+        height: 100%;
+      }
+
+      :host([data-compact="true"]) .brand-button {
+        width: 100%;
+        height: 100%;
+        border-radius: 999px;
+        border-color: rgba(218, 55, 70, 0.9);
+        background: rgba(88, 14, 22, 0.9);
+        box-shadow: 0 0 0 1px rgba(218, 55, 70, 0.5) inset;
+      }
+
+      :host([data-compact="true"]) .header-actions,
+      :host([data-compact="true"]) .title span,
+      :host([data-compact="true"]) .list,
+      :host([data-compact="true"]) .diagnostic,
+      :host([data-compact="true"]) .settings-panel {
+        display: none;
+      }
+
       :host(:not([data-diagnostic="true"])) .diagnostic {
         display: none;
       }
@@ -2349,18 +2394,69 @@ function createPanel(): {
       }
 
       .title {
-        display: grid;
-        gap: 2px;
+        display: flex;
+        align-items: center;
+        gap: 8px;
       }
 
-      .title strong {
-        font-size: 13px;
-        line-height: 1.1;
+      .brand-button {
+        width: 34px;
+        height: 34px;
+        display: inline-grid;
+        place-items: center;
+        flex: 0 0 auto;
+        border: 1px solid rgba(190, 202, 220, 0.18);
+        border-radius: 999px;
+        color: #f3f6fb;
+        background: rgba(15, 19, 25, 0.86);
+        cursor: pointer;
+        font: inherit;
+      }
+
+      .brand-button:hover {
+        border-color: rgba(218, 55, 70, 0.72);
+        background: rgba(32, 39, 48, 0.95);
+      }
+
+      .dice-mark {
+        position: relative;
+        display: block;
+        width: 24px;
+        height: 22px;
+      }
+
+      .dice-mark i {
+        position: absolute;
+        width: 11px;
+        height: 11px;
+        border: 1px solid rgba(235, 241, 250, 0.92);
+        transform: rotate(45deg);
+        background: #07090d;
+      }
+
+      .dice-mark i:nth-child(1) {
+        left: 1px;
+        top: 8px;
+      }
+
+      .dice-mark i:nth-child(2) {
+        left: 7px;
+        top: 1px;
+        border-color: rgba(255, 205, 211, 0.96);
+        background: #b91828;
+        z-index: 2;
+      }
+
+      .dice-mark i:nth-child(3) {
+        right: 1px;
+        top: 8px;
       }
 
       .title span {
         color: #aeb8c7;
         font-size: 11px;
+        font-weight: 800;
+        white-space: nowrap;
       }
 
       .header-actions {
@@ -2431,42 +2527,6 @@ function createPanel(): {
         background: #2a3340;
       }
 
-      .icon-button[data-tooltip]::after,
-      .toggle[data-tooltip]::after {
-        content: attr(data-tooltip);
-        position: absolute;
-        right: 0;
-        top: calc(100% + 8px);
-        z-index: 3;
-        width: max-content;
-        max-width: 220px;
-        border: 1px solid rgba(190, 202, 220, 0.18);
-        border-radius: 6px;
-        padding: 6px 8px;
-        color: #f4f6fa;
-        background: rgba(18, 23, 30, 0.98);
-        box-shadow: 0 10px 26px rgba(0, 0, 0, 0.34);
-        font-size: 11px;
-        font-weight: 750;
-        line-height: 1.25;
-        text-align: left;
-        white-space: normal;
-        opacity: 0;
-        pointer-events: none;
-        transform: translateY(-3px);
-        transition:
-          opacity 120ms ease,
-          transform 120ms ease;
-      }
-
-      .icon-button[data-tooltip]:hover::after,
-      .icon-button[data-tooltip]:focus-visible::after,
-      .toggle[data-tooltip]:hover::after,
-      .toggle[data-tooltip]:focus-visible::after {
-        opacity: 1;
-        transform: translateY(0);
-      }
-
       .clear-dice {
         border-color: #4a5260;
         color: #aeb8c7;
@@ -2486,6 +2546,45 @@ function createPanel(): {
       .clear-dice:disabled {
         cursor: default;
         opacity: 0.48;
+      }
+
+      .clear-dice svg {
+        width: 17px;
+        height: 17px;
+        display: block;
+        margin: auto;
+        stroke: currentColor;
+        stroke-width: 2;
+        stroke-linecap: round;
+        stroke-linejoin: round;
+        fill: none;
+      }
+
+      .tooltip-portal {
+        position: fixed;
+        z-index: 2147483647;
+        max-width: 220px;
+        border: 1px solid rgba(190, 202, 220, 0.18);
+        border-radius: 6px;
+        padding: 6px 8px;
+        color: #f4f6fa;
+        background: rgba(18, 23, 30, 0.98);
+        box-shadow: 0 10px 26px rgba(0, 0, 0, 0.34);
+        font-size: 11px;
+        font-weight: 750;
+        line-height: 1.25;
+        text-align: left;
+        pointer-events: none;
+        opacity: 0;
+        transform: translateY(-3px);
+        transition:
+          opacity 120ms ease,
+          transform 120ms ease;
+      }
+
+      .tooltip-portal.visible {
+        opacity: 1;
+        transform: translateY(0);
       }
 
       .status-connected {
@@ -3026,11 +3125,24 @@ function createPanel(): {
     <section class="panel" aria-live="polite">
       <header class="header">
         <div class="title">
-          <strong>Dice Room</strong>
+          <button data-brand-button class="brand-button" type="button" aria-label="Sala de dados" data-tooltip="Sala de dados">
+            <span class="dice-mark" aria-hidden="true"><i></i><i></i><i></i></span>
+          </button>
           <span data-count-label><span data-count>0</span> rolagens</span>
         </div>
         <div class="header-actions">
-          <button data-clear-dice class="icon-button clear-dice" type="button" aria-label="Limpar dados" data-tooltip="Limpar dados" hidden>×</button>
+          <button data-clear-dice class="icon-button clear-dice" type="button" aria-label="Limpar dados" data-tooltip="Limpar dados" hidden>
+            <svg viewBox="0 0 24 24" aria-hidden="true">
+              <path d="M14 3v5" />
+              <path d="M11 8h6" />
+              <path d="M12 8l-2 9" />
+              <path d="M16 8l2 9" />
+              <path d="M8 17h12" />
+              <path d="M9 17l-1 4" />
+              <path d="M19 17l1 4" />
+              <path d="M8 21h12" />
+            </svg>
+          </button>
           <button data-status class="status" type="button" title="Abrir diagnostico">Desconectado</button>
           <span class="version-chip" title="Versao da extensao">v${extensionUiVersion}</span>
           <span data-players class="players-chip" title="Jogadores na sala">0</span>
@@ -3169,6 +3281,7 @@ function createPanel(): {
       </div>
       <ol data-list class="list"></ol>
     </section>
+    <div data-tooltip-portal class="tooltip-portal" hidden></div>
   `;
 
   const panelRoot = shadow.querySelector(".panel");
@@ -3178,8 +3291,10 @@ function createPanel(): {
   const count = shadow.querySelector("[data-count]");
   const countLabel = shadow.querySelector("[data-count-label]");
   const list = shadow.querySelector("[data-list]");
+  const brandButton = shadow.querySelector("[data-brand-button]");
   const clearDiceButton = shadow.querySelector("[data-clear-dice]");
   const toggle = shadow.querySelector("[data-toggle]");
+  const tooltip = shadow.querySelector("[data-tooltip-portal]");
   const diagnostic = shadow.querySelector("[data-diagnostic]");
   const settings = shadow.querySelector("[data-settings-button]");
   const settingsPanel = shadow.querySelector("[data-settings-panel]");
@@ -3228,8 +3343,10 @@ function createPanel(): {
     !(count instanceof HTMLSpanElement) ||
     !(countLabel instanceof HTMLSpanElement) ||
     !(list instanceof HTMLOListElement) ||
+    !(brandButton instanceof HTMLButtonElement) ||
     !(clearDiceButton instanceof HTMLButtonElement) ||
     !(toggle instanceof HTMLButtonElement) ||
+    !(tooltip instanceof HTMLDivElement) ||
     !(diagnostic instanceof HTMLDivElement) ||
     !(settings instanceof HTMLButtonElement) ||
     !(settingsPanel instanceof HTMLDivElement) ||
@@ -3276,6 +3393,17 @@ function createPanel(): {
   status.addEventListener("click", () => {
     diagnosticOpen = !diagnosticOpen;
     renderPanel();
+  });
+
+  brandButton.addEventListener("click", () => {
+    compactPanel = !compactPanel;
+    if (compactPanel) {
+      collapsed = true;
+      settingsOpen = false;
+      diagnosticOpen = false;
+    }
+    renderPanel();
+    void savePanelUiState();
   });
 
   clearDiceButton.addEventListener("click", () => {
@@ -3452,6 +3580,7 @@ function createPanel(): {
   });
 
   installPanelDrag(host, header);
+  installPanelTooltips(shadow, tooltip);
 
   return {
     host,
@@ -3460,8 +3589,10 @@ function createPanel(): {
     count,
     countLabel,
     list,
+    brandButton,
     clearDiceButton,
     toggle,
+    tooltip,
     diagnostic,
     panelRoot,
     header,
@@ -3528,6 +3659,7 @@ function renderPanel(): void {
   panel.countLabel.hidden = unreadRolls.length === 0;
   panel.countLabel.title = t("historyCount", visibleRolls.length);
   panel.host.dataset.collapsed = String(collapsed);
+  panel.host.dataset.compact = String(compactPanel);
   panel.host.dataset.diagnostic = String(diagnosticOpen);
   panel.host.dataset.settings = String(settingsOpen);
   panel.host.dataset.positioned = String(Boolean(panelPosition));
@@ -3582,6 +3714,8 @@ function renderPanel(): void {
   panel.diceAnimationInput.checked = shouldAnimateDice();
   panel.sharedDiceInput.checked = shouldUseSharedDice();
   panel.diceSizeInput.value = String(diceAnimationScale);
+  panel.brandButton.dataset.tooltip = t("diceRoomTitle");
+  panel.brandButton.setAttribute("aria-label", t("diceRoomTitle"));
   panel.toggle.textContent = collapsed ? "^" : "v";
   panel.toggle.removeAttribute("title");
   panel.toggle.dataset.tooltip = collapsed ? t("openHistory") : t("closeHistory");
@@ -3959,6 +4093,85 @@ function installPanelDrag(host: HTMLDivElement, handle: HTMLElement): void {
   });
 }
 
+function installPanelTooltips(root: ShadowRoot, tooltip: HTMLDivElement): void {
+  let activeTarget: HTMLElement | undefined;
+
+  const showTooltip = (target: HTMLElement) => {
+    const text = target.dataset.tooltip;
+    if (!text) {
+      hideTooltip();
+      return;
+    }
+
+    activeTarget = target;
+    tooltip.textContent = text;
+    tooltip.hidden = false;
+    tooltip.classList.add("visible");
+    positionTooltip(target, tooltip);
+  };
+
+  const maybeShowTooltip = (target: EventTarget | null) => {
+    const element = target instanceof Element ? target.closest("[data-tooltip]") : null;
+    if (!(element instanceof HTMLElement) || element.hasAttribute("hidden")) {
+      return;
+    }
+
+    showTooltip(element);
+  };
+
+  const maybeHideTooltip = (target: EventTarget | null, relatedTarget: EventTarget | null) => {
+    if (!activeTarget) {
+      return;
+    }
+
+    const element = target instanceof Element ? target.closest("[data-tooltip]") : null;
+    if (element !== activeTarget) {
+      return;
+    }
+
+    if (relatedTarget instanceof Node && activeTarget.contains(relatedTarget)) {
+      return;
+    }
+
+    hideTooltip();
+  };
+
+  const hideTooltip = () => {
+    activeTarget = undefined;
+    tooltip.classList.remove("visible");
+    tooltip.hidden = true;
+  };
+
+  root.addEventListener("pointerover", (event) => maybeShowTooltip(event.target));
+  root.addEventListener("pointerout", (event) => maybeHideTooltip(event.target, (event as PointerEvent).relatedTarget));
+  root.addEventListener("focusin", (event) => maybeShowTooltip(event.target));
+  root.addEventListener("focusout", (event) => maybeHideTooltip(event.target, (event as FocusEvent).relatedTarget));
+  root.addEventListener("pointermove", () => {
+    if (activeTarget) {
+      positionTooltip(activeTarget, tooltip);
+    }
+  });
+  window.addEventListener("scroll", hideTooltip, true);
+  window.addEventListener("resize", hideTooltip);
+}
+
+function positionTooltip(target: HTMLElement, tooltip: HTMLDivElement): void {
+  const rect = target.getBoundingClientRect();
+  const margin = 8;
+  const tooltipRect = tooltip.getBoundingClientRect();
+  const width = tooltipRect.width || 120;
+  const height = tooltipRect.height || 28;
+  const left = clampNumber(rect.right - width, margin, Math.max(margin, window.innerWidth - width - margin));
+  let top = rect.bottom + margin;
+
+  if (top + height > window.innerHeight - margin) {
+    top = rect.top - height - margin;
+  }
+
+  tooltip.style.left = `${left}px`;
+  tooltip.style.top = `${clampNumber(top, margin, Math.max(margin, window.innerHeight - height - margin))}px`;
+}
+
 function clampPanelPosition(left: number, top: number, host: HTMLElement): { left: number; top: number } {
   const rect = host.getBoundingClientRect();
   const width = rect.width || 300;
@@ -3976,9 +4189,10 @@ async function loadPanelUiState(): Promise<void> {
 
   const value = stored[panelUiStorageKey] as
     | {
-        collapsed?: unknown;
-        settingsOpen?: unknown;
-        opacity?: unknown;
+      collapsed?: unknown;
+      settingsOpen?: unknown;
+      compactPanel?: unknown;
+      opacity?: unknown;
         diceAnimationScale?: unknown;
         position?: unknown;
         language?: unknown;
@@ -3988,6 +4202,7 @@ async function loadPanelUiState(): Promise<void> {
 
   collapsed = value?.collapsed !== false;
   settingsOpen = value?.settingsOpen === true;
+  compactPanel = value?.compactPanel === true;
   panelOpacity = typeof value?.opacity === "number" ? clampNumber(value.opacity, minPanelOpacity, 1) : 0.94;
   diceAnimationScale =
     typeof value?.diceAnimationScale === "number"
@@ -4011,6 +4226,7 @@ async function savePanelUiState(): Promise<void> {
     [panelUiStorageKey]: {
       collapsed,
       settingsOpen,
+      compactPanel,
       opacity: panelOpacity,
       diceAnimationScale,
       position: panelPosition,
