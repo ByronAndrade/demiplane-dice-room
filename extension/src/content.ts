@@ -62,7 +62,7 @@ const defaultDiceAnimationScale = 0.75;
 const minDiceAnimationScale = 0.45;
 const maxDiceAnimationScale = 1.15;
 const defaultRelayUrl = "wss://demiplane-dice-room-relay.foxbyron.workers.dev";
-const extensionUiVersion = "0.1.103";
+const extensionUiVersion = "0.1.104";
 const pageBridgeMessageSource = "demiplane-dice-room-page";
 const pageDiceRollResponseWaitMs = 1400;
 const pageDiceRollResponseTtlMs = 8_000;
@@ -172,7 +172,12 @@ const messages = {
     hideCharacterName: "Fazer rolagem como Narrador",
     channel: "Canal",
     password: "Senha",
+    passwordConfirm: "Confirmar senha",
+    hostPasswordRequired: "Informe uma senha para criar a sala.",
+    passwordMismatch: "As senhas da sala nao conferem.",
     relayKey: "Chave do relay",
+    storytellerRollOn: "Rolando como Narrador",
+    storytellerRollOff: "Fazer rolagem como Narrador",
     save: "Salvar",
     connect: "Conectar",
     disconnect: "Desconectar",
@@ -278,7 +283,12 @@ const messages = {
     hideCharacterName: "Roll as Storyteller",
     channel: "Channel",
     password: "Password",
+    passwordConfirm: "Confirm password",
+    hostPasswordRequired: "Enter a password to create the room.",
+    passwordMismatch: "Room passwords do not match.",
     relayKey: "Relay key",
+    storytellerRollOn: "Rolling as Storyteller",
+    storytellerRollOff: "Roll as Storyteller",
     save: "Save",
     connect: "Connect",
     disconnect: "Disconnect",
@@ -2239,6 +2249,7 @@ function createPanel(): {
   list: HTMLOListElement;
   brandButton: HTMLButtonElement;
   clearDiceButton: HTMLButtonElement;
+  storytellerRollButton: HTMLButtonElement;
   toggle: HTMLButtonElement;
   tooltip: HTMLDivElement;
   diagnostic: HTMLDivElement;
@@ -2270,6 +2281,8 @@ function createPanel(): {
   hideCharacterNameInput: HTMLInputElement;
   channelInput: HTMLInputElement;
   passwordInput: HTMLInputElement;
+  passwordConfirmRow: HTMLDivElement;
+  passwordConfirmInput: HTMLInputElement;
   relayInput: HTMLInputElement;
   relayKeyInput: HTMLInputElement;
   communityRelayButton: HTMLButtonElement;
@@ -2515,6 +2528,23 @@ function createPanel(): {
         background: #1b222b;
       }
 
+      .storyteller-roll {
+        border-color: #4a5260;
+        color: #aeb8c7;
+        background: #1b222b;
+      }
+
+      .storyteller-roll[aria-pressed="true"] {
+        border-color: rgba(80, 188, 126, 0.52);
+        color: #d7ffe6;
+        background: #183526;
+        box-shadow: 0 0 0 1px rgba(80, 188, 126, 0.16) inset;
+      }
+
+      .storyteller-roll[aria-pressed="true"]:hover {
+        background: #214833;
+      }
+
       .clear-dice:not(:disabled) {
         border-color: rgba(80, 188, 126, 0.48);
         color: #d7ffe6;
@@ -2538,6 +2568,18 @@ function createPanel(): {
         transform: translateX(-1.5px);
         stroke: currentColor;
         stroke-width: 2;
+        stroke-linecap: round;
+        stroke-linejoin: round;
+        fill: none;
+      }
+
+      .storyteller-roll svg {
+        width: 19px;
+        height: 18px;
+        display: block;
+        margin: auto;
+        stroke: currentColor;
+        stroke-width: 1.85;
         stroke-linecap: round;
         stroke-linejoin: round;
         fill: none;
@@ -3107,7 +3149,7 @@ function createPanel(): {
 
       .settings-actions {
         display: grid;
-        grid-template-columns: 1fr 1fr 1fr;
+        grid-template-columns: 1fr 1fr;
         gap: 7px;
         margin-top: 10px;
       }
@@ -3297,6 +3339,18 @@ function createPanel(): {
               <path d="M8 21h12" />
             </svg>
           </button>
+          <button data-storyteller-roll class="icon-button storyteller-roll" type="button" aria-label="Fazer rolagem como Narrador" data-tooltip="Fazer rolagem como Narrador" aria-pressed="false" hidden>
+            <svg viewBox="0 0 28 24" aria-hidden="true">
+              <path d="M4 5c3-1.6 6-1.6 9 0v6.5c0 3.2-1.8 5.6-4.5 6.6C5.8 17.1 4 14.7 4 11.5Z" />
+              <path d="M6.9 9.2h.1" />
+              <path d="M10 9.2h.1" />
+              <path d="M6.9 13.5c1.2-.8 2.4-.8 3.6 0" />
+              <path d="M15 5c3-1.6 6-1.6 9 0v6.5c0 3.2-1.8 5.6-4.5 6.6-2.7-1-4.5-3.4-4.5-6.6Z" />
+              <path d="M17.9 9.2h.1" />
+              <path d="M21 9.2h.1" />
+              <path d="M17.7 13.4c1.1.8 2.5.8 3.7 0" />
+            </svg>
+          </button>
           <button data-status class="status" type="button" data-tooltip="Abrir diagnostico">Desconectado</button>
           <span class="version-chip" title="Versao da extensao">v${extensionUiVersion}</span>
           <span data-players class="players-chip" data-tooltip="Jogadores na sala">0</span>
@@ -3368,6 +3422,12 @@ function createPanel(): {
             </label>
             <input id="dice-room-password" data-password type="password" autocomplete="current-password" />
           </div>
+          <div data-password-confirm-row class="settings-row" hidden>
+            <label for="dice-room-password-confirm">
+              <span data-settings-password-confirm-label>Confirmar senha</span>
+            </label>
+            <input id="dice-room-password-confirm" data-password-confirm type="password" autocomplete="new-password" />
+          </div>
           <details class="advanced-settings" data-advanced-settings>
             <summary data-settings-advanced-label>Configuracoes avancadas</summary>
             <div class="advanced-content">
@@ -3390,7 +3450,7 @@ function createPanel(): {
             </div>
           </details>
           <div class="settings-actions">
-            <button data-save-room type="button">Salvar</button>
+            <button data-save-room type="button" hidden>Salvar</button>
             <button data-connect-room type="button">Conectar</button>
             <button data-disconnect-room type="button">Desconectar</button>
           </div>
@@ -3456,6 +3516,7 @@ function createPanel(): {
   const list = shadow.querySelector("[data-list]");
   const brandButton = shadow.querySelector("[data-brand-button]");
   const clearDiceButton = shadow.querySelector("[data-clear-dice]");
+  const storytellerRollButton = shadow.querySelector("[data-storyteller-roll]");
   const toggle = shadow.querySelector("[data-toggle]");
   const tooltip = shadow.querySelector("[data-tooltip-portal]");
   const diagnostic = shadow.querySelector("[data-diagnostic]");
@@ -3486,6 +3547,8 @@ function createPanel(): {
   const hideCharacterNameInput = shadow.querySelector("[data-hide-character-name]");
   const channelInput = shadow.querySelector("[data-channel]");
   const passwordInput = shadow.querySelector("[data-password]");
+  const passwordConfirmRow = shadow.querySelector("[data-password-confirm-row]");
+  const passwordConfirmInput = shadow.querySelector("[data-password-confirm]");
   const relayInput = shadow.querySelector("[data-relay]");
   const relayKeyInput = shadow.querySelector("[data-relay-key]");
   const communityRelayButton = shadow.querySelector("[data-community-relay]");
@@ -3509,6 +3572,7 @@ function createPanel(): {
     !(list instanceof HTMLOListElement) ||
     !(brandButton instanceof HTMLButtonElement) ||
     !(clearDiceButton instanceof HTMLButtonElement) ||
+    !(storytellerRollButton instanceof HTMLButtonElement) ||
     !(toggle instanceof HTMLButtonElement) ||
     !(tooltip instanceof HTMLDivElement) ||
     !(diagnostic instanceof HTMLDivElement) ||
@@ -3539,6 +3603,8 @@ function createPanel(): {
     !(hideCharacterNameInput instanceof HTMLInputElement) ||
     !(channelInput instanceof HTMLInputElement) ||
     !(passwordInput instanceof HTMLInputElement) ||
+    !(passwordConfirmRow instanceof HTMLDivElement) ||
+    !(passwordConfirmInput instanceof HTMLInputElement) ||
     !(relayInput instanceof HTMLInputElement) ||
     !(relayKeyInput instanceof HTMLInputElement) ||
     !(communityRelayButton instanceof HTMLButtonElement) ||
@@ -3589,6 +3655,15 @@ function createPanel(): {
     } satisfies { kind: "content:dice-clear"; event: SharedDiceClearEvent });
   });
 
+  storytellerRollButton.addEventListener("click", () => {
+    const config = currentConfig ?? defaultConfig;
+    if (config.roomRole !== "host") {
+      return;
+    }
+
+    setStorytellerRollPreference(!config.hideCharacterName);
+  });
+
   toggle.addEventListener("click", () => {
     collapsed = !collapsed;
     if (!collapsed) {
@@ -3627,6 +3702,7 @@ function createPanel(): {
       return;
     }
 
+    passwordConfirmInput.value = "";
     currentConfig = {
       ...(currentConfig ?? defaultConfig),
       roomRole: "player",
@@ -3651,7 +3727,7 @@ function createPanel(): {
   });
 
   connectRoomButton.addEventListener("click", () => {
-    void savePanelRoomConfig().then(() => sendRuntimeMessage({ kind: "popup:connect" }));
+    void connectPanelRoom();
   });
 
   disconnectRoomButton.addEventListener("click", () => {
@@ -3771,6 +3847,7 @@ function createPanel(): {
     list,
     brandButton,
     clearDiceButton,
+    storytellerRollButton,
     toggle,
     tooltip,
     diagnostic,
@@ -3803,6 +3880,8 @@ function createPanel(): {
     hideCharacterNameInput,
     channelInput,
     passwordInput,
+    passwordConfirmRow,
+    passwordConfirmInput,
     relayInput,
     relayKeyInput,
     communityRelayButton,
@@ -3871,14 +3950,20 @@ function renderPanel(): void {
   const showRoomSummary = roomConnected || roomPending;
   panel.roomSummary.hidden = !showRoomSummary;
   panel.roomForm.hidden = showRoomSummary;
-  panel.storytellerRow.hidden = showRoomSummary || !isHost;
-  panel.summaryStorytellerRow.hidden = !roomConnected || !isHost;
+  panel.storytellerRow.hidden = true;
+  panel.summaryStorytellerRow.hidden = true;
+  panel.storytellerRollButton.hidden = !isHost;
+  panel.storytellerRollButton.setAttribute("aria-pressed", String(isHost && config.hideCharacterName));
+  panel.storytellerRollButton.dataset.tooltip = isHost && config.hideCharacterName ? t("storytellerRollOn") : t("storytellerRollOff");
+  panel.storytellerRollButton.setAttribute("aria-label", panel.storytellerRollButton.dataset.tooltip);
+  panel.passwordConfirmRow.hidden = !isHost || showRoomSummary;
   panel.hostRoomButton.classList.toggle("active", isHost);
   panel.joinRoomButton.classList.toggle("active", !isHost);
   panel.hostRoomButton.disabled = roomLocked;
   panel.joinRoomButton.disabled = roomLocked;
   panel.channelInput.disabled = roomLocked;
   panel.passwordInput.disabled = roomLocked;
+  panel.passwordConfirmInput.disabled = roomLocked || !isHost;
   panel.relayInput.disabled = roomLocked;
   panel.relayKeyInput.disabled = roomLocked;
   panel.communityRelayButton.disabled = roomLocked;
@@ -3936,6 +4021,10 @@ function renderPanel(): void {
   if (passwordLabel instanceof HTMLSpanElement) {
     passwordLabel.textContent = t("password");
   }
+  const passwordConfirmLabel = panel.host.shadowRoot?.querySelector("[data-settings-password-confirm-label]");
+  if (passwordConfirmLabel instanceof HTMLSpanElement) {
+    passwordConfirmLabel.textContent = t("passwordConfirm");
+  }
   const relayLabel = panel.host.shadowRoot?.querySelector("[data-settings-relay-label]");
   if (relayLabel instanceof HTMLSpanElement) {
     relayLabel.textContent = t("relay");
@@ -3954,7 +4043,7 @@ function renderPanel(): void {
   }
   panel.communityRelayButton.textContent = t("restoreCommunityRelay");
   panel.saveRoomButton.textContent = t("save");
-  panel.connectRoomButton.textContent = t("connect");
+  panel.connectRoomButton.textContent = isHost ? t("createRoom") : t("joinRoom");
   panel.disconnectRoomButton.textContent = t("disconnect");
   panel.summaryDisconnectButton.textContent = t("disconnect");
   const opacityValue = panel.host.shadowRoot?.querySelector("[data-opacity-value]");
@@ -4215,6 +4304,48 @@ async function savePanelRoomConfig(): Promise<void> {
     connectionState = response.state;
   }
 
+  renderPanel();
+}
+
+async function connectPanelRoom(): Promise<void> {
+  if (!panel || !validatePanelRoomConfig()) {
+    return;
+  }
+
+  await savePanelRoomConfig();
+  void sendRuntimeMessage({ kind: "popup:connect" });
+}
+
+function validatePanelRoomConfig(): boolean {
+  if (!panel || !panel.hostRoomButton.classList.contains("active")) {
+    return true;
+  }
+
+  const password = panel.passwordInput.value;
+  const confirmation = panel.passwordConfirmInput.value;
+  if (!password) {
+    setPanelRoomError(t("hostPasswordRequired"));
+    return false;
+  }
+
+  if (password !== confirmation) {
+    setPanelRoomError(t("passwordMismatch"));
+    return false;
+  }
+
+  return true;
+}
+
+function setPanelRoomError(detail: string): void {
+  connectionState = {
+    status: "error",
+    detail,
+    roomId: undefined,
+    clientId: connectionState.clientId,
+    players: [],
+    pendingPlayers: [],
+    connectedAt: undefined
+  };
   renderPanel();
 }
 
