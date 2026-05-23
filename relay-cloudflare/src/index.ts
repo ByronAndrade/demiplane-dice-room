@@ -6,7 +6,9 @@ const maxRoomHistory = 100;
 const maxRoomPlayers = 20;
 const hostReconnectGraceMs = 120_000;
 const diceControlLockMs = 4_000;
+const activeDiceRollTtlMs = 34_000;
 const historyStorageKey = "history";
+const activeDiceStorageKey = "activeDice";
 const approvedStorageKey = "approvedPlayers";
 
 type DiceValue = {
@@ -80,10 +82,28 @@ type SharedDiceControlEvent = {
   createdAt: string;
 };
 
+type SharedDiceClearEvent = {
+  actorClientId?: string;
+  actorName?: string;
+  createdAt: string;
+};
+
+type ActiveDiceRoll = {
+  roll: RollEvent;
+  expiresAt: string;
+  controls?: SharedDiceControlEvent[];
+};
+
 type DiceControlMessage = {
   type: "dice_control";
   version: 1;
   event: SharedDiceControlEvent;
+};
+
+type DiceClearMessage = {
+  type: "dice_clear";
+  version: 1;
+  event: SharedDiceClearEvent;
 };
 
 type PlayerControlMessage = {
@@ -118,6 +138,7 @@ type ServerMessage =
       clientId: string;
       players: PresencePlayer[];
       history: RollEvent[];
+      activeDice?: ActiveDiceRoll[];
     }
   | {
       type: "presence";
@@ -148,6 +169,12 @@ type ServerMessage =
       version: 1;
       roomId: string;
       event: SharedDiceControlEvent;
+    }
+  | {
+      type: "dice_clear";
+      version: 1;
+      roomId: string;
+      event: SharedDiceClearEvent;
     }
   | {
       type: "error";
@@ -323,8 +350,22 @@ export class DiceRoomDurableObject extends DurableObject<Env> {
     if (isDiceControlMessage(parsed.value)) {
       const event = this.normalizeDiceControlEvent(parsed.value.event, session);
       if (this.acceptDiceControlEvent(session, event)) {
+        await this.rememberActiveDiceControl(event);
         this.broadcast(session.roomId, { type: "dice_control", version: 1, roomId: session.roomId, event });
       }
+      return;
+    }
+
+    if (isDiceClearMessage(parsed.value)) {
+      if (session.roomRole !== "host") {
+        this.send(socket, errorMessage("host_required", "Apenas o narrador pode limpar os dados da mesa."));
+        return;
+      }
+
+      const event = this.normalizeDiceClearEvent(parsed.value.event, session);
+      await this.clearActiveDiceRolls();
+      this.releaseDiceControlLocksForRoom(session.roomId);
+      this.broadcast(session.roomId, { type: "dice_clear", version: 1, roomId: session.roomId, event });
       return;
     }
 
@@ -340,6 +381,7 @@ export class DiceRoomDurableObject extends DurableObject<Env> {
     }
 
     await this.appendHistory(session.roomId, roll);
+    await this.rememberActiveDiceRoll(roll);
     this.broadcast(session.roomId, { type: "roll", version: 1, roomId: session.roomId, roll });
   }
 
@@ -481,7 +523,8 @@ export class DiceRoomDurableObject extends DurableObject<Env> {
       roomId,
       clientId,
       players: this.getPlayers(roomId),
-      history: await this.getHistory()
+      history: await this.getHistory(),
+      activeDice: await this.getActiveDiceRolls()
     });
 
     this.broadcastPresence(roomId);
@@ -517,6 +560,17 @@ export class DiceRoomDurableObject extends DurableObject<Env> {
     event: SharedDiceControlEvent,
     session: Required<Pick<ClientSession, "clientId" | "playerName">> & ClientSession
   ): SharedDiceControlEvent {
+    return {
+      ...event,
+      actorClientId: session.clientId,
+      actorName: session.characterName || session.playerName
+    };
+  }
+
+  private normalizeDiceClearEvent(
+    event: SharedDiceClearEvent,
+    session: Required<Pick<ClientSession, "clientId" | "playerName">> & ClientSession
+  ): SharedDiceClearEvent {
     return {
       ...event,
       actorClientId: session.clientId,
@@ -634,7 +688,8 @@ export class DiceRoomDurableObject extends DurableObject<Env> {
       roomId,
       clientId: approvedClientId,
       players: this.getPlayers(roomId),
-      history: await this.getHistory()
+      history: await this.getHistory(),
+      activeDice: await this.getActiveDiceRolls()
     });
     this.broadcastPresence(roomId);
     this.sendPendingPlayers(roomId);
@@ -915,6 +970,51 @@ export class DiceRoomDurableObject extends DurableObject<Env> {
     return Array.isArray(history) ? history.filter(isUsefulRoll) : [];
   }
 
+  private async rememberActiveDiceRoll(roll: RollEvent): Promise<void> {
+    const activeRolls = (await this.getActiveDiceRolls()).filter((item) => item.roll.id !== roll.id);
+    activeRolls.push({
+      roll,
+      expiresAt: new Date(Date.now() + activeDiceRollTtlMs).toISOString(),
+      controls: []
+    });
+    await this.ctx.storage.put(activeDiceStorageKey, activeRolls.slice(-12));
+  }
+
+  private async rememberActiveDiceControl(event: SharedDiceControlEvent): Promise<void> {
+    const activeRolls = await this.getActiveDiceRolls();
+    const activeRoll = activeRolls.find((item) => item.roll.id === event.rollId);
+    if (!activeRoll) {
+      return;
+    }
+
+    const controls = activeRoll.controls ?? [];
+    activeRoll.controls = [
+      ...controls.filter((control) => control.dieIndex !== event.dieIndex),
+      event
+    ];
+    await this.ctx.storage.put(activeDiceStorageKey, activeRolls);
+  }
+
+  private async clearActiveDiceRolls(): Promise<void> {
+    await this.ctx.storage.delete(activeDiceStorageKey);
+  }
+
+  private async getActiveDiceRolls(): Promise<ActiveDiceRoll[]> {
+    const now = Date.now();
+    const activeRolls = await this.ctx.storage.get<ActiveDiceRoll[]>(activeDiceStorageKey);
+    const filtered = Array.isArray(activeRolls)
+      ? activeRolls.filter((item) => isRollEvent(item.roll) && isFutureIsoTime(item.expiresAt, now))
+      : [];
+    if (filtered.length === 0) {
+      await this.ctx.storage.delete(activeDiceStorageKey);
+      return [];
+    }
+    if (filtered.length !== activeRolls?.length) {
+      await this.ctx.storage.put(activeDiceStorageKey, filtered);
+    }
+    return filtered;
+  }
+
   private async closeRoom(roomId: string): Promise<void> {
     this.clearHostGraceTimer();
     this.releaseDiceControlLocksForRoom(roomId);
@@ -930,6 +1030,7 @@ export class DiceRoomDurableObject extends DurableObject<Env> {
     }
 
     await this.ctx.storage.delete(historyStorageKey);
+    await this.ctx.storage.delete(activeDiceStorageKey);
     await this.ctx.storage.delete(approvedStorageKey);
   }
 
@@ -1001,6 +1102,15 @@ function isDiceControlMessage(value: unknown): value is DiceControlMessage {
   return message.type === "dice_control" && message.version === protocolVersion && isSharedDiceControlEvent(message.event);
 }
 
+function isDiceClearMessage(value: unknown): value is DiceClearMessage {
+  if (!value || typeof value !== "object") {
+    return false;
+  }
+
+  const message = value as Partial<DiceClearMessage>;
+  return message.type === "dice_clear" && message.version === protocolVersion && isSharedDiceClearEvent(message.event);
+}
+
 function isSharedDiceControlEvent(value: unknown): value is SharedDiceControlEvent {
   if (!value || typeof value !== "object") {
     return false;
@@ -1028,6 +1138,24 @@ function isSharedDiceControlEvent(value: unknown): value is SharedDiceControlEve
     typeof event.createdAt === "string" &&
     !Number.isNaN(Date.parse(event.createdAt))
   );
+}
+
+function isSharedDiceClearEvent(value: unknown): value is SharedDiceClearEvent {
+  if (!value || typeof value !== "object") {
+    return false;
+  }
+
+  const event = value as Partial<SharedDiceClearEvent>;
+  return typeof event.createdAt === "string" && !Number.isNaN(Date.parse(event.createdAt));
+}
+
+function isFutureIsoTime(value: unknown, now: number): value is string {
+  if (typeof value !== "string") {
+    return false;
+  }
+
+  const timestamp = Date.parse(value);
+  return Number.isFinite(timestamp) && timestamp > now;
 }
 
 function isPlayerControlMessage(value: unknown): value is PlayerControlMessage {

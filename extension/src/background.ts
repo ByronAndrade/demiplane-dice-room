@@ -1,14 +1,17 @@
 import {
+  activeDiceRollTtlMs,
   createRollId,
   createRoomId,
   createRoomSocketUrl,
   isServerMessage,
   protocolVersion,
+  type ActiveDiceRoll,
   type BackgroundMessage,
   type CapturedRoll,
   type ConnectionState,
   type RollEvent,
   type ServerMessage,
+  type SharedDiceClearEvent,
   type SharedDiceControlEvent,
   type StoredRoll
 } from "./shared/protocol";
@@ -26,11 +29,13 @@ type RuntimeRequest =
   | { kind: "content:ready" }
   | { kind: "content:sheet-activity"; active: boolean }
   | { kind: "content:dice-control"; event: SharedDiceControlEvent }
+  | { kind: "content:dice-clear"; event: SharedDiceClearEvent }
   | { kind: "content:captured-roll"; roll: CapturedRoll };
 
 const localHistoryVersion = 9;
 const liveRollStorageKey = "lastLiveRoll";
 const roomHistoryStorageKey = "roomHistories";
+const activeDiceRollStorageKey = "activeDiceRolls";
 const panelUiStorageKey = "diceRoomPanelUi";
 const protectedDefaultRelayHost = "demiplane-dice-room-relay.foxbyron.workers.dev";
 const socketKeepAliveMs = 20_000;
@@ -47,6 +52,7 @@ let forcedDisconnectDetail: string | undefined;
 let recentRolls: StoredRoll[] = [];
 let activeHistoryRoomId: string | undefined;
 let pendingRoomRolls: RollEvent[] = [];
+let activeDiceRolls: ActiveDiceRoll[] = [];
 let lastSheetActivityAt = 0;
 let lastReportedSheetActive: boolean | undefined;
 
@@ -90,6 +96,7 @@ async function handleRuntimeMessage(message: RuntimeRequest): Promise<unknown> {
         state: connectionState,
         config: await getConfig(),
         recentRolls,
+        activeDiceRolls: await loadActiveDiceRolls(),
         lastLiveRoll: await loadLastLiveRoll()
       };
 
@@ -102,6 +109,7 @@ async function handleRuntimeMessage(message: RuntimeRequest): Promise<unknown> {
         state: connectionState,
         config: await getConfig(),
         recentRolls,
+        activeDiceRolls: await loadActiveDiceRolls(),
         lastLiveRoll: await loadLastLiveRoll()
       };
 
@@ -114,6 +122,9 @@ async function handleRuntimeMessage(message: RuntimeRequest): Promise<unknown> {
 
     case "content:dice-control":
       return publishDiceControlEvent(message.event);
+
+    case "content:dice-clear":
+      return publishDiceClearEvent(message.event);
 
     case "popup:save-config": {
       const current = await getConfig();
@@ -386,6 +397,7 @@ async function publishCapturedRoll(captured: CapturedRoll): Promise<{ ok: true; 
     delivery
   });
   rememberLastLiveRoll({ roll, origin: "local", delivery });
+  rememberActiveDiceRoll(roll);
 
   broadcastToContent({
     kind: "background:roll-event",
@@ -412,6 +424,21 @@ async function publishDiceControlEvent(event: SharedDiceControlEvent): Promise<{
   }
 
   sendSocketMessage({ type: "dice_control", version: protocolVersion, event });
+  return { ok: true };
+}
+
+async function publishDiceClearEvent(event: SharedDiceClearEvent): Promise<{ ok: boolean }> {
+  const config = await getConfig();
+  if (config.enableSharedDice === false || socket?.readyState !== WebSocket.OPEN || connectionState.status !== "connected") {
+    return { ok: false };
+  }
+
+  clearActiveDiceRolls();
+  broadcastToContent({
+    kind: "background:dice-clear",
+    event
+  });
+  sendSocketMessage({ type: "dice_clear", version: protocolVersion, event });
   return { ok: true };
 }
 
@@ -577,6 +604,7 @@ function handleServerMessage(message: ServerMessage): void {
         connectedAt: new Date().toISOString()
       });
       void syncRoomHistory(message.roomId, message.history);
+      syncActiveDiceRolls(message.activeDice ?? []);
       flushPendingRoomRolls();
       reportSheetPresenceStatus(true);
       return;
@@ -628,6 +656,7 @@ function handleServerMessage(message: ServerMessage): void {
         origin: "remote",
         delivery: "received"
       });
+      rememberActiveDiceRoll(message.roll);
       broadcastToContent({
         kind: "background:roll-event",
         roll: message.roll,
@@ -637,6 +666,7 @@ function handleServerMessage(message: ServerMessage): void {
       return;
 
     case "dice_control":
+      rememberActiveDiceControl(message.event);
       void getConfig().then((config) => {
         if (config.enableSharedDice === false) {
           return;
@@ -644,6 +674,20 @@ function handleServerMessage(message: ServerMessage): void {
 
         broadcastToContent({
           kind: "background:dice-control",
+          event: message.event
+        });
+      });
+      return;
+
+    case "dice_clear":
+      clearActiveDiceRolls();
+      void getConfig().then((config) => {
+        if (config.enableSharedDice === false) {
+          return;
+        }
+
+        broadcastToContent({
+          kind: "background:dice-clear",
           event: message.event
         });
       });
@@ -885,6 +929,86 @@ async function saveSessionRoomHistory(roomId: string, history: StoredRoll[]): Pr
   }
 
   await storage.set({ [roomHistoryStorageKey]: roomHistories });
+}
+
+function rememberActiveDiceRoll(roll: RollEvent): void {
+  const activeRolls = pruneActiveDiceRolls(activeDiceRolls).filter((item) => item.roll.id !== roll.id);
+  activeRolls.push({
+    roll,
+    expiresAt: new Date(Date.now() + activeDiceRollTtlMs).toISOString(),
+    controls: []
+  });
+  setActiveDiceRolls(activeRolls);
+}
+
+function rememberActiveDiceControl(event: SharedDiceControlEvent): void {
+  const activeRolls = pruneActiveDiceRolls(activeDiceRolls);
+  const activeRoll = activeRolls.find((item) => item.roll.id === event.rollId);
+  if (!activeRoll) {
+    setActiveDiceRolls(activeRolls);
+    return;
+  }
+
+  const controls = activeRoll.controls ?? [];
+  activeRoll.controls = [
+    ...controls.filter((control) => control.dieIndex !== event.dieIndex),
+    event
+  ];
+  setActiveDiceRolls(activeRolls);
+}
+
+function syncActiveDiceRolls(nextActiveRolls: ActiveDiceRoll[]): void {
+  setActiveDiceRolls([...pruneActiveDiceRolls(nextActiveRolls), ...pruneActiveDiceRolls(activeDiceRolls)]);
+}
+
+function clearActiveDiceRolls(): void {
+  activeDiceRolls = [];
+  void saveActiveDiceRolls();
+}
+
+function setActiveDiceRolls(nextActiveRolls: ActiveDiceRoll[]): void {
+  const seen = new Set<string>();
+  activeDiceRolls = [];
+
+  for (const item of pruneActiveDiceRolls(nextActiveRolls).sort(compareActiveDiceRollsOldestFirst)) {
+    if (seen.has(item.roll.id) || !isUsefulRoll(item.roll)) {
+      continue;
+    }
+
+    seen.add(item.roll.id);
+    activeDiceRolls.push(item);
+  }
+
+  activeDiceRolls = activeDiceRolls.slice(-12);
+  void saveActiveDiceRolls();
+}
+
+function compareActiveDiceRollsOldestFirst(a: ActiveDiceRoll, b: ActiveDiceRoll): number {
+  return getRollTimestamp(a.roll) - getRollTimestamp(b.roll);
+}
+
+function pruneActiveDiceRolls(value: ActiveDiceRoll[]): ActiveDiceRoll[] {
+  const now = Date.now();
+  return value.filter((item) => isUsefulRoll(item.roll) && Date.parse(item.expiresAt) > now);
+}
+
+async function loadActiveDiceRolls(): Promise<ActiveDiceRoll[]> {
+  const storage = getSessionStorage();
+  const stored = storage ? await storage.get({ [activeDiceRollStorageKey]: [] }) : {};
+  const storedActiveRolls = Array.isArray(stored[activeDiceRollStorageKey])
+    ? (stored[activeDiceRollStorageKey] as ActiveDiceRoll[])
+    : [];
+  setActiveDiceRolls([...storedActiveRolls, ...activeDiceRolls]);
+  return activeDiceRolls;
+}
+
+async function saveActiveDiceRolls(): Promise<void> {
+  const storage = getSessionStorage();
+  if (!storage) {
+    return;
+  }
+
+  await storage.set({ [activeDiceRollStorageKey]: activeDiceRolls });
 }
 
 function normalizeRoomHistoryMap(value: unknown): Record<string, StoredRoll[]> {

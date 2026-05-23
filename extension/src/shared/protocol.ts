@@ -67,6 +67,8 @@ export type RollEvent = {
   createdAt: string;
 };
 
+export const activeDiceRollTtlMs = 34_000;
+
 export type SharedDiceControlEvent = {
   action: "grab" | "move" | "release";
   rollId: string;
@@ -80,6 +82,18 @@ export type SharedDiceControlEvent = {
   createdAt: string;
 };
 
+export type SharedDiceClearEvent = {
+  actorClientId?: string;
+  actorName?: string;
+  createdAt: string;
+};
+
+export type ActiveDiceRoll = {
+  roll: RollEvent;
+  expiresAt: string;
+  controls?: SharedDiceControlEvent[];
+};
+
 export type ServerMessage =
   | {
       type: "welcome";
@@ -88,6 +102,7 @@ export type ServerMessage =
       clientId: string;
       players: PresencePlayer[];
       history: RollEvent[];
+      activeDice?: ActiveDiceRoll[];
     }
   | {
       type: "presence";
@@ -126,6 +141,12 @@ export type ServerMessage =
       event: SharedDiceControlEvent;
     }
   | {
+      type: "dice_clear";
+      version: 1;
+      roomId: string;
+      event: SharedDiceClearEvent;
+    }
+  | {
       type: "error";
       version: 1;
       code: string;
@@ -142,6 +163,7 @@ export type ClientMessage =
   | { type: "heartbeat"; version: 1; createdAt: string }
   | { type: "view_status"; version: 1; active: boolean; reportedAt: string }
   | { type: "dice_control"; version: 1; event: SharedDiceControlEvent }
+  | { type: "dice_clear"; version: 1; event: SharedDiceClearEvent }
   | { type: "leave_room"; version: 1 };
 
 export type BackgroundMessage =
@@ -162,6 +184,10 @@ export type BackgroundMessage =
   | {
       kind: "background:dice-control";
       event: SharedDiceControlEvent;
+    }
+  | {
+      kind: "background:dice-clear";
+      event: SharedDiceClearEvent;
     };
 
 export type RollDelivery = "local" | "sent" | "received" | "history";

@@ -4,11 +4,13 @@ import { networkInterfaces } from "node:os";
 import { WebSocket, WebSocketServer } from "ws";
 import {
   clientMessageSchema,
+  type ActiveDiceRoll,
   type HelloMessage,
   type PendingPlayer,
   type PresencePlayer,
   type RollEvent,
   type ServerMessage,
+  type SharedDiceClearEvent,
   type SharedDiceControlEvent
 } from "./protocol.js";
 
@@ -19,6 +21,7 @@ const maxRoomHistory = 100;
 const maxRoomPlayers = 20;
 const hostReconnectGraceMs = 120_000;
 const diceControlLockMs = 4_000;
+const activeDiceRollTtlMs = 34_000;
 const adminToken = process.env.DICE_ROOM_ADMIN_TOKEN ?? "";
 const relayAccessKey = process.env.DICE_ROOM_RELAY_KEY?.trim() ?? "";
 let runtimePublicRelayUrl = "";
@@ -61,6 +64,7 @@ type JoinResult =
 
 const rooms = new Map<string, Set<Client>>();
 const roomHistories = new Map<string, RollEvent[]>();
+const activeDiceRolls = new Map<string, ActiveDiceRoll[]>();
 const pendingRooms = new Map<string, Set<PendingClient>>();
 const approvedRoomClients = new Map<string, Set<string>>();
 const hostGraceTimers = new Map<string, HostGrace>();
@@ -194,8 +198,22 @@ wss.on("connection", (socket, request) => {
     if (parsed.data.type === "dice_control") {
       const event = normalizeDiceControlEvent(parsed.data.event, client);
       if (acceptDiceControlEvent(client, event)) {
+        rememberActiveDiceControl(client.roomId, event);
         broadcast(client.roomId, { type: "dice_control", version: 1, roomId: client.roomId, event });
       }
+      return;
+    }
+
+    if (parsed.data.type === "dice_clear") {
+      if (client.roomRole !== "host") {
+        send(socket, errorMessage("host_required", "Apenas o narrador pode limpar os dados da mesa."));
+        return;
+      }
+
+      const event = normalizeDiceClearEvent(parsed.data.event, client);
+      clearActiveDiceRolls(client.roomId);
+      releaseDiceControlLocksForRoom(client.roomId);
+      broadcast(client.roomId, { type: "dice_clear", version: 1, roomId: client.roomId, event });
       return;
     }
 
@@ -206,6 +224,7 @@ wss.on("connection", (socket, request) => {
     }
 
     appendHistory(client.roomId, roll);
+    rememberActiveDiceRoll(client.roomId, roll);
     broadcast(client.roomId, { type: "roll", version: 1, roomId: client.roomId, roll });
   });
 
@@ -384,7 +403,8 @@ function joinRoom(socket: WebSocket, hello: HelloMessage): JoinResult {
     roomId,
     clientId: client.clientId,
     players: getPlayers(roomId),
-    history: getHistory(roomId)
+    history: getHistory(roomId),
+    activeDice: getActiveDiceRolls(roomId)
   });
 
   broadcastPresence(roomId);
@@ -452,7 +472,8 @@ function approvePendingPlayer(host: Client, clientId: string): void {
     roomId: host.roomId,
     clientId: client.clientId,
     players: getPlayers(host.roomId),
-    history: getHistory(host.roomId)
+    history: getHistory(host.roomId),
+    activeDice: getActiveDiceRolls(host.roomId)
   });
   broadcastPresence(host.roomId);
   sendPendingPlayers(host.roomId);
@@ -558,6 +579,7 @@ function closeRoom(roomId: string): void {
 
   rooms.delete(roomId);
   roomHistories.delete(roomId);
+  activeDiceRolls.delete(roomId);
   approvedRoomClients.delete(roomId);
 
   const pendingRoom = pendingRooms.get(roomId);
@@ -796,6 +818,14 @@ function normalizeDiceControlEvent(event: SharedDiceControlEvent, client: Client
   };
 }
 
+function normalizeDiceClearEvent(event: SharedDiceClearEvent, client: Client): SharedDiceClearEvent {
+  return {
+    ...event,
+    actorClientId: client.clientId,
+    actorName: client.characterName || client.playerName
+  };
+}
+
 function acceptDiceControlEvent(client: Client, event: SharedDiceControlEvent): boolean {
   const key = getDiceControlLockKey(client.roomId, event);
   const now = Date.now();
@@ -829,6 +859,46 @@ function acceptDiceControlEvent(client: Client, event: SharedDiceControlEvent): 
 
 function getDiceControlLockKey(roomId: string, event: Pick<SharedDiceControlEvent, "rollId" | "dieIndex">): string {
   return `${roomId}:${event.rollId}:${event.dieIndex}`;
+}
+
+function rememberActiveDiceRoll(roomId: string, roll: RollEvent): void {
+  const activeRolls = getActiveDiceRolls(roomId).filter((item) => item.roll.id !== roll.id);
+  activeRolls.push({
+    roll,
+    expiresAt: new Date(Date.now() + activeDiceRollTtlMs).toISOString(),
+    controls: []
+  });
+  activeDiceRolls.set(roomId, activeRolls.slice(-12));
+}
+
+function rememberActiveDiceControl(roomId: string, event: SharedDiceControlEvent): void {
+  const activeRolls = getActiveDiceRolls(roomId);
+  const activeRoll = activeRolls.find((item) => item.roll.id === event.rollId);
+  if (!activeRoll) {
+    return;
+  }
+
+  const controls = activeRoll.controls ?? [];
+  activeRoll.controls = [
+    ...controls.filter((control) => control.dieIndex !== event.dieIndex),
+    event
+  ];
+  activeDiceRolls.set(roomId, activeRolls);
+}
+
+function clearActiveDiceRolls(roomId: string): void {
+  activeDiceRolls.delete(roomId);
+}
+
+function getActiveDiceRolls(roomId: string): ActiveDiceRoll[] {
+  const now = Date.now();
+  const activeRolls = (activeDiceRolls.get(roomId) ?? []).filter((item) => Date.parse(item.expiresAt) > now);
+  if (activeRolls.length > 0) {
+    activeDiceRolls.set(roomId, activeRolls);
+  } else {
+    activeDiceRolls.delete(roomId);
+  }
+  return activeRolls;
 }
 
 function appendHistory(roomId: string, roll: RollEvent): void {

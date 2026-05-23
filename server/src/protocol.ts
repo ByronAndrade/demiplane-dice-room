@@ -62,6 +62,18 @@ export const diceControlMessageSchema = z.object({
   event: sharedDiceControlEventSchema
 });
 
+export const sharedDiceClearEventSchema = z.object({
+  actorClientId: z.string().trim().min(8).max(120).optional(),
+  actorName: z.string().trim().min(1).max(80).optional(),
+  createdAt: z.string().datetime()
+});
+
+export const diceClearMessageSchema = z.object({
+  type: z.literal("dice_clear"),
+  version: protocolVersionSchema,
+  event: sharedDiceClearEventSchema
+});
+
 export const approvePlayerMessageSchema = z.object({
   type: z.literal("approve_player"),
   version: protocolVersionSchema,
@@ -102,6 +114,7 @@ export const clientMessageSchema = z.discriminatedUnion("type", [
   helloMessageSchema,
   rollMessageSchema,
   diceControlMessageSchema,
+  diceClearMessageSchema,
   approvePlayerMessageSchema,
   rejectPlayerMessageSchema,
   kickPlayerMessageSchema,
@@ -113,6 +126,7 @@ export const clientMessageSchema = z.discriminatedUnion("type", [
 export type HelloMessage = z.infer<typeof helloMessageSchema>;
 export type RollEvent = z.infer<typeof rollEventSchema>;
 export type SharedDiceControlEvent = z.infer<typeof sharedDiceControlEventSchema>;
+export type SharedDiceClearEvent = z.infer<typeof sharedDiceClearEventSchema>;
 export type ClientMessage = z.infer<typeof clientMessageSchema>;
 
 export type PresencePlayer = {
@@ -132,6 +146,12 @@ export type PendingPlayer = {
   requestedAt: string;
 };
 
+export type ActiveDiceRoll = {
+  roll: RollEvent;
+  expiresAt: string;
+  controls?: SharedDiceControlEvent[];
+};
+
 export type ServerMessage =
   | {
       type: "welcome";
@@ -140,6 +160,7 @@ export type ServerMessage =
       clientId: string;
       players: PresencePlayer[];
       history: RollEvent[];
+      activeDice?: ActiveDiceRoll[];
     }
   | {
       type: "presence";
@@ -176,6 +197,12 @@ export type ServerMessage =
       version: 1;
       roomId: string;
       event: SharedDiceControlEvent;
+    }
+  | {
+      type: "dice_clear";
+      version: 1;
+      roomId: string;
+      event: SharedDiceClearEvent;
     }
   | {
       type: "error";

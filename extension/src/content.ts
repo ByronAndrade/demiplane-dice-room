@@ -1,10 +1,12 @@
 import type {
+  ActiveDiceRoll,
   BackgroundMessage,
   CapturedRoll,
   ConnectionState,
   DiceFace,
   DiceValue,
   RollEvent,
+  SharedDiceClearEvent,
   SharedDiceControlEvent,
   StoredRoll
 } from "./shared/protocol";
@@ -29,9 +31,10 @@ const maxLiveToasts = 3;
 const sheetActivityReportMs = 5_000;
 const sharedDiceMoveMinIntervalMs = 50;
 const sharedDiceRemoteHoldMs = 4_500;
-const diceAnimationMs = 8800;
+const diceAnimationMs = 26_400;
 const diceFadeLeadMs = 420;
 const diceFadeMs = 360;
+const diceClearUnlockMs = 500;
 const resultLabelRevealMs = 860;
 const diceCameraWorldHeight = 560;
 const stableFaceScore = 0.972;
@@ -59,7 +62,7 @@ const defaultDiceAnimationScale = 0.75;
 const minDiceAnimationScale = 0.45;
 const maxDiceAnimationScale = 1.15;
 const defaultRelayUrl = "wss://demiplane-dice-room-relay.foxbyron.workers.dev";
-const extensionUiVersion = "0.1.95";
+const extensionUiVersion = "0.1.96";
 const pageBridgeMessageSource = "demiplane-dice-room-page";
 const pageDiceRollResponseWaitMs = 1400;
 const pageDiceRollResponseTtlMs = 8_000;
@@ -135,6 +138,8 @@ const messages = {
     disconnected: "Desconectado",
     error: "Erro",
     localMode: "Local",
+    clearDice: "Limpar dados",
+    clearDiceDisabled: "Disponivel depois da revelacao dos dados",
     openHistory: "Mostrar historico de rolagens da sala",
     closeHistory: "Ocultar historico de rolagens da sala",
     openSettings: "Abrir configuracoes do painel",
@@ -233,6 +238,8 @@ const messages = {
     disconnected: "Disconnected",
     error: "Error",
     localMode: "Local",
+    clearDice: "Clear dice",
+    clearDiceDisabled: "Available after the dice reveal",
     openHistory: "Show room roll history",
     closeHistory: "Hide room roll history",
     openSettings: "Open panel settings",
@@ -362,7 +369,13 @@ async function initializeContentScript(): Promise<void> {
   window.addEventListener("beforeunload", warnBeforeHostedRoomCloses);
   startSheetActivityReporting();
 
-  void sendRuntimeMessage<{ ok: true; state?: ConnectionState; recentRolls?: StoredRoll[]; config?: ExtensionConfig }>({
+  void sendRuntimeMessage<{
+    ok: true;
+    state?: ConnectionState;
+    recentRolls?: StoredRoll[];
+    activeDiceRolls?: ActiveDiceRoll[];
+    config?: ExtensionConfig;
+  }>({
     kind: "content:ready"
   }).then((response) => {
     if (response?.config) {
@@ -376,6 +389,10 @@ async function initializeContentScript(): Promise<void> {
     if (response?.state) {
       connectionState = response.state;
       renderPanel();
+    }
+
+    if (response?.activeDiceRolls) {
+      playActiveDiceRolls(response.activeDiceRolls);
     }
   });
 
@@ -398,6 +415,10 @@ async function initializeContentScript(): Promise<void> {
 
     if (message.kind === "background:dice-control") {
       applySharedDiceControl(message.event);
+    }
+
+    if (message.kind === "background:dice-clear") {
+      applySharedDiceClear(message.event);
     }
 
     if (message.kind === "background:roll-history") {
@@ -2158,6 +2179,29 @@ function shouldUseSharedDice(): boolean {
   return shouldAnimateDice() && currentConfig?.enableSharedDice !== false;
 }
 
+function updateDiceClearButtonState(): void {
+  if (!panel) {
+    return;
+  }
+
+  const visible = connectionState.status === "connected" && isCurrentClientHost(connectionState) && shouldUseSharedDice();
+  const canClear = visible && canClearDiceAnimations();
+  panel.clearDiceButton.hidden = !visible;
+  panel.clearDiceButton.disabled = !canClear;
+  panel.clearDiceButton.dataset.tooltip = canClear ? t("clearDice") : t("clearDiceDisabled");
+  panel.clearDiceButton.setAttribute("aria-label", t("clearDice"));
+}
+
+function canClearDiceAnimations(): boolean {
+  if (!diceAnimationLayer || diceAnimationLayer.activeDice.size === 0) {
+    return false;
+  }
+
+  const now = performance.now();
+  const dice = [...diceAnimationLayer.activeDice].filter((die) => !die.fadeStarted);
+  return dice.length > 0 && dice.every((die) => die.resultRevealed && now - die.revealStart >= resultLabelRevealMs + diceClearUnlockMs);
+}
+
 function hasSpecialOutcome(roll: RollEvent): boolean {
   const outcome = getRollOutcome(roll);
   return outcome === "bestialFailure" || outcome === "messyCritical" || outcome === "criticalSuccess";
@@ -2178,6 +2222,7 @@ function createPanel(): {
   count: HTMLSpanElement;
   countLabel: HTMLSpanElement;
   list: HTMLOListElement;
+  clearDiceButton: HTMLButtonElement;
   toggle: HTMLButtonElement;
   diagnostic: HTMLDivElement;
   panelRoot: HTMLElement;
@@ -2420,6 +2465,27 @@ function createPanel(): {
       .toggle[data-tooltip]:focus-visible::after {
         opacity: 1;
         transform: translateY(0);
+      }
+
+      .clear-dice {
+        border-color: #4a5260;
+        color: #aeb8c7;
+        background: #1b222b;
+      }
+
+      .clear-dice:not(:disabled) {
+        border-color: rgba(80, 188, 126, 0.48);
+        color: #d7ffe6;
+        background: #183526;
+      }
+
+      .clear-dice:not(:disabled):hover {
+        background: #214833;
+      }
+
+      .clear-dice:disabled {
+        cursor: default;
+        opacity: 0.48;
       }
 
       .status-connected {
@@ -2964,6 +3030,7 @@ function createPanel(): {
           <span data-count-label><span data-count>0</span> rolagens</span>
         </div>
         <div class="header-actions">
+          <button data-clear-dice class="icon-button clear-dice" type="button" aria-label="Limpar dados" data-tooltip="Limpar dados" hidden>×</button>
           <button data-status class="status" type="button" title="Abrir diagnostico">Desconectado</button>
           <span class="version-chip" title="Versao da extensao">v${extensionUiVersion}</span>
           <span data-players class="players-chip" title="Jogadores na sala">0</span>
@@ -3111,6 +3178,7 @@ function createPanel(): {
   const count = shadow.querySelector("[data-count]");
   const countLabel = shadow.querySelector("[data-count-label]");
   const list = shadow.querySelector("[data-list]");
+  const clearDiceButton = shadow.querySelector("[data-clear-dice]");
   const toggle = shadow.querySelector("[data-toggle]");
   const diagnostic = shadow.querySelector("[data-diagnostic]");
   const settings = shadow.querySelector("[data-settings-button]");
@@ -3160,6 +3228,7 @@ function createPanel(): {
     !(count instanceof HTMLSpanElement) ||
     !(countLabel instanceof HTMLSpanElement) ||
     !(list instanceof HTMLOListElement) ||
+    !(clearDiceButton instanceof HTMLButtonElement) ||
     !(toggle instanceof HTMLButtonElement) ||
     !(diagnostic instanceof HTMLDivElement) ||
     !(settings instanceof HTMLButtonElement) ||
@@ -3207,6 +3276,19 @@ function createPanel(): {
   status.addEventListener("click", () => {
     diagnosticOpen = !diagnosticOpen;
     renderPanel();
+  });
+
+  clearDiceButton.addEventListener("click", () => {
+    if (!canClearDiceAnimations()) {
+      return;
+    }
+
+    const event = { createdAt: new Date().toISOString() };
+    applySharedDiceClear(event);
+    void sendRuntimeMessage({
+      kind: "content:dice-clear",
+      event
+    } satisfies { kind: "content:dice-clear"; event: SharedDiceClearEvent });
   });
 
   toggle.addEventListener("click", () => {
@@ -3378,6 +3460,7 @@ function createPanel(): {
     count,
     countLabel,
     list,
+    clearDiceButton,
     toggle,
     diagnostic,
     panelRoot,
@@ -3436,6 +3519,7 @@ function renderPanel(): void {
   panel.status.textContent = statusLabel(displayStatus);
   panel.status.className = `status status-${displayStatus}`;
   panel.status.title = t("openDiagnostic");
+  updateDiceClearButtonState();
   panel.players.textContent = String(connectionState.players.length);
   panel.players.hidden = connectionState.status !== "connected";
   panel.players.title = formatPlayersTooltip(connectionState.players);
@@ -4444,8 +4528,98 @@ function playDiceAnimation(roll: RollEvent, onComplete?: () => void): boolean {
     layer.scene.add(die.group);
   }
   playDiceRollSound(animatedDice.length);
+  updateDiceClearButtonState();
   ensureDiceAnimationLoop();
   return true;
+}
+
+function playActiveDiceRolls(activeRolls: ActiveDiceRoll[]): void {
+  if (!shouldUseSharedDice() || !diceAnimationLayer) {
+    return;
+  }
+
+  for (const activeRoll of activeRolls.sort(compareActiveDiceRollsOldestFirst)) {
+    playActiveDiceSnapshot(activeRoll);
+  }
+}
+
+function compareActiveDiceRollsOldestFirst(first: ActiveDiceRoll, second: ActiveDiceRoll): number {
+  return Date.parse(first.roll.createdAt) - Date.parse(second.roll.createdAt);
+}
+
+function playActiveDiceSnapshot(activeRoll: ActiveDiceRoll): boolean {
+  if (!shouldUseSharedDice() || !diceAnimationLayer || activeRoll.roll.dice.length === 0) {
+    return false;
+  }
+
+  const expiresAt = Date.parse(activeRoll.expiresAt);
+  const remainingMs = expiresAt - Date.now();
+  if (!Number.isFinite(expiresAt) || remainingMs <= 0 || hasActiveDiceForRoll(activeRoll.roll.id)) {
+    return false;
+  }
+
+  const layer = diceAnimationLayer;
+  const dice = activeRoll.roll.dice.slice(0, maxAnimatedDice);
+  const batchId = (diceAnimationBatchSequence += 1);
+  const now = performance.now();
+  const revealAge = clampNumber(diceAnimationMs - Math.min(remainingMs, diceAnimationMs), 0, diceAnimationMs - 1);
+  const controlsByDie = new Map((activeRoll.controls ?? []).map((event) => [event.dieIndex, event]));
+  const animatedDice = dice.map((die, index) => createAnimatedDie(die, index, dice.length, batchId, layer, activeRoll.roll.id));
+
+  for (const die of animatedDice) {
+    settleSnapshotDie(die, layer, now, activeRoll.controls?.length ? controlsByDie.get(die.dieIndex) : undefined, animatedDice.length);
+    layer.activeDice.add(die);
+    layer.scene.add(die.group);
+    revealDieResult(die, layer, now);
+    die.revealStart = now - revealAge;
+    renderDieResultReveal(die, now);
+    die.group.position.set(die.x, die.y, die.z);
+  }
+
+  updateDiceClearButtonState();
+  ensureDiceAnimationLoop();
+  return true;
+}
+
+function hasActiveDiceForRoll(rollId: string): boolean {
+  return Boolean(diceAnimationLayer && [...diceAnimationLayer.activeDice].some((die) => die.rollId === rollId));
+}
+
+function settleSnapshotDie(
+  die: AnimatedDie,
+  layer: DiceAnimationLayer,
+  now: number,
+  control: SharedDiceControlEvent | undefined,
+  total: number
+): void {
+  const position = control ? denormalizeDieWorldPosition(die, control) : getSnapshotDiePosition(die.dieIndex, total, die.radius);
+  die.x = position.x;
+  die.y = position.y;
+  die.z = position.z;
+  die.vx = 0;
+  die.vy = 0;
+  die.vz = 0;
+  die.rollEnergy = 0;
+  die.angularVelocity.set(0, 0, 0);
+  die.stableSince = now;
+  die.settled = true;
+  die.dragging = false;
+  collapseDieOntoSupportFace(die, layer, 1, true);
+  die.z = Math.max(die.z, getDieGroundZ(die, layer));
+  die.group.position.set(die.x, die.y, die.z);
+}
+
+function getSnapshotDiePosition(index: number, total: number, radius: number): { x: number; y: number; z: number } {
+  const bounds = getWorldBounds();
+  const columns = Math.max(1, Math.min(total, Math.ceil(Math.sqrt(total * 1.25))));
+  const rows = Math.max(1, Math.ceil(total / columns));
+  const column = index % columns;
+  const row = Math.floor(index / columns);
+  const width = bounds.right - bounds.left - radius * 2;
+  const height = bounds.bottom - bounds.top - radius * 2;
+  const x = bounds.left + radius + width * ((column + 0.5) / columns);
+  const y = bounds.top + radius + height * ((row + 0.5) / rows);
+  return { x, y, z: getGroundZ(radius) };
 }
 
 function ensureDiceAnimationLoop(): void {
@@ -4465,6 +4639,7 @@ function tickDiceAnimation(now: number): void {
   const dt = Math.min(0.034, Math.max(0.001, (now - diceAnimationLayer.lastFrame) / 1000));
   diceAnimationLayer.lastFrame = now;
   updateAnimatedDice(diceAnimationLayer, now, dt);
+  updateDiceClearButtonState();
   diceAnimationLayer.renderer.render(diceAnimationLayer.scene, diceAnimationLayer.camera);
 
   if (diceAnimationLayer.activeDice.size > 0) {
@@ -4473,6 +4648,7 @@ function tickDiceAnimation(now: number): void {
   }
 
   diceAnimationLayer.animationFrame = 0;
+  updateDiceClearButtonState();
 }
 
 function createAnimatedDie(
@@ -5945,6 +6121,33 @@ function applySharedDiceControl(event: SharedDiceControlEvent): void {
   }
 
   ensureDiceAnimationLoop();
+}
+
+function applySharedDiceClear(_event: SharedDiceClearEvent): void {
+  if (!shouldUseSharedDice()) {
+    return;
+  }
+
+  clearDiceAnimations();
+}
+
+function clearDiceAnimations(): void {
+  if (!diceAnimationLayer) {
+    return;
+  }
+
+  const layer = diceAnimationLayer;
+  for (const complete of [...layer.batchCompletionCallbacks.values()]) {
+    complete();
+  }
+  layer.batchCompletionCallbacks.clear();
+  for (const die of [...layer.activeDice]) {
+    layer.scene.remove(die.group);
+    disposeAnimatedDie(die.group, layer.d10Model);
+  }
+  layer.activeDice.clear();
+  layer.drag = undefined;
+  updateDiceClearButtonState();
 }
 
 function findSharedAnimatedDie(event: SharedDiceControlEvent): AnimatedDie | undefined {

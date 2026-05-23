@@ -140,6 +140,35 @@ async function runScenario() {
   players[0].sendDiceControl(createDiceControlEvent(hostRoll.id, 0, "release", 3, 0.64, 0.34));
   await waitForDiceControl([hostClient, ...players], hostRoll.id, 0, "release", players[0].clientId, "shared die release reaches everyone");
 
+  if (playerCount < 19) {
+    const latePlayer = await connectClient({
+      clientId: `late-${randomUUID()}`,
+      playerName: "Late",
+      characterName: "Late",
+      roomRole: "player"
+    });
+    players.push(latePlayer);
+    await latePlayer.waitFor((message) => message.type === "approval_required", "late player approval required");
+    const latePending = await hostClient.waitFor(
+      (message) => message.type === "pending_players" && message.pendingPlayers.some((item) => item.clientId === latePlayer.clientId),
+      "late player visible to host"
+    );
+    assert(latePending.pendingPlayers.length >= 1, "host receives late pending player");
+    hostClient.send({ type: "approve_player", version: 1, clientId: latePlayer.clientId });
+    const lateWelcome = await latePlayer.waitFor((message) => message.type === "welcome", "late player welcome");
+    const activeDice = lateWelcome.activeDice ?? [];
+    const activeHostRoll = activeDice.find((item) => item.roll?.id === hostRoll.id);
+    assert(activeHostRoll, "late player receives active dice for recent roll");
+    assert(
+      activeHostRoll.controls?.some((event) => event.rollId === hostRoll.id && event.dieIndex === 0 && event.action === "release"),
+      "late player receives latest shared die position"
+    );
+    await waitForPresenceCount([hostClient, ...players], players.length + 1);
+  }
+
+  hostClient.sendDiceClear();
+  await waitForDiceClear([hostClient, ...players], hostClient.clientId, "host clears shared dice for everyone");
+
   const playerRoll = createRoll(players[0], "player-resolve", "RESOLVE + AWARENESS", 1);
   players[0].sendRoll(playerRoll);
   await waitForRoll([hostClient, ...players], playerRoll.id, "player roll reaches host and table");
@@ -179,13 +208,13 @@ async function runScenario() {
 
   const reconnectedPlayer = await reconnectClient(players[2]);
   players[2] = reconnectedPlayer;
-  await waitForPresenceCount([hostClient, ...players], playerCount + 1);
+  await waitForPresenceCount([hostClient, ...players], players.length + 1);
   const reconnectRoll = createRoll(reconnectedPlayer, "approved-reconnect", "WITS + TECHNOLOGY", 2);
   reconnectedPlayer.sendRoll(reconnectRoll);
   await waitForRoll([hostClient, ...players], reconnectRoll.id, "approved reconnected player can publish");
 
   const reconnectedHost = await reconnectClient(hostClient);
-  await waitForPresenceCount([reconnectedHost, ...players], playerCount + 1);
+  await waitForPresenceCount([reconnectedHost, ...players], players.length + 1);
   const hostAfterReconnectRoll = createRoll(reconnectedHost, "host-reconnect", "CHARISMA + PERSUASION", 4);
   reconnectedHost.sendRoll(hostAfterReconnectRoll);
   await waitForRoll([reconnectedHost, ...players], hostAfterReconnectRoll.id, "host can publish after reconnect");
@@ -256,6 +285,17 @@ async function waitForDiceControl(targetClients, rollId, dieIndex, action, actor
   );
 }
 
+async function waitForDiceClear(targetClients, actorClientId, label) {
+  await Promise.all(
+    targetClients.map((client) =>
+      client.waitFor(
+        (message) => message.type === "dice_clear" && message.event.actorClientId === actorClientId,
+        `${label}: ${client.playerName}`
+      )
+    )
+  );
+}
+
 async function waitForSheetStatus(targetClients, clientId, sheetStatus, label) {
   await Promise.all(
     targetClients.map((client) =>
@@ -314,6 +354,10 @@ class RoomClient {
 
   sendDiceControl(event) {
     this.send({ type: "dice_control", version: 1, event });
+  }
+
+  sendDiceClear() {
+    this.send({ type: "dice_clear", version: 1, event: { createdAt: new Date().toISOString() } });
   }
 
   waitFor(predicate, label, timeoutMs = scenarioTimeoutMs) {
@@ -426,6 +470,9 @@ function summarizeMessages(messages) {
       }
       if (message.type === "pending_players") {
         return `pending:${message.pendingPlayers?.length ?? 0}`;
+      }
+      if (message.type === "dice_clear") {
+        return `dice_clear:${message.event?.actorClientId ?? ""}`;
       }
       if (message.type === "presence") {
         return `presence:${message.players?.length ?? 0}`;
