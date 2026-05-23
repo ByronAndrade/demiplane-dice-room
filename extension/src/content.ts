@@ -54,7 +54,8 @@ const diceLongAxisSpinDamping = 0.12;
 const diceSupportPivotSpinDamping = 0.02;
 const diceFaceCollapseSpeed = 14;
 const diceHardFaceCollapseSpeed = 28;
-const maxAnimatedDice = 20;
+const maxActiveAnimatedDice = 15;
+const maxAnimatedDice = maxActiveAnimatedDice;
 const maxSeenRollIds = 200;
 const panelUiStorageKey = "diceRoomPanelUi";
 const minPanelOpacity = 0.3;
@@ -62,7 +63,7 @@ const defaultDiceAnimationScale = 0.75;
 const minDiceAnimationScale = 0.45;
 const maxDiceAnimationScale = 1.15;
 const defaultRelayUrl = "wss://demiplane-dice-room-relay.foxbyron.workers.dev";
-const extensionUiVersion = "0.1.104";
+const extensionUiVersion = "0.1.105";
 const pageBridgeMessageSource = "demiplane-dice-room-page";
 const pageDiceRollResponseWaitMs = 1400;
 const pageDiceRollResponseTtlMs = 8_000;
@@ -73,6 +74,8 @@ let compactPanel = false;
 let suppressNextBrandClick = false;
 let panelOpacity = 0.94;
 let diceAnimationScale = defaultDiceAnimationScale;
+let diceClearButtonUpdateTimer: number | undefined;
+let diceClearButtonUpdateAt = 0;
 let panelPosition: { left: number; top: number } | undefined;
 let uiLanguage: UiLanguage = "pt-BR";
 let scanTimer: number | undefined;
@@ -2210,21 +2213,68 @@ function updateDiceClearButtonState(): void {
   }
 
   const visible = connectionState.status === "connected" && isCurrentClientHost(connectionState) && shouldUseSharedDice();
-  const canClear = visible && canClearDiceAnimations();
+  const availability = getDiceClearAvailability();
+  const canClear = visible && availability.canClear;
   panel.clearDiceButton.hidden = !visible;
   panel.clearDiceButton.disabled = !canClear;
   panel.clearDiceButton.dataset.tooltip = t("clearDice");
   panel.clearDiceButton.setAttribute("aria-label", t("clearDice"));
+  if (visible && !canClear && typeof availability.nextUpdateDelayMs === "number") {
+    scheduleDiceClearButtonStateUpdate(availability.nextUpdateDelayMs);
+  }
 }
 
 function canClearDiceAnimations(): boolean {
+  return getDiceClearAvailability().canClear;
+}
+
+function getDiceClearAvailability(): { canClear: boolean; nextUpdateDelayMs?: number } {
   if (!diceAnimationLayer || diceAnimationLayer.activeDice.size === 0) {
-    return false;
+    return { canClear: false };
   }
 
   const now = performance.now();
   const dice = [...diceAnimationLayer.activeDice].filter((die) => !die.fadeStarted);
-  return dice.length > 0 && dice.every((die) => die.resultRevealed && now - die.revealStart >= resultLabelRevealMs + diceClearUnlockMs);
+  if (dice.length === 0 || dice.some((die) => !die.resultRevealed)) {
+    return { canClear: false };
+  }
+
+  const unlockDelay = Math.max(
+    ...dice.map((die) => resultLabelRevealMs + diceClearUnlockMs - (now - die.revealStart))
+  );
+  if (unlockDelay > 0) {
+    return { canClear: false, nextUpdateDelayMs: unlockDelay + 16 };
+  }
+
+  return { canClear: true };
+}
+
+function scheduleDiceClearButtonStateUpdate(delayMs = 0): void {
+  if (delayMs <= 0) {
+    if (typeof diceClearButtonUpdateTimer === "number") {
+      window.clearTimeout(diceClearButtonUpdateTimer);
+      diceClearButtonUpdateTimer = undefined;
+      diceClearButtonUpdateAt = 0;
+    }
+    updateDiceClearButtonState();
+    return;
+  }
+
+  const dueAt = performance.now() + delayMs;
+  if (typeof diceClearButtonUpdateTimer === "number" && diceClearButtonUpdateAt <= dueAt) {
+    return;
+  }
+
+  if (typeof diceClearButtonUpdateTimer === "number") {
+    window.clearTimeout(diceClearButtonUpdateTimer);
+  }
+
+  diceClearButtonUpdateAt = dueAt;
+  diceClearButtonUpdateTimer = window.setTimeout(() => {
+    diceClearButtonUpdateTimer = undefined;
+    diceClearButtonUpdateAt = 0;
+    updateDiceClearButtonState();
+  }, delayMs);
 }
 
 function hasSpecialOutcome(roll: RollEvent): boolean {
@@ -5056,6 +5106,7 @@ function playDiceAnimation(roll: RollEvent, onComplete?: () => void): boolean {
 
   const layer = diceAnimationLayer;
   const dice = roll.dice.slice(0, maxAnimatedDice);
+  makeRoomForAnimatedDice(layer, dice.length);
   const batchId = (diceAnimationBatchSequence += 1);
   if (onComplete) {
     let fallbackTimer = 0;
@@ -5080,7 +5131,7 @@ function playDiceAnimation(roll: RollEvent, onComplete?: () => void): boolean {
     layer.scene.add(die.group);
   }
   playDiceRollSound(animatedDice.length);
-  updateDiceClearButtonState();
+  scheduleDiceClearButtonStateUpdate();
   ensureDiceAnimationLoop();
   return true;
 }
@@ -5099,6 +5150,45 @@ function compareActiveDiceRollsOldestFirst(first: ActiveDiceRoll, second: Active
   return Date.parse(first.roll.createdAt) - Date.parse(second.roll.createdAt);
 }
 
+function makeRoomForAnimatedDice(layer: DiceAnimationLayer, incomingCount: number): void {
+  const allowedIncoming = Math.min(Math.max(0, incomingCount), maxActiveAnimatedDice);
+  const allowedExisting = maxActiveAnimatedDice - allowedIncoming;
+  const excess = layer.activeDice.size - allowedExisting;
+  if (excess <= 0) {
+    return;
+  }
+
+  const removedBatchIds = new Set<number>();
+  const candidates = [...layer.activeDice].sort(
+    (first, second) =>
+      Number(second.fadeStarted) - Number(first.fadeStarted) ||
+      Number(first.dragging) - Number(second.dragging) ||
+      first.birth - second.birth
+  );
+  for (const die of candidates.slice(0, excess)) {
+    removedBatchIds.add(die.batchId);
+    removeAnimatedDie(layer, die, false);
+  }
+
+  for (const batchId of removedBatchIds) {
+    completeDiceBatchIfDone(layer, batchId);
+  }
+  scheduleDiceClearButtonStateUpdate();
+}
+
+function removeAnimatedDie(layer: DiceAnimationLayer, die: AnimatedDie, completeBatch = true): void {
+  const batchId = die.batchId;
+  if (layer.drag?.die === die) {
+    layer.drag = undefined;
+  }
+  layer.scene.remove(die.group);
+  disposeAnimatedDie(die.group, layer.d10Model);
+  layer.activeDice.delete(die);
+  if (completeBatch) {
+    completeDiceBatchIfDone(layer, batchId);
+  }
+}
+
 function playActiveDiceSnapshot(activeRoll: ActiveDiceRoll): boolean {
   if (!shouldUseSharedDice() || !diceAnimationLayer || activeRoll.roll.dice.length === 0) {
     return false;
@@ -5112,6 +5202,7 @@ function playActiveDiceSnapshot(activeRoll: ActiveDiceRoll): boolean {
 
   const layer = diceAnimationLayer;
   const dice = activeRoll.roll.dice.slice(0, maxAnimatedDice);
+  makeRoomForAnimatedDice(layer, dice.length);
   const batchId = (diceAnimationBatchSequence += 1);
   const now = performance.now();
   const revealAge = clampNumber(diceAnimationMs - Math.min(remainingMs, diceAnimationMs), 0, diceAnimationMs - 1);
@@ -5128,7 +5219,7 @@ function playActiveDiceSnapshot(activeRoll: ActiveDiceRoll): boolean {
     die.group.position.set(die.x, die.y, die.z);
   }
 
-  updateDiceClearButtonState();
+  scheduleDiceClearButtonStateUpdate();
   ensureDiceAnimationLoop();
   return true;
 }
@@ -5191,7 +5282,6 @@ function tickDiceAnimation(now: number): void {
   const dt = Math.min(0.034, Math.max(0.001, (now - diceAnimationLayer.lastFrame) / 1000));
   diceAnimationLayer.lastFrame = now;
   updateAnimatedDice(diceAnimationLayer, now, dt);
-  updateDiceClearButtonState();
   diceAnimationLayer.renderer.render(diceAnimationLayer.scene, diceAnimationLayer.camera);
 
   if (diceAnimationLayer.activeDice.size > 0) {
@@ -5377,6 +5467,7 @@ function updateAnimatedDice(layer: DiceAnimationLayer, now: number, dt: number):
     const resultAge = die.resultRevealed ? now - die.revealStart : 0;
     if (die.resultRevealed && !die.fadeStarted && resultAge > diceAnimationMs - diceFadeLeadMs) {
       fadeAnimatedDie(die, now);
+      scheduleDiceClearButtonStateUpdate();
     }
 
     if (die.fadeStarted) {
@@ -5384,11 +5475,8 @@ function updateAnimatedDice(layer: DiceAnimationLayer, now: number, dt: number):
     }
 
     if (die.resultRevealed && resultAge > diceAnimationMs) {
-      const batchId = die.batchId;
-      layer.scene.remove(die.group);
-      disposeAnimatedDie(die.group, layer.d10Model);
-      layer.activeDice.delete(die);
-      completeDiceBatchIfDone(layer, batchId);
+      removeAnimatedDie(layer, die);
+      scheduleDiceClearButtonStateUpdate();
     }
   }
 
@@ -5946,6 +6034,7 @@ function revealDieResult(die: AnimatedDie, layer: DiceAnimationLayer, now: numbe
   die.resultLabel = label;
   die.revealStart = now;
   die.resultRevealed = true;
+  scheduleDiceClearButtonStateUpdate(resultLabelRevealMs + diceClearUnlockMs + 16);
 }
 
 function alignObjectToFace(object: THREE.Object3D, anchor: FaceAnchor): void {
