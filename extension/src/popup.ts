@@ -46,6 +46,8 @@ const messages = {
     showOwnRollsHelp: "O Demiplane ja mostra sua rolagem; deixe desligado para ver so a sala. Interpretacoes especiais ainda aparecem.",
     enableDiceAnimationLabel: "Animacao dos dados",
     enableDiceAnimationHelp: "Mostra os dados caindo e quicando na ficha, com som leve.",
+    enableSharedDiceLabel: "Dados compartilhados",
+    enableSharedDiceHelp: "Permite ver e mover os mesmos dados com a mesa. Desligado, a animacao fica local como antes.",
     save: "Salvar",
     connect: "Conectar",
     disconnect: "Desconectar",
@@ -108,6 +110,8 @@ const messages = {
     showOwnRollsHelp: "Demiplane already shows your roll; leave this off to see only the room. Special interpretations still appear.",
     enableDiceAnimationLabel: "Dice animation",
     enableDiceAnimationHelp: "Shows dice falling and bouncing on the sheet, with light sound.",
+    enableSharedDiceLabel: "Shared dice",
+    enableSharedDiceHelp: "See and move the same dice with the table. Off keeps dice animation local like before.",
     save: "Save",
     connect: "Connect",
     disconnect: "Disconnect",
@@ -163,7 +167,8 @@ const inputs = {
   channel: requireElement("#channel", HTMLInputElement),
   password: requireElement("#password", HTMLInputElement),
   showOwnRolls: requireElement("#showOwnRolls", HTMLInputElement),
-  enableDiceAnimation: requireElement("#enableDiceAnimation", HTMLInputElement)
+  enableDiceAnimation: requireElement("#enableDiceAnimation", HTMLInputElement),
+  enableSharedDice: requireElement("#enableSharedDice", HTMLInputElement)
 };
 const hideCharacterNameRow = inputs.hideCharacterName.closest("label");
 
@@ -297,6 +302,7 @@ function fillConfig(config: ExtensionConfig): void {
   inputs.password.value = config.password;
   inputs.showOwnRolls.checked = config.showOwnRolls;
   inputs.enableDiceAnimation.checked = config.enableDiceAnimation;
+  inputs.enableSharedDice.checked = config.enableSharedDice;
   updateRoomMode();
 }
 
@@ -312,7 +318,8 @@ function readConfig(): ExtensionConfig {
     password: inputs.password.value,
     autoConnect: false,
     showOwnRolls: inputs.showOwnRolls.checked,
-    enableDiceAnimation: inputs.enableDiceAnimation.checked
+    enableDiceAnimation: inputs.enableDiceAnimation.checked,
+    enableSharedDice: inputs.enableSharedDice.checked
   };
 }
 

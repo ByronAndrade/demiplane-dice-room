@@ -67,6 +67,19 @@ export type RollEvent = {
   createdAt: string;
 };
 
+export type SharedDiceControlEvent = {
+  action: "grab" | "move" | "release";
+  rollId: string;
+  dieIndex: number;
+  sequence: number;
+  x: number;
+  y: number;
+  z?: number;
+  actorClientId?: string;
+  actorName?: string;
+  createdAt: string;
+};
+
 export type ServerMessage =
   | {
       type: "welcome";
@@ -107,6 +120,12 @@ export type ServerMessage =
       roll: RollEvent;
     }
   | {
+      type: "dice_control";
+      version: 1;
+      roomId: string;
+      event: SharedDiceControlEvent;
+    }
+  | {
       type: "error";
       version: 1;
       code: string;
@@ -122,6 +141,7 @@ export type ClientMessage =
   | { type: "kick_player"; version: 1; clientId: string }
   | { type: "heartbeat"; version: 1; createdAt: string }
   | { type: "view_status"; version: 1; active: boolean; reportedAt: string }
+  | { type: "dice_control"; version: 1; event: SharedDiceControlEvent }
   | { type: "leave_room"; version: 1 };
 
 export type BackgroundMessage =
@@ -138,6 +158,10 @@ export type BackgroundMessage =
       roll: RollEvent;
       origin: "local" | "remote";
       delivery: RollDelivery;
+    }
+  | {
+      kind: "background:dice-control";
+      event: SharedDiceControlEvent;
     };
 
 export type RollDelivery = "local" | "sent" | "received" | "history";

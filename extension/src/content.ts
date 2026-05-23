@@ -5,6 +5,7 @@ import type {
   DiceFace,
   DiceValue,
   RollEvent,
+  SharedDiceControlEvent,
   StoredRoll
 } from "./shared/protocol";
 import { defaultConfig, type ExtensionConfig } from "./shared/storage";
@@ -26,6 +27,8 @@ const rolls: Array<{ roll: RollEvent; origin: "local" | "remote"; delivery: stri
 const liveToastMs = 9600;
 const maxLiveToasts = 3;
 const sheetActivityReportMs = 5_000;
+const sharedDiceMoveMinIntervalMs = 50;
+const sharedDiceRemoteHoldMs = 4_500;
 const diceAnimationMs = 8800;
 const diceFadeLeadMs = 420;
 const diceFadeMs = 360;
@@ -56,7 +59,7 @@ const defaultDiceAnimationScale = 0.75;
 const minDiceAnimationScale = 0.45;
 const maxDiceAnimationScale = 1.15;
 const defaultRelayUrl = "wss://demiplane-dice-room-relay.foxbyron.workers.dev";
-const extensionUiVersion = "0.1.94";
+const extensionUiVersion = "0.1.95";
 const pageBridgeMessageSource = "demiplane-dice-room-page";
 const pageDiceRollResponseWaitMs = 1400;
 const pageDiceRollResponseTtlMs = 8_000;
@@ -171,6 +174,8 @@ const messages = {
     showOwnRollsHint: "Normalmente o Demiplane ja mostra sua rolagem. Deixe desligado para ver so as rolagens da sala; interpretacoes especiais ainda aparecem.",
     enableDiceAnimation: "Animacao dos dados",
     enableDiceAnimationHint: "Mostra os dados caindo e quicando na ficha, com som leve.",
+    enableSharedDice: "Dados compartilhados",
+    enableSharedDiceHint: "Permite ver e mover os mesmos dados com a mesa. Desligado, a animacao fica local como antes.",
     diceAnimationSize: "Tamanho dos dados",
     sent: "enviado",
     received: "recebido",
@@ -267,6 +272,8 @@ const messages = {
     showOwnRollsHint: "Demiplane already shows your roll by default. Leave this off to see only room rolls; special interpretations still appear.",
     enableDiceAnimation: "Dice animation",
     enableDiceAnimationHint: "Shows dice falling and bouncing on the sheet, with light sound.",
+    enableSharedDice: "Shared dice",
+    enableSharedDiceHint: "See and move the same dice with the table. Off keeps dice animation local like before.",
     diceAnimationSize: "Dice size",
     sent: "sent",
     received: "received",
@@ -321,6 +328,7 @@ let panel: ReturnType<typeof createPanel> | undefined;
 let liveLayer: ReturnType<typeof createLiveLayer> | undefined;
 let diceAnimationLayer: ReturnType<typeof createDiceAnimationLayer> | undefined;
 let diceAnimationBatchSequence = 0;
+let sharedDiceControlSequence = 0;
 let audioContext: AudioContext | undefined;
 const firstLoad = !window.__demiplaneDiceRoomLoaded;
 
@@ -388,6 +396,10 @@ async function initializeContentScript(): Promise<void> {
       addRoll(message.roll, message.origin, message.delivery);
     }
 
+    if (message.kind === "background:dice-control") {
+      applySharedDiceControl(message.event);
+    }
+
     if (message.kind === "background:roll-history") {
       replaceRolls(message.rolls);
     }
@@ -408,7 +420,8 @@ async function initializeContentScript(): Promise<void> {
       "channel",
       "password",
       "showOwnRolls",
-      "enableDiceAnimation"
+      "enableDiceAnimation",
+      "enableSharedDice"
     ];
 
     if (!configKeys.some((key) => changes[key])) {
@@ -429,7 +442,8 @@ async function initializeContentScript(): Promise<void> {
       showOwnRolls: changes.showOwnRolls ? changes.showOwnRolls.newValue === true : previousConfig.showOwnRolls,
       enableDiceAnimation: changes.enableDiceAnimation
         ? changes.enableDiceAnimation.newValue !== false
-        : previousConfig.enableDiceAnimation
+        : previousConfig.enableDiceAnimation,
+      enableSharedDice: changes.enableSharedDice ? changes.enableSharedDice.newValue !== false : previousConfig.enableSharedDice
     };
     renderPanel();
   });
@@ -2140,6 +2154,10 @@ function shouldAnimateDice(): boolean {
   return currentConfig?.enableDiceAnimation !== false;
 }
 
+function shouldUseSharedDice(): boolean {
+  return shouldAnimateDice() && currentConfig?.enableSharedDice !== false;
+}
+
 function hasSpecialOutcome(roll: RollEvent): boolean {
   const outcome = getRollOutcome(roll);
   return outcome === "bestialFailure" || outcome === "messyCritical" || outcome === "criticalSuccess";
@@ -2199,6 +2217,7 @@ function createPanel(): {
   languageSelect: HTMLSelectElement;
   showOwnRollsInput: HTMLInputElement;
   diceAnimationInput: HTMLInputElement;
+  sharedDiceInput: HTMLInputElement;
   diceSizeInput: HTMLInputElement;
 } {
   const host = document.createElement("div");
@@ -3066,6 +3085,13 @@ function createPanel(): {
           <p data-settings-animation-help class="settings-help"></p>
         </div>
         <div class="settings-row">
+          <label class="checkbox-row">
+            <input data-shared-dice type="checkbox" />
+            <span data-settings-shared-dice-label>Dados compartilhados</span>
+          </label>
+          <p data-settings-shared-dice-help class="settings-help"></p>
+        </div>
+        <div class="settings-row">
           <label>
             <span data-settings-dice-size-label>Tamanho dos dados</span>
             <span data-dice-size-value></span>
@@ -3122,6 +3148,7 @@ function createPanel(): {
   const languageSelect = shadow.querySelector("[data-language]");
   const showOwnRollsInput = shadow.querySelector("[data-show-own-rolls]");
   const diceAnimationInput = shadow.querySelector("[data-dice-animation]");
+  const sharedDiceInput = shadow.querySelector("[data-shared-dice]");
   const diceSizeInput = shadow.querySelector("[data-dice-size]");
   const opacityValue = shadow.querySelector("[data-opacity-value]");
 
@@ -3170,6 +3197,7 @@ function createPanel(): {
     !(languageSelect instanceof HTMLSelectElement) ||
     !(showOwnRollsInput instanceof HTMLInputElement) ||
     !(diceAnimationInput instanceof HTMLInputElement) ||
+    !(sharedDiceInput instanceof HTMLInputElement) ||
     !(diceSizeInput instanceof HTMLInputElement) ||
     !(opacityValue instanceof HTMLSpanElement)
   ) {
@@ -3323,6 +3351,15 @@ function createPanel(): {
     void chrome.storage.local.set({ enableDiceAnimation: diceAnimationInput.checked });
   });
 
+  sharedDiceInput.addEventListener("change", () => {
+    currentConfig = {
+      ...(currentConfig ?? defaultConfig),
+      enableSharedDice: sharedDiceInput.checked
+    };
+    renderPanel();
+    void chrome.storage.local.set({ enableSharedDice: sharedDiceInput.checked });
+  });
+
   diceSizeInput.addEventListener("input", () => {
     diceAnimationScale = clampNumber(Number.parseFloat(diceSizeInput.value), minDiceAnimationScale, maxDiceAnimationScale);
     renderPanel();
@@ -3380,6 +3417,7 @@ function createPanel(): {
     languageSelect,
     showOwnRollsInput,
     diceAnimationInput,
+    sharedDiceInput,
     diceSizeInput
   };
 }
@@ -3458,6 +3496,7 @@ function renderPanel(): void {
   panel.languageSelect.value = uiLanguage;
   panel.showOwnRollsInput.checked = shouldShowOwnRolls();
   panel.diceAnimationInput.checked = shouldAnimateDice();
+  panel.sharedDiceInput.checked = shouldUseSharedDice();
   panel.diceSizeInput.value = String(diceAnimationScale);
   panel.toggle.textContent = collapsed ? "^" : "v";
   panel.toggle.removeAttribute("title");
@@ -3534,6 +3573,14 @@ function renderPanel(): void {
   const diceAnimationHelp = panel.host.shadowRoot?.querySelector("[data-settings-animation-help]");
   if (diceAnimationHelp instanceof HTMLParagraphElement) {
     diceAnimationHelp.textContent = t("enableDiceAnimationHint");
+  }
+  const sharedDiceLabel = panel.host.shadowRoot?.querySelector("[data-settings-shared-dice-label]");
+  if (sharedDiceLabel instanceof HTMLSpanElement) {
+    sharedDiceLabel.textContent = t("enableSharedDice");
+  }
+  const sharedDiceHelp = panel.host.shadowRoot?.querySelector("[data-settings-shared-dice-help]");
+  if (sharedDiceHelp instanceof HTMLParagraphElement) {
+    sharedDiceHelp.textContent = t("enableSharedDiceHint");
   }
   const diceSizeLabel = panel.host.shadowRoot?.querySelector("[data-settings-dice-size-label]");
   if (diceSizeLabel instanceof HTMLSpanElement) {
@@ -3737,7 +3784,8 @@ async function savePanelRoomConfig(): Promise<void> {
     password: panel.passwordInput.value,
     relayKey: panel.relayKeyInput.value.trim(),
     showOwnRolls: panel.showOwnRollsInput.checked,
-    enableDiceAnimation: panel.diceAnimationInput.checked
+    enableDiceAnimation: panel.diceAnimationInput.checked,
+    enableSharedDice: panel.sharedDiceInput.checked
   };
 
   currentConfig = nextConfig;
@@ -4202,6 +4250,8 @@ type AnimatedDie = {
   value: number;
   kind: DiceValue["kind"];
   face: DiceFace;
+  rollId: string;
+  dieIndex: number;
   radius: number;
   x: number;
   y: number;
@@ -4226,6 +4276,13 @@ type AnimatedDie = {
   fadeStarted: boolean;
   fadeStart: number;
   dragging: boolean;
+  remoteControllerClientId?: string;
+  remoteControlUntil?: number;
+  remoteTargetX?: number;
+  remoteTargetY?: number;
+  remoteTargetZ?: number;
+  sharedLastSequence?: number;
+  sharedLastActorClientId?: string;
 };
 
 type DiceDragState = {
@@ -4237,6 +4294,8 @@ type DiceDragState = {
   lastX: number;
   lastY: number;
   lastTime: number;
+  sharedSequence: number;
+  lastSharedAt: number;
 };
 
 const resultLabelBaseOffset = 0.055;
@@ -4379,7 +4438,7 @@ function playDiceAnimation(roll: RollEvent, onComplete?: () => void): boolean {
     }, diceHardSettleMs + diceAnimationMs + diceFadeMs + 2500);
     layer.batchCompletionCallbacks.set(batchId, complete);
   }
-  const animatedDice = dice.map((die, index) => createAnimatedDie(die, index, dice.length, batchId, layer));
+  const animatedDice = dice.map((die, index) => createAnimatedDie(die, index, dice.length, batchId, layer, roll.id));
   for (const die of animatedDice) {
     layer.activeDice.add(die);
     layer.scene.add(die.group);
@@ -4416,7 +4475,14 @@ function tickDiceAnimation(now: number): void {
   diceAnimationLayer.animationFrame = 0;
 }
 
-function createAnimatedDie(die: DiceValue, index: number, total: number, batchId: number, layer: DiceAnimationLayer): AnimatedDie {
+function createAnimatedDie(
+  die: DiceValue,
+  index: number,
+  total: number,
+  batchId: number,
+  layer: DiceAnimationLayer,
+  rollId: string
+): AnimatedDie {
   const radius = getAnimatedDieRadius(total);
   const group = createDieMesh(die, radius, layer);
   const bounds = getWorldBounds();
@@ -4438,6 +4504,8 @@ function createAnimatedDie(die: DiceValue, index: number, total: number, batchId
     value: die.value,
     kind: die.kind,
     face: getDieFace(die),
+    rollId,
+    dieIndex: index,
     x: startX,
     y: startY,
     z: startZ,
@@ -4508,7 +4576,9 @@ function updateAnimatedDice(layer: DiceAnimationLayer, now: number, dt: number):
   const bounds = getWorldBounds();
 
   for (const die of [...layer.activeDice]) {
-    if (!die.settled) {
+    const remoteControlled = applyRemoteDiceControl(die, now, dt);
+
+    if (!remoteControlled && !die.settled) {
       die.vz -= 2250 * dt;
       die.z += die.vz * dt;
       die.x += die.vx * dt;
@@ -4599,6 +4669,43 @@ function updateAnimatedDice(layer: DiceAnimationLayer, now: number, dt: number):
   for (const die of layer.activeDice) {
     die.group.position.set(die.x, die.y, die.z);
   }
+}
+
+function applyRemoteDiceControl(die: AnimatedDie, now: number, dt: number): boolean {
+  if (!die.remoteControllerClientId || !die.remoteControlUntil) {
+    return false;
+  }
+
+  if (now > die.remoteControlUntil) {
+    clearRemoteDiceControl(die);
+    return false;
+  }
+
+  die.dragging = true;
+  die.stableSince = 0;
+  die.vx = 0;
+  die.vy = 0;
+  die.vz = 0;
+  die.rollEnergy = 0;
+  die.angularVelocity.set(0, 0, 0);
+
+  const targetX = die.remoteTargetX ?? die.x;
+  const targetY = die.remoteTargetY ?? die.y;
+  const targetZ = die.remoteTargetZ ?? die.z;
+  const blend = clampNumber(dt * 18, 0, 1);
+  die.x += (targetX - die.x) * blend;
+  die.y += (targetY - die.y) * blend;
+  die.z += (targetZ - die.z) * blend;
+  return true;
+}
+
+function clearRemoteDiceControl(die: AnimatedDie): void {
+  die.remoteControllerClientId = undefined;
+  die.remoteControlUntil = undefined;
+  die.remoteTargetX = undefined;
+  die.remoteTargetY = undefined;
+  die.remoteTargetZ = undefined;
+  die.dragging = false;
 }
 
 function completeDiceBatchIfDone(layer: DiceAnimationLayer, batchId: number): void {
@@ -5642,8 +5749,11 @@ function bindDiceDragEvents(layer: DiceAnimationLayer): void {
       offsetY: die.y - point.y,
       lastX: die.x,
       lastY: die.y,
-      lastTime: performance.now()
+      lastTime: performance.now(),
+      sharedSequence: 0,
+      lastSharedAt: 0
     };
+    sendSharedDiceControl(layer, die, "grab", layer.drag);
     ensureDiceAnimationLoop();
   }, true);
 
@@ -5679,6 +5789,7 @@ function bindDiceDragEvents(layer: DiceAnimationLayer): void {
     drag.lastX = nextX;
     drag.lastY = nextY;
     drag.lastTime = now;
+    maybeSendSharedDiceMove(layer, die, drag, now);
     resolveDieCollisions(layer);
     for (const activeDie of layer.activeDice) {
       activeDie.group.position.set(activeDie.x, activeDie.y, activeDie.z);
@@ -5701,6 +5812,7 @@ function finishDiceDrag(layer: DiceAnimationLayer, event: PointerEvent): void {
   event.preventDefault();
   event.stopPropagation();
   const die = layer.drag.die;
+  const drag = layer.drag;
   const resultLocked = isDieResultLockedForDrag(die);
   const dragSpeed = Math.hypot(die.vx, die.vy);
   die.dragging = false;
@@ -5717,7 +5829,132 @@ function finishDiceDrag(layer: DiceAnimationLayer, event: PointerEvent): void {
     die.vx *= 0.18;
     die.vy *= 0.18;
   }
+  sendSharedDiceControl(layer, die, "release", drag);
   layer.drag = undefined;
+}
+
+function maybeSendSharedDiceMove(layer: DiceAnimationLayer, die: AnimatedDie, drag: DiceDragState, now: number): void {
+  if (now - drag.lastSharedAt < sharedDiceMoveMinIntervalMs) {
+    return;
+  }
+
+  sendSharedDiceControl(layer, die, "move", drag);
+}
+
+function sendSharedDiceControl(
+  layer: DiceAnimationLayer,
+  die: AnimatedDie,
+  action: SharedDiceControlEvent["action"],
+  drag: DiceDragState
+): void {
+  if (!shouldUseSharedDice() || connectionState.status !== "connected") {
+    return;
+  }
+
+  drag.sharedSequence = ++sharedDiceControlSequence;
+  drag.lastSharedAt = performance.now();
+  void sendRuntimeMessage({
+    kind: "content:dice-control",
+    event: createSharedDiceControlEvent(die, action, drag.sharedSequence)
+  } satisfies { kind: "content:dice-control"; event: SharedDiceControlEvent });
+  if (action === "release") {
+    resolveDieCollisions(layer);
+  }
+}
+
+function createSharedDiceControlEvent(
+  die: AnimatedDie,
+  action: SharedDiceControlEvent["action"],
+  sequence: number
+): SharedDiceControlEvent {
+  const normalized = normalizeDieWorldPosition(die);
+  return {
+    action,
+    rollId: die.rollId,
+    dieIndex: die.dieIndex,
+    sequence,
+    x: normalized.x,
+    y: normalized.y,
+    z: normalized.z,
+    createdAt: new Date().toISOString()
+  };
+}
+
+function normalizeDieWorldPosition(die: AnimatedDie): { x: number; y: number; z: number } {
+  const bounds = getWorldBounds();
+  const groundZ = getGroundZ(die.radius);
+  return {
+    x: clampNumber((die.x - bounds.left) / Math.max(1, bounds.right - bounds.left), 0, 1),
+    y: clampNumber((die.y - bounds.top) / Math.max(1, bounds.bottom - bounds.top), 0, 1),
+    z: clampNumber((die.z - groundZ) / 260, 0, 1)
+  };
+}
+
+function denormalizeDieWorldPosition(die: AnimatedDie, event: SharedDiceControlEvent): { x: number; y: number; z: number } {
+  const bounds = getWorldBounds();
+  const groundZ = getGroundZ(die.radius);
+  return {
+    x: bounds.left + clampNumber(event.x, 0, 1) * (bounds.right - bounds.left),
+    y: bounds.top + clampNumber(event.y, 0, 1) * (bounds.bottom - bounds.top),
+    z: groundZ + clampNumber(event.z ?? 0, 0, 1) * 260
+  };
+}
+
+function applySharedDiceControl(event: SharedDiceControlEvent): void {
+  if (!shouldUseSharedDice() || !diceAnimationLayer || event.actorClientId === connectionState.clientId) {
+    return;
+  }
+
+  const die = findSharedAnimatedDie(event);
+  if (!die) {
+    return;
+  }
+  const actorClientId = event.actorClientId ?? "remote";
+  if (
+    die.sharedLastActorClientId === actorClientId &&
+    typeof die.sharedLastSequence === "number" &&
+    event.sequence < die.sharedLastSequence
+  ) {
+    return;
+  }
+  if (diceAnimationLayer.drag?.die === die) {
+    return;
+  }
+
+  die.sharedLastSequence = event.sequence;
+  die.sharedLastActorClientId = actorClientId;
+  const point = denormalizeDieWorldPosition(die, event);
+  die.remoteTargetX = point.x;
+  die.remoteTargetY = point.y;
+  die.remoteTargetZ = point.z;
+
+  if (event.action === "release") {
+    die.x = point.x;
+    die.y = point.y;
+    die.z = point.z;
+    clearRemoteDiceControl(die);
+  } else {
+    die.remoteControllerClientId = actorClientId;
+    die.remoteControlUntil = performance.now() + sharedDiceRemoteHoldMs;
+    die.dragging = true;
+    die.vx = 0;
+    die.vy = 0;
+    die.vz = 0;
+    die.rollEnergy = 0;
+    die.angularVelocity.set(0, 0, 0);
+  }
+
+  ensureDiceAnimationLoop();
+}
+
+function findSharedAnimatedDie(event: SharedDiceControlEvent): AnimatedDie | undefined {
+  if (!diceAnimationLayer) {
+    return undefined;
+  }
+
+  return [...diceAnimationLayer.activeDice].find(
+    (die) => die.rollId === event.rollId && die.dieIndex === event.dieIndex && !die.fadeStarted
+  );
 }
 
 function isDieResultLockedForDrag(die: AnimatedDie): boolean {

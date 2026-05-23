@@ -9,6 +9,7 @@ import {
   type ConnectionState,
   type RollEvent,
   type ServerMessage,
+  type SharedDiceControlEvent,
   type StoredRoll
 } from "./shared/protocol";
 import { getClientId, getConfig, saveConfig, type ExtensionConfig } from "./shared/storage";
@@ -24,6 +25,7 @@ type RuntimeRequest =
   | { kind: "popup:test-roll" }
   | { kind: "content:ready" }
   | { kind: "content:sheet-activity"; active: boolean }
+  | { kind: "content:dice-control"; event: SharedDiceControlEvent }
   | { kind: "content:captured-roll"; roll: CapturedRoll };
 
 const localHistoryVersion = 9;
@@ -109,6 +111,9 @@ async function handleRuntimeMessage(message: RuntimeRequest): Promise<unknown> {
       }
       reportSheetPresenceStatus();
       return { ok: true };
+
+    case "content:dice-control":
+      return publishDiceControlEvent(message.event);
 
     case "popup:save-config": {
       const current = await getConfig();
@@ -400,6 +405,16 @@ async function publishCapturedRoll(captured: CapturedRoll): Promise<{ ok: true; 
   return { ok: true, delivered: delivery, roll };
 }
 
+async function publishDiceControlEvent(event: SharedDiceControlEvent): Promise<{ ok: boolean }> {
+  const config = await getConfig();
+  if (config.enableSharedDice === false || socket?.readyState !== WebSocket.OPEN || connectionState.status !== "connected") {
+    return { ok: false };
+  }
+
+  sendSocketMessage({ type: "dice_control", version: protocolVersion, event });
+  return { ok: true };
+}
+
 async function shouldUseRoomDelivery(config: ExtensionConfig): Promise<boolean> {
   if (!config.autoConnect || !config.playerName || !config.channel) {
     return false;
@@ -618,6 +633,19 @@ function handleServerMessage(message: ServerMessage): void {
         roll: message.roll,
         origin: "remote",
         delivery: "received"
+      });
+      return;
+
+    case "dice_control":
+      void getConfig().then((config) => {
+        if (config.enableSharedDice === false) {
+          return;
+        }
+
+        broadcastToContent({
+          kind: "background:dice-control",
+          event: message.event
+        });
       });
       return;
 

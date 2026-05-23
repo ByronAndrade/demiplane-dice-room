@@ -130,6 +130,16 @@ async function runScenario() {
   hostClient.sendRoll(hostRoll);
   await waitForRoll([hostClient, ...players], hostRoll.id, "host roll reaches everyone");
 
+  const sharedDiceGrab = createDiceControlEvent(hostRoll.id, 0, "grab", 1, 0.42, 0.58);
+  players[0].sendDiceControl(sharedDiceGrab);
+  await waitForDiceControl([hostClient, ...players], hostRoll.id, 0, "grab", players[0].clientId, "shared die grab reaches everyone");
+  players[1].sendDiceControl(createDiceControlEvent(hostRoll.id, 0, "grab", 1, 0.2, 0.2));
+  const sharedDiceMove = createDiceControlEvent(hostRoll.id, 0, "move", 2, 0.62, 0.32);
+  players[0].sendDiceControl(sharedDiceMove);
+  await waitForDiceControl([hostClient, ...players], hostRoll.id, 0, "move", players[0].clientId, "shared die move reaches everyone");
+  players[0].sendDiceControl(createDiceControlEvent(hostRoll.id, 0, "release", 3, 0.64, 0.34));
+  await waitForDiceControl([hostClient, ...players], hostRoll.id, 0, "release", players[0].clientId, "shared die release reaches everyone");
+
   const playerRoll = createRoll(players[0], "player-resolve", "RESOLVE + AWARENESS", 1);
   players[0].sendRoll(playerRoll);
   await waitForRoll([hostClient, ...players], playerRoll.id, "player roll reaches host and table");
@@ -230,6 +240,22 @@ async function waitForRoll(targetClients, rollId, label) {
   );
 }
 
+async function waitForDiceControl(targetClients, rollId, dieIndex, action, actorClientId, label) {
+  await Promise.all(
+    targetClients.map((client) =>
+      client.waitFor(
+        (message) =>
+          message.type === "dice_control" &&
+          message.event.rollId === rollId &&
+          message.event.dieIndex === dieIndex &&
+          message.event.action === action &&
+          message.event.actorClientId === actorClientId,
+        `${label}: ${client.playerName}`
+      )
+    )
+  );
+}
+
 async function waitForSheetStatus(targetClients, clientId, sheetStatus, label) {
   await Promise.all(
     targetClients.map((client) =>
@@ -284,6 +310,10 @@ class RoomClient {
 
   sendViewStatus(active) {
     this.send({ type: "view_status", version: 1, active, reportedAt: new Date().toISOString() });
+  }
+
+  sendDiceControl(event) {
+    this.send({ type: "dice_control", version: 1, event });
   }
 
   waitFor(predicate, label, timeoutMs = scenarioTimeoutMs) {
@@ -355,6 +385,19 @@ function createRoll(client, suffix, title, successes, overrides = {}) {
     total: null,
     dice,
     rawText: overrides.rawText ?? `${title}\nSUCCESSES: ${successes}\nDETAILS\n10 8 2`,
+    createdAt: new Date().toISOString()
+  };
+}
+
+function createDiceControlEvent(rollId, dieIndex, action, sequence, x, y) {
+  return {
+    action,
+    rollId,
+    dieIndex,
+    sequence,
+    x,
+    y,
+    z: 0,
     createdAt: new Date().toISOString()
   };
 }

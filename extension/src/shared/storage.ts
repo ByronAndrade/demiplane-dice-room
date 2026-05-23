@@ -13,6 +13,7 @@ export type ExtensionConfig = {
   autoConnect: boolean;
   showOwnRolls: boolean;
   enableDiceAnimation: boolean;
+  enableSharedDice: boolean;
   hideCharacterName: boolean;
 };
 
@@ -27,6 +28,7 @@ export const defaultConfig: ExtensionConfig = {
   autoConnect: false,
   showOwnRolls: false,
   enableDiceAnimation: true,
+  enableSharedDice: true,
   hideCharacterName: false
 };
 
@@ -69,6 +71,7 @@ function normalizeConfig(value: Partial<ExtensionConfig>): ExtensionConfig {
     autoConnect: value.autoConnect === true,
     showOwnRolls: value.showOwnRolls === true,
     enableDiceAnimation: value.enableDiceAnimation !== false,
+    enableSharedDice: value.enableSharedDice !== false,
     hideCharacterName: value.hideCharacterName === true
   };
 }

@@ -5,6 +5,7 @@ const maxMessageBytes = 64 * 1024;
 const maxRoomHistory = 100;
 const maxRoomPlayers = 20;
 const hostReconnectGraceMs = 120_000;
+const diceControlLockMs = 4_000;
 const historyStorageKey = "history";
 const approvedStorageKey = "approvedPlayers";
 
@@ -66,6 +67,25 @@ type RollMessage = {
   roll: RollEvent;
 };
 
+type SharedDiceControlEvent = {
+  action: "grab" | "move" | "release";
+  rollId: string;
+  dieIndex: number;
+  sequence: number;
+  x: number;
+  y: number;
+  z?: number;
+  actorClientId?: string;
+  actorName?: string;
+  createdAt: string;
+};
+
+type DiceControlMessage = {
+  type: "dice_control";
+  version: 1;
+  event: SharedDiceControlEvent;
+};
+
 type PlayerControlMessage = {
   type: "approve_player" | "reject_player" | "kick_player";
   version: 1;
@@ -124,6 +144,12 @@ type ServerMessage =
       roll: RollEvent;
     }
   | {
+      type: "dice_control";
+      version: 1;
+      roomId: string;
+      event: SharedDiceControlEvent;
+    }
+  | {
       type: "error";
       version: 1;
       code: string;
@@ -142,6 +168,11 @@ type ClientSession = {
   ready?: boolean;
   sheetActive?: boolean;
   sheetSeenAt?: string;
+};
+
+type DiceControlLock = {
+  clientId: string;
+  expiresAt: number;
 };
 
 export interface Env {
@@ -198,6 +229,7 @@ export default {
 
 export class DiceRoomDurableObject extends DurableObject<Env> {
   private sessions = new Map<WebSocket, ClientSession>();
+  private diceControlLocks = new Map<string, DiceControlLock>();
   private hostGraceTimer: ReturnType<typeof setTimeout> | undefined;
   private hostGraceClientId = "";
 
@@ -288,6 +320,14 @@ export class DiceRoomDurableObject extends DurableObject<Env> {
       return;
     }
 
+    if (isDiceControlMessage(parsed.value)) {
+      const event = this.normalizeDiceControlEvent(parsed.value.event, session);
+      if (this.acceptDiceControlEvent(session, event)) {
+        this.broadcast(session.roomId, { type: "dice_control", version: 1, roomId: session.roomId, event });
+      }
+      return;
+    }
+
     if (!isRollMessage(parsed.value)) {
       this.send(socket, errorMessage("invalid_message", "Mensagem fora do formato esperado."));
       return;
@@ -309,6 +349,7 @@ export class DiceRoomDurableObject extends DurableObject<Env> {
     socket.close(code, reason);
 
     if (session?.ready) {
+      this.releaseDiceControlLocksForClient(session.roomId, session.clientId || "");
       if (session.roomRole === "host") {
         this.scheduleHostGraceRoomClose(session.roomId, session.clientId || "");
         return;
@@ -325,6 +366,7 @@ export class DiceRoomDurableObject extends DurableObject<Env> {
     this.sessions.delete(socket);
 
     if (session?.ready) {
+      this.releaseDiceControlLocksForClient(session.roomId, session.clientId || "");
       if (session.roomRole === "host") {
         this.scheduleHostGraceRoomClose(session.roomId, session.clientId || "");
         return;
@@ -471,17 +513,84 @@ export class DiceRoomDurableObject extends DurableObject<Env> {
     this.kickRoomPlayer(socket, hostSession.roomId, message.clientId, hostSession.clientId);
   }
 
+  private normalizeDiceControlEvent(
+    event: SharedDiceControlEvent,
+    session: Required<Pick<ClientSession, "clientId" | "playerName">> & ClientSession
+  ): SharedDiceControlEvent {
+    return {
+      ...event,
+      actorClientId: session.clientId,
+      actorName: session.characterName || session.playerName
+    };
+  }
+
+  private acceptDiceControlEvent(
+    session: Required<Pick<ClientSession, "roomId" | "clientId">> & ClientSession,
+    event: SharedDiceControlEvent
+  ): boolean {
+    const key = this.getDiceControlLockKey(session.roomId, event);
+    const now = Date.now();
+    const existing = this.diceControlLocks.get(key);
+    if (existing && existing.expiresAt <= now) {
+      this.diceControlLocks.delete(key);
+    }
+
+    const current = this.diceControlLocks.get(key);
+    if (event.action === "grab") {
+      if (current && current.clientId !== session.clientId) {
+        return false;
+      }
+
+      this.diceControlLocks.set(key, { clientId: session.clientId, expiresAt: now + diceControlLockMs });
+      return true;
+    }
+
+    if (!current || current.clientId !== session.clientId) {
+      return false;
+    }
+
+    if (event.action === "release") {
+      this.diceControlLocks.delete(key);
+      return true;
+    }
+
+    this.diceControlLocks.set(key, { clientId: session.clientId, expiresAt: now + diceControlLockMs });
+    return true;
+  }
+
+  private getDiceControlLockKey(roomId: string, event: Pick<SharedDiceControlEvent, "rollId" | "dieIndex">): string {
+    return `${roomId}:${event.rollId}:${event.dieIndex}`;
+  }
+
+  private releaseDiceControlLocksForClient(roomId: string, clientId: string): void {
+    for (const [key, lock] of this.diceControlLocks) {
+      if (key.startsWith(`${roomId}:`) && lock.clientId === clientId) {
+        this.diceControlLocks.delete(key);
+      }
+    }
+  }
+
+  private releaseDiceControlLocksForRoom(roomId: string): void {
+    for (const key of this.diceControlLocks.keys()) {
+      if (key.startsWith(`${roomId}:`)) {
+        this.diceControlLocks.delete(key);
+      }
+    }
+  }
+
   private async handleLeaveRoom(socket: WebSocket): Promise<void> {
     const session = this.sessions.get(socket) ?? normalizeSession(socket.deserializeAttachment());
     this.sessions.delete(socket);
 
     if (session?.ready && session.roomRole === "host") {
+      this.releaseDiceControlLocksForClient(session.roomId, session.clientId || "");
       await this.closeRoom(session.roomId);
       socket.close(1000, "leave_room");
       return;
     }
 
     if (session?.ready) {
+      this.releaseDiceControlLocksForClient(session.roomId, session.clientId || "");
       this.broadcastPresence(session.roomId);
     } else if (session?.roomId && session.clientId) {
       this.sendPendingPlayers(session.roomId);
@@ -808,6 +917,7 @@ export class DiceRoomDurableObject extends DurableObject<Env> {
 
   private async closeRoom(roomId: string): Promise<void> {
     this.clearHostGraceTimer();
+    this.releaseDiceControlLocksForRoom(roomId);
     for (const socket of this.ctx.getWebSockets()) {
       const session = this.sessions.get(socket) ?? normalizeSession(socket.deserializeAttachment());
       if (session?.roomId !== roomId) {
@@ -880,6 +990,44 @@ function isRollMessage(value: unknown): value is RollMessage {
 
   const message = value as Partial<RollMessage>;
   return message.type === "roll" && message.version === protocolVersion && isRollEvent(message.roll);
+}
+
+function isDiceControlMessage(value: unknown): value is DiceControlMessage {
+  if (!value || typeof value !== "object") {
+    return false;
+  }
+
+  const message = value as Partial<DiceControlMessage>;
+  return message.type === "dice_control" && message.version === protocolVersion && isSharedDiceControlEvent(message.event);
+}
+
+function isSharedDiceControlEvent(value: unknown): value is SharedDiceControlEvent {
+  if (!value || typeof value !== "object") {
+    return false;
+  }
+
+  const event = value as Partial<SharedDiceControlEvent>;
+  return (
+    (event.action === "grab" || event.action === "move" || event.action === "release") &&
+    isBoundedString(event.rollId, 8, 160) &&
+    typeof event.dieIndex === "number" &&
+    Number.isInteger(event.dieIndex) &&
+    event.dieIndex >= 0 &&
+    event.dieIndex <= 79 &&
+    typeof event.sequence === "number" &&
+    Number.isInteger(event.sequence) &&
+    event.sequence >= 0 &&
+    event.sequence <= 999_999_999 &&
+    typeof event.x === "number" &&
+    event.x >= 0 &&
+    event.x <= 1 &&
+    typeof event.y === "number" &&
+    event.y >= 0 &&
+    event.y <= 1 &&
+    (event.z === undefined || (typeof event.z === "number" && event.z >= 0 && event.z <= 1)) &&
+    typeof event.createdAt === "string" &&
+    !Number.isNaN(Date.parse(event.createdAt))
+  );
 }
 
 function isPlayerControlMessage(value: unknown): value is PlayerControlMessage {

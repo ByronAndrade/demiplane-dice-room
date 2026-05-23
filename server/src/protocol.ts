@@ -43,6 +43,25 @@ export const rollMessageSchema = z.object({
   roll: rollEventSchema
 });
 
+export const sharedDiceControlEventSchema = z.object({
+  action: z.enum(["grab", "move", "release"]),
+  rollId: z.string().trim().min(8).max(160),
+  dieIndex: z.number().int().min(0).max(79),
+  sequence: z.number().int().min(0).max(999_999_999),
+  x: z.number().min(0).max(1),
+  y: z.number().min(0).max(1),
+  z: z.number().min(0).max(1).optional(),
+  actorClientId: z.string().trim().min(8).max(120).optional(),
+  actorName: z.string().trim().min(1).max(80).optional(),
+  createdAt: z.string().datetime()
+});
+
+export const diceControlMessageSchema = z.object({
+  type: z.literal("dice_control"),
+  version: protocolVersionSchema,
+  event: sharedDiceControlEventSchema
+});
+
 export const approvePlayerMessageSchema = z.object({
   type: z.literal("approve_player"),
   version: protocolVersionSchema,
@@ -82,6 +101,7 @@ export const viewStatusMessageSchema = z.object({
 export const clientMessageSchema = z.discriminatedUnion("type", [
   helloMessageSchema,
   rollMessageSchema,
+  diceControlMessageSchema,
   approvePlayerMessageSchema,
   rejectPlayerMessageSchema,
   kickPlayerMessageSchema,
@@ -92,6 +112,7 @@ export const clientMessageSchema = z.discriminatedUnion("type", [
 
 export type HelloMessage = z.infer<typeof helloMessageSchema>;
 export type RollEvent = z.infer<typeof rollEventSchema>;
+export type SharedDiceControlEvent = z.infer<typeof sharedDiceControlEventSchema>;
 export type ClientMessage = z.infer<typeof clientMessageSchema>;
 
 export type PresencePlayer = {
@@ -149,6 +170,12 @@ export type ServerMessage =
       version: 1;
       roomId: string;
       roll: RollEvent;
+    }
+  | {
+      type: "dice_control";
+      version: 1;
+      roomId: string;
+      event: SharedDiceControlEvent;
     }
   | {
       type: "error";

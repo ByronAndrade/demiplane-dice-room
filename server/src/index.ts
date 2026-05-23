@@ -8,7 +8,8 @@ import {
   type PendingPlayer,
   type PresencePlayer,
   type RollEvent,
-  type ServerMessage
+  type ServerMessage,
+  type SharedDiceControlEvent
 } from "./protocol.js";
 
 const port = Number.parseInt(process.env.PORT ?? "8787", 10);
@@ -17,6 +18,7 @@ const maxMessageBytes = 64 * 1024;
 const maxRoomHistory = 100;
 const maxRoomPlayers = 20;
 const hostReconnectGraceMs = 120_000;
+const diceControlLockMs = 4_000;
 const adminToken = process.env.DICE_ROOM_ADMIN_TOKEN ?? "";
 const relayAccessKey = process.env.DICE_ROOM_RELAY_KEY?.trim() ?? "";
 let runtimePublicRelayUrl = "";
@@ -47,6 +49,11 @@ type HostGrace = {
   timer: ReturnType<typeof setTimeout>;
 };
 
+type DiceControlLock = {
+  clientId: string;
+  expiresAt: number;
+};
+
 type JoinResult =
   | { state: "joined"; client: Client }
   | { state: "pending"; pending: PendingClient }
@@ -57,6 +64,7 @@ const roomHistories = new Map<string, RollEvent[]>();
 const pendingRooms = new Map<string, Set<PendingClient>>();
 const approvedRoomClients = new Map<string, Set<string>>();
 const hostGraceTimers = new Map<string, HostGrace>();
+const diceControlLocks = new Map<string, DiceControlLock>();
 
 const heartbeatInterval = setInterval(() => {
   const createdAt = new Date().toISOString();
@@ -180,6 +188,14 @@ wss.on("connection", (socket, request) => {
 
     if (parsed.data.type === "kick_player") {
       kickRoomPlayer(client, parsed.data.clientId);
+      return;
+    }
+
+    if (parsed.data.type === "dice_control") {
+      const event = normalizeDiceControlEvent(parsed.data.event, client);
+      if (acceptDiceControlEvent(client, event)) {
+        broadcast(client.roomId, { type: "dice_control", version: 1, roomId: client.roomId, event });
+      }
       return;
     }
 
@@ -487,6 +503,7 @@ function kickRoomPlayer(host: Client, clientId: string): void {
 }
 
 function leaveRoom(client: Client, options: { manual: boolean }): void {
+  releaseDiceControlLocksForClient(client.roomId, client.clientId);
   const room = rooms.get(client.roomId);
   if (!room) {
     return;
@@ -530,6 +547,7 @@ function leavePendingRoom(pending: PendingClient): void {
 
 function closeRoom(roomId: string): void {
   clearHostGraceTimer(roomId);
+  releaseDiceControlLocksForRoom(roomId);
   const room = rooms.get(roomId);
   if (room) {
     for (const client of room) {
@@ -550,6 +568,22 @@ function closeRoom(roomId: string): void {
     }
   }
   pendingRooms.delete(roomId);
+}
+
+function releaseDiceControlLocksForClient(roomId: string, clientId: string): void {
+  for (const [key, lock] of diceControlLocks) {
+    if (key.startsWith(`${roomId}:`) && lock.clientId === clientId) {
+      diceControlLocks.delete(key);
+    }
+  }
+}
+
+function releaseDiceControlLocksForRoom(roomId: string): void {
+  for (const key of diceControlLocks.keys()) {
+    if (key.startsWith(`${roomId}:`)) {
+      diceControlLocks.delete(key);
+    }
+  }
 }
 
 function scheduleHostGraceRoomClose(roomId: string, hostClientId: string): void {
@@ -752,6 +786,49 @@ function normalizeRoll(roll: RollEvent, client: Client): RollEvent {
     playerName: client.playerName,
     characterName: roll.characterName || client.characterName
   };
+}
+
+function normalizeDiceControlEvent(event: SharedDiceControlEvent, client: Client): SharedDiceControlEvent {
+  return {
+    ...event,
+    actorClientId: client.clientId,
+    actorName: client.characterName || client.playerName
+  };
+}
+
+function acceptDiceControlEvent(client: Client, event: SharedDiceControlEvent): boolean {
+  const key = getDiceControlLockKey(client.roomId, event);
+  const now = Date.now();
+  const existing = diceControlLocks.get(key);
+  if (existing && existing.expiresAt <= now) {
+    diceControlLocks.delete(key);
+  }
+
+  const current = diceControlLocks.get(key);
+  if (event.action === "grab") {
+    if (current && current.clientId !== client.clientId) {
+      return false;
+    }
+
+    diceControlLocks.set(key, { clientId: client.clientId, expiresAt: now + diceControlLockMs });
+    return true;
+  }
+
+  if (!current || current.clientId !== client.clientId) {
+    return false;
+  }
+
+  if (event.action === "release") {
+    diceControlLocks.delete(key);
+    return true;
+  }
+
+  diceControlLocks.set(key, { clientId: client.clientId, expiresAt: now + diceControlLockMs });
+  return true;
+}
+
+function getDiceControlLockKey(roomId: string, event: Pick<SharedDiceControlEvent, "rollId" | "dieIndex">): string {
+  return `${roomId}:${event.rollId}:${event.dieIndex}`;
 }
 
 function appendHistory(roomId: string, roll: RollEvent): void {
