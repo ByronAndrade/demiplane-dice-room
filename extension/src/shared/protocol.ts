@@ -18,6 +18,8 @@ export type PresencePlayer = {
   roomRole?: "host" | "player";
   hideCharacterName?: boolean;
   joinedAt: string;
+  sheetStatus?: "active" | "offline";
+  sheetSeenAt?: string;
 };
 
 export type PendingPlayer = {
@@ -119,6 +121,7 @@ export type ClientMessage =
   | { type: "reject_player"; version: 1; clientId: string }
   | { type: "kick_player"; version: 1; clientId: string }
   | { type: "heartbeat"; version: 1; createdAt: string }
+  | { type: "view_status"; version: 1; active: boolean; reportedAt: string }
   | { type: "leave_room"; version: 1 };
 
 export type BackgroundMessage =

@@ -111,6 +111,15 @@ async function runScenario() {
   }
 
   await waitForPresenceCount([hostClient, ...players], playerCount + 1);
+  for (const client of [hostClient, ...players]) {
+    client.sendViewStatus(true);
+  }
+  await waitForSheetStatus([hostClient, ...players], players[0].clientId, "active", "players report open sheets");
+  players[0].sendViewStatus(false);
+  await waitForSheetStatus([hostClient, ...players], players[0].clientId, "offline", "closed sheet appears offline");
+  players[0].sendViewStatus(true);
+  await waitForSheetStatus([hostClient, ...players], players[0].clientId, "active", "reopened sheet appears active");
+
   const clearedPending = await hostClient.waitFor(
     (message) => message.type === "pending_players" && message.pendingPlayers.length === 0,
     "pending list clears after approvals"
@@ -149,6 +158,14 @@ async function runScenario() {
   }
   await waitForRoll([hostClient, ...players], repeatedCustomRolls[0].id, "first repeated custom roll delivered");
   await waitForRoll([hostClient, ...players], repeatedCustomRolls[1].id, "second repeated custom roll delivered");
+
+  const willpowerRoll = createRoll(players[0], "willpower", "WILLPOWER", 3);
+  players[0].sendRoll(willpowerRoll);
+  await waitForRoll([hostClient, ...players], willpowerRoll.id, "willpower roll reaches everyone");
+
+  const humanityRoll = createRoll(players[1], "humanity", "HUMANITY", 4);
+  players[1].sendRoll(humanityRoll);
+  await waitForRoll([hostClient, ...players], humanityRoll.id, "humanity roll reaches everyone");
 
   const reconnectedPlayer = await reconnectClient(players[2]);
   players[2] = reconnectedPlayer;
@@ -213,6 +230,19 @@ async function waitForRoll(targetClients, rollId, label) {
   );
 }
 
+async function waitForSheetStatus(targetClients, clientId, sheetStatus, label) {
+  await Promise.all(
+    targetClients.map((client) =>
+      client.waitFor(
+        (message) =>
+          message.type === "presence" &&
+          message.players.some((player) => player.clientId === clientId && player.sheetStatus === sheetStatus),
+        `${label}: ${client.playerName}`
+      )
+    )
+  );
+}
+
 class RoomClient {
   constructor({ clientId, playerName, characterName, roomRole }) {
     this.clientId = clientId;
@@ -250,6 +280,10 @@ class RoomClient {
 
   sendRoll(roll) {
     this.send({ type: "roll", version: 1, roll });
+  }
+
+  sendViewStatus(active) {
+    this.send({ type: "view_status", version: 1, active, reportedAt: new Date().toISOString() });
   }
 
   waitFor(predicate, label, timeoutMs = scenarioTimeoutMs) {

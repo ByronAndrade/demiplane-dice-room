@@ -21,6 +21,8 @@ type PresencePlayer = {
   characterName?: string;
   roomRole?: "host" | "player";
   joinedAt: string;
+  sheetStatus?: "active" | "offline";
+  sheetSeenAt?: string;
 };
 
 type PendingPlayer = {
@@ -81,6 +83,13 @@ type HeartbeatMessage = {
   createdAt: string;
 };
 
+type ViewStatusMessage = {
+  type: "view_status";
+  version: 1;
+  active: boolean;
+  reportedAt: string;
+};
+
 type ServerMessage =
   | {
       type: "welcome";
@@ -131,6 +140,8 @@ type ClientSession = {
   characterName?: string;
   roomRole?: "host" | "player";
   ready?: boolean;
+  sheetActive?: boolean;
+  sheetSeenAt?: string;
 };
 
 export interface Env {
@@ -258,6 +269,11 @@ export class DiceRoomDurableObject extends DurableObject<Env> {
     }
 
     if (isHeartbeatMessage(parsed.value)) {
+      return;
+    }
+
+    if (isViewStatusMessage(parsed.value)) {
+      this.handleViewStatus(socket, parsed.value);
       return;
     }
 
@@ -410,7 +426,8 @@ export class DiceRoomDurableObject extends DurableObject<Env> {
       playerName,
       characterName: hello.characterName?.trim() || undefined,
       roomRole,
-      ready: true
+      ready: true,
+      sheetActive: false
     };
 
     this.sessions.set(socket, session);
@@ -556,6 +573,26 @@ export class DiceRoomDurableObject extends DurableObject<Env> {
     });
   }
 
+  private handleViewStatus(socket: WebSocket, message: ViewStatusMessage): void {
+    const session = this.sessions.get(socket) ?? normalizeSession(socket.deserializeAttachment());
+    if (!session?.ready || !session.roomId) {
+      return;
+    }
+
+    const wasActive = session.sheetActive === true;
+    const nextSession: ClientSession = {
+      ...session,
+      sheetActive: message.active,
+      sheetSeenAt: message.active ? message.reportedAt : session.sheetSeenAt
+    };
+    this.sessions.set(socket, nextSession);
+    socket.serializeAttachment(nextSession);
+
+    if (wasActive !== message.active) {
+      this.broadcastPresence(session.roomId);
+    }
+  }
+
   private sendPendingPlayers(roomId: string): void {
     const hostSocket = this.findHostSocket(roomId);
     if (!hostSocket) {
@@ -607,7 +644,9 @@ export class DiceRoomDurableObject extends DurableObject<Env> {
         playerName: session.playerName,
         characterName: session.characterName,
         roomRole: session.roomRole ?? "player",
-        joinedAt: session.joinedAt
+        joinedAt: session.joinedAt,
+        sheetStatus: session.sheetActive === true ? "active" : "offline",
+        sheetSeenAt: session.sheetSeenAt
       });
     }
 
@@ -874,6 +913,21 @@ function isHeartbeatMessage(value: unknown): value is HeartbeatMessage {
   return message.type === "heartbeat" && message.version === protocolVersion && typeof message.createdAt === "string";
 }
 
+function isViewStatusMessage(value: unknown): value is ViewStatusMessage {
+  if (!value || typeof value !== "object") {
+    return false;
+  }
+
+  const message = value as Partial<ViewStatusMessage>;
+  return (
+    message.type === "view_status" &&
+    message.version === protocolVersion &&
+    typeof message.active === "boolean" &&
+    typeof message.reportedAt === "string" &&
+    !Number.isNaN(Date.parse(message.reportedAt))
+  );
+}
+
 function isRollEvent(value: unknown): value is RollEvent {
   if (!value || typeof value !== "object") {
     return false;
@@ -944,7 +998,7 @@ function isSingleTraitRollTitle(value: string): boolean {
     return false;
   }
 
-  return !/^(ADD DICE TO ROLL|ATTRIBUTES|CLEAR|COTERIE|CUSTOM|DETAILS|DETAILED|DICE POOL|DISCIPLINES|EXPAND|FLAWS|GAME RULES|GROUPS|HEALTH|HUMANITY|HUNGER|INVENTORY|LIBRARY|LOCAL|MENTAL|MERITS|NOTES|PHYSICAL|RE-ROLL|REROLL|ROLL|SELECT DICE TO REROLL|SKILLS|SOCIAL|SUCCESSES?|SUCCESS|WILLPOWER)$/i.test(
+  return !/^(ADD DICE TO ROLL|ATTRIBUTES|CLEAR|COTERIE|CUSTOM|DETAILS|DETAILED|DICE POOL|DISCIPLINES|EXPAND|FLAWS|GAME RULES|GROUPS|HEALTH|HUNGER|INVENTORY|LIBRARY|LOCAL|MENTAL|MERITS|NOTES|PHYSICAL|RE-ROLL|REROLL|ROLL|SELECT DICE TO REROLL|SKILLS|SOCIAL|SUCCESSES?|SUCCESS)$/i.test(
     title
   );
 }
@@ -985,7 +1039,9 @@ function normalizeSession(value: unknown): ClientSession | undefined {
     playerName: typeof session.playerName === "string" ? session.playerName : undefined,
     characterName: typeof session.characterName === "string" ? session.characterName : undefined,
     roomRole: session.roomRole === "host" ? "host" : "player",
-    ready: session.ready === true
+    ready: session.ready === true,
+    sheetActive: session.sheetActive === true,
+    sheetSeenAt: typeof session.sheetSeenAt === "string" ? session.sheetSeenAt : undefined
   };
 }
 

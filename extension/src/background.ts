@@ -23,6 +23,7 @@ type RuntimeRequest =
   | { kind: "popup:kick-player"; clientId: string }
   | { kind: "popup:test-roll" }
   | { kind: "content:ready" }
+  | { kind: "content:sheet-activity"; active: boolean }
   | { kind: "content:captured-roll"; roll: CapturedRoll };
 
 const localHistoryVersion = 9;
@@ -31,16 +32,21 @@ const roomHistoryStorageKey = "roomHistories";
 const panelUiStorageKey = "diceRoomPanelUi";
 const protectedDefaultRelayHost = "demiplane-dice-room-relay.foxbyron.workers.dev";
 const socketKeepAliveMs = 20_000;
+const sheetActivityFreshMs = 15_000;
+const sheetPresenceReportMs = 5_000;
 const maxPendingRoomRolls = 100;
 
 let socket: WebSocket | undefined;
 let reconnectTimer: number | undefined;
 let socketKeepAliveTimer: number | undefined;
+let sheetPresenceTimer: number | undefined;
 let manualDisconnect = true;
 let forcedDisconnectDetail: string | undefined;
 let recentRolls: StoredRoll[] = [];
 let activeHistoryRoomId: string | undefined;
 let pendingRoomRolls: RollEvent[] = [];
+let lastSheetActivityAt = 0;
+let lastReportedSheetActive: boolean | undefined;
 
 let connectionState: ConnectionState = {
   status: "disconnected",
@@ -73,7 +79,6 @@ chrome.runtime.onMessage.addListener((message: RuntimeRequest, _sender, sendResp
 async function handleRuntimeMessage(message: RuntimeRequest): Promise<unknown> {
   switch (message.kind) {
     case "popup:get-state":
-    case "content:ready":
       if (message.kind === "popup:get-state") {
         await ensureContentScriptOnActiveDemiplaneTab();
       }
@@ -85,6 +90,25 @@ async function handleRuntimeMessage(message: RuntimeRequest): Promise<unknown> {
         recentRolls,
         lastLiveRoll: await loadLastLiveRoll()
       };
+
+    case "content:ready":
+      noteSheetActivity();
+      await maybeAutoConnect();
+      reportSheetPresenceStatus(true);
+      return {
+        ok: true,
+        state: connectionState,
+        config: await getConfig(),
+        recentRolls,
+        lastLiveRoll: await loadLastLiveRoll()
+      };
+
+    case "content:sheet-activity":
+      if (message.active) {
+        noteSheetActivity();
+      }
+      reportSheetPresenceStatus();
+      return { ok: true };
 
     case "popup:save-config": {
       const current = await getConfig();
@@ -193,6 +217,7 @@ async function connect(): Promise<void> {
 
   nextSocket.addEventListener("open", () => {
     startSocketKeepAlive(nextSocket);
+    startSheetPresenceMonitor(nextSocket);
     sendSocketMessage({
       type: "hello",
       version: protocolVersion,
@@ -233,6 +258,7 @@ async function connect(): Promise<void> {
 
     socket = undefined;
     stopSocketKeepAlive();
+    stopSheetPresenceMonitor();
 
     if (manualDisconnect) {
       if (forcedDisconnectDetail) {
@@ -282,6 +308,7 @@ async function connect(): Promise<void> {
     }
 
     stopSocketKeepAlive();
+    stopSheetPresenceMonitor();
     setConnectionState({
       ...connectionState,
       status: "error",
@@ -303,6 +330,7 @@ async function disconnect(): Promise<void> {
     socket = undefined;
   }
   stopSocketKeepAlive();
+  stopSheetPresenceMonitor();
 
   setConnectionState({
     status: "disconnected",
@@ -451,6 +479,57 @@ function stopSocketKeepAlive(): void {
   socketKeepAliveTimer = undefined;
 }
 
+function startSheetPresenceMonitor(activeSocket: WebSocket): void {
+  stopSheetPresenceMonitor();
+  lastReportedSheetActive = undefined;
+  sheetPresenceTimer = setInterval(() => {
+    if (socket !== activeSocket || activeSocket.readyState !== WebSocket.OPEN) {
+      stopSheetPresenceMonitor();
+      return;
+    }
+
+    reportSheetPresenceStatus();
+  }, sheetPresenceReportMs);
+}
+
+function stopSheetPresenceMonitor(): void {
+  if (!sheetPresenceTimer) {
+    return;
+  }
+
+  clearInterval(sheetPresenceTimer);
+  sheetPresenceTimer = undefined;
+  lastReportedSheetActive = undefined;
+}
+
+function noteSheetActivity(): void {
+  lastSheetActivityAt = Date.now();
+}
+
+function isSheetRecentlyActive(): boolean {
+  return lastSheetActivityAt > 0 && Date.now() - lastSheetActivityAt <= sheetActivityFreshMs;
+}
+
+function reportSheetPresenceStatus(force = false): void {
+  const active = isSheetRecentlyActive();
+  if (!force && active === lastReportedSheetActive) {
+    return;
+  }
+
+  if (socket?.readyState !== WebSocket.OPEN || connectionState.status !== "connected") {
+    lastReportedSheetActive = active;
+    return;
+  }
+
+  sendSocketMessage({
+    type: "view_status",
+    version: protocolVersion,
+    active,
+    reportedAt: new Date().toISOString()
+  });
+  lastReportedSheetActive = active;
+}
+
 async function getPublicCharacterName(config: ExtensionConfig, sheetCharacterName?: string): Promise<string | undefined> {
   if (!config.hideCharacterName || config.roomRole !== "host") {
     return cleanDisplayName(sheetCharacterName) || cleanDisplayName(config.characterName);
@@ -484,6 +563,7 @@ function handleServerMessage(message: ServerMessage): void {
       });
       void syncRoomHistory(message.roomId, message.history);
       flushPendingRoomRolls();
+      reportSheetPresenceStatus(true);
       return;
 
     case "presence":

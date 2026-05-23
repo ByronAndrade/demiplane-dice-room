@@ -25,6 +25,7 @@ const elementSignatures = new WeakMap<Element, string>();
 const rolls: Array<{ roll: RollEvent; origin: "local" | "remote"; delivery: string }> = [];
 const liveToastMs = 9600;
 const maxLiveToasts = 3;
+const sheetActivityReportMs = 5_000;
 const diceAnimationMs = 8800;
 const diceFadeLeadMs = 420;
 const diceFadeMs = 360;
@@ -55,7 +56,7 @@ const defaultDiceAnimationScale = 0.75;
 const minDiceAnimationScale = 0.45;
 const maxDiceAnimationScale = 1.15;
 const defaultRelayUrl = "wss://demiplane-dice-room-relay.foxbyron.workers.dev";
-const extensionUiVersion = "0.1.93";
+const extensionUiVersion = "0.1.94";
 const pageBridgeMessageSource = "demiplane-dice-room-page";
 const pageDiceRollResponseWaitMs = 1400;
 const pageDiceRollResponseTtlMs = 8_000;
@@ -71,6 +72,7 @@ let captureArmedUntil = 0;
 let armedBaselineElements = new WeakSet<Element>();
 let mutatedElementsSinceArm = new WeakSet<Element>();
 let captureScanTimers: number[] = [];
+let sheetActivityTimer: number | undefined;
 let pendingDicePoolHint: DicePoolHint | undefined;
 let pendingPageDiceRollStartedAt = 0;
 let pendingPageDiceRollResponses: PageDiceRollResponse[] = [];
@@ -212,6 +214,7 @@ const messages = {
     roomNotFound: "A sala ainda nao foi criada pelo narrador.",
     approvalRejected: "O narrador recusou sua entrada na sala.",
     kicked: "Voce foi removido da sala pelo narrador.",
+    sheetOffline: "offline",
     runServer: "No terminal do projeto, rode",
     reconnectHint: "Depois aguarde a reconexao ou clique em Conectar no popup.",
     disconnectedDiagnostic: "Abra o popup da extensao e clique em Conectar. Relay configurado:"
@@ -307,6 +310,7 @@ const messages = {
     roomNotFound: "The room has not been created by the Storyteller yet.",
     approvalRejected: "The Storyteller rejected your room request.",
     kicked: "You were removed from the room by the Storyteller.",
+    sheetOffline: "offline",
     runServer: "In the project terminal, run",
     reconnectHint: "Then wait for reconnection or click Connect in the popup.",
     disconnectedDiagnostic: "Open the extension popup and click Connect. Configured relay:"
@@ -348,6 +352,7 @@ async function initializeContentScript(): Promise<void> {
   document.addEventListener("pointerdown", handlePotentialRollAction, true);
   document.addEventListener("pointerdown", unlockDiceAudio, { capture: true, once: true });
   window.addEventListener("beforeunload", warnBeforeHostedRoomCloses);
+  startSheetActivityReporting();
 
   void sendRuntimeMessage<{ ok: true; state?: ConnectionState; recentRolls?: StoredRoll[]; config?: ExtensionConfig }>({
     kind: "content:ready"
@@ -428,6 +433,20 @@ async function initializeContentScript(): Promise<void> {
     };
     renderPanel();
   });
+}
+
+function startSheetActivityReporting(): void {
+  reportSheetActivity();
+
+  if (sheetActivityTimer) {
+    clearInterval(sheetActivityTimer);
+  }
+
+  sheetActivityTimer = window.setInterval(reportSheetActivity, sheetActivityReportMs);
+}
+
+function reportSheetActivity(): void {
+  void sendRuntimeMessage({ kind: "content:sheet-activity", active: true });
 }
 
 function startObserver(): void {
@@ -1265,7 +1284,7 @@ function isSingleTraitRollTitle(value: string): boolean {
     return false;
   }
 
-  return !/^(ADD DICE TO ROLL|ATTRIBUTES|CLEAR|COTERIE|CUSTOM|DETAILS|DETAILED|DICE POOL|DISCIPLINES|EXPAND|FLAWS|GAME RULES|GROUPS|HEALTH|HUMANITY|HUNGER|INVENTORY|LIBRARY|LOCAL|MENTAL|MERITS|NOTES|PHYSICAL|RE-ROLL|REROLL|ROLL|SELECT DICE TO REROLL|SKILLS|SOCIAL|SUCCESSES?|SUCCESS|WILLPOWER)$/i.test(
+  return !/^(ADD DICE TO ROLL|ATTRIBUTES|CLEAR|COTERIE|CUSTOM|DETAILS|DETAILED|DICE POOL|DISCIPLINES|EXPAND|FLAWS|GAME RULES|GROUPS|HEALTH|HUNGER|INVENTORY|LIBRARY|LOCAL|MENTAL|MERITS|NOTES|PHYSICAL|RE-ROLL|REROLL|ROLL|SELECT DICE TO REROLL|SKILLS|SOCIAL|SUCCESSES?|SUCCESS)$/i.test(
     title
   );
 }
@@ -2546,10 +2565,23 @@ function createPanel(): {
         background: rgba(24, 53, 38, 0.68);
       }
 
+      .room-player-chip.offline {
+        border-color: rgba(148, 163, 184, 0.22);
+        color: #aeb8c7;
+        background: rgba(30, 35, 43, 0.78);
+      }
+
       .room-player-chip small {
         color: inherit;
         opacity: 0.78;
         font-size: 10px;
+      }
+
+      .room-player-chip .sheet-status {
+        border-left: 1px solid rgba(255, 255, 255, 0.14);
+        padding-left: 5px;
+        color: #cbd5e1;
+        opacity: 0.82;
       }
 
       .room-player-action {
@@ -3627,7 +3659,8 @@ function formatPlayersTooltip(players: ConnectionState["players"]): string {
     .map((player) => {
       const displayName = formatPresenceDisplayName(player, "character");
       const roleSuffix = shouldShowPresenceRole(displayName, player) ? ` (${t("hostRole")})` : "";
-      return `${displayName}${roleSuffix}`;
+      const sheetSuffix = isPresencePlayerOffline(player) ? ` - ${t("sheetOffline")}` : "";
+      return `${displayName}${roleSuffix}${sheetSuffix}`;
     })
     .join("\n");
 }
@@ -3648,16 +3681,29 @@ function formatPresenceDisplayName(
 function renderRoomPlayerChip(player: ConnectionState["players"][number], canManagePlayers = false): string {
   const name = formatPresenceDisplayName(player, "character");
   const roleSuffix = shouldShowPresenceRole(name, player) ? ` ${t("hostRole")}` : "";
-  const className = player.roomRole === "host" ? "room-player-chip host" : "room-player-chip";
+  const className = [
+    "room-player-chip",
+    player.roomRole === "host" ? "host" : "",
+    isPresencePlayerOffline(player) ? "offline" : ""
+  ]
+    .filter(Boolean)
+    .join(" ");
+  const sheetStatus = isPresencePlayerOffline(player)
+    ? ` <small class="sheet-status">${escapeHtml(t("sheetOffline"))}</small>`
+    : "";
   const canKick = canManagePlayers && player.roomRole !== "host" && player.clientId !== connectionState.clientId;
   const kickButton = canKick
     ? ` <button class="room-player-action" type="button" data-kick-player data-client-id="${escapeHtml(player.clientId)}">${escapeHtml(t("kickPlayer"))}</button>`
     : "";
-  return `<span class="${className}">${escapeHtml(name)}${roleSuffix ? ` <small>${escapeHtml(roleSuffix)}</small>` : ""}${kickButton}</span>`;
+  return `<span class="${className}">${escapeHtml(name)}${roleSuffix ? ` <small>${escapeHtml(roleSuffix)}</small>` : ""}${sheetStatus}${kickButton}</span>`;
 }
 
 function shouldShowPresenceRole(displayName: string, player: ConnectionState["players"][number]): boolean {
   return player.roomRole === "host" && normalizeDisplayName(displayName) !== normalizeDisplayName(t("hostRole"));
+}
+
+function isPresencePlayerOffline(player: ConnectionState["players"][number]): boolean {
+  return player.sheetStatus === "offline";
 }
 
 function normalizeDisplayName(value: string): string {

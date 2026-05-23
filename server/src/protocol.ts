@@ -72,6 +72,13 @@ export const heartbeatMessageSchema = z.object({
   createdAt: z.string().datetime()
 });
 
+export const viewStatusMessageSchema = z.object({
+  type: z.literal("view_status"),
+  version: protocolVersionSchema,
+  active: z.boolean(),
+  reportedAt: z.string().datetime()
+});
+
 export const clientMessageSchema = z.discriminatedUnion("type", [
   helloMessageSchema,
   rollMessageSchema,
@@ -79,6 +86,7 @@ export const clientMessageSchema = z.discriminatedUnion("type", [
   rejectPlayerMessageSchema,
   kickPlayerMessageSchema,
   heartbeatMessageSchema,
+  viewStatusMessageSchema,
   leaveRoomMessageSchema
 ]);
 
@@ -92,6 +100,8 @@ export type PresencePlayer = {
   characterName?: string;
   roomRole?: "host" | "player";
   joinedAt: string;
+  sheetStatus?: "active" | "offline";
+  sheetSeenAt?: string;
 };
 
 export type PendingPlayer = {

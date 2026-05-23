@@ -29,6 +29,8 @@ type Client = {
   roomRole: "host" | "player";
   roomId: string;
   joinedAt: string;
+  sheetActive: boolean;
+  sheetSeenAt?: string;
 };
 
 type PendingClient = {
@@ -144,6 +146,15 @@ wss.on("connection", (socket, request) => {
     }
 
     if (parsed.data.type === "heartbeat") {
+      return;
+    }
+
+    if (parsed.data.type === "view_status") {
+      client = client ?? findClientBySocket(socket);
+      if (client) {
+        pendingClient = undefined;
+        updateClientSheetStatus(client, parsed.data.active, parsed.data.reportedAt);
+      }
       return;
     }
 
@@ -344,7 +355,8 @@ function joinRoom(socket: WebSocket, hello: HelloMessage): JoinResult {
     characterName: hello.characterName || undefined,
     roomRole,
     roomId,
-    joinedAt: new Date().toISOString()
+    joinedAt: new Date().toISOString(),
+    sheetActive: false
   };
 
   room.add(client);
@@ -411,7 +423,8 @@ function approvePendingPlayer(host: Client, clientId: string): void {
     characterName: pending.characterName,
     roomRole: "player",
     roomId: host.roomId,
-    joinedAt: new Date().toISOString()
+    joinedAt: new Date().toISOString(),
+    sheetActive: false
   };
 
   room.add(client);
@@ -568,6 +581,18 @@ function broadcastPresence(roomId: string): void {
   });
 }
 
+function updateClientSheetStatus(client: Client, active: boolean, reportedAt: string): void {
+  const wasActive = client.sheetActive;
+  client.sheetActive = active;
+  if (active) {
+    client.sheetSeenAt = reportedAt;
+  }
+
+  if (wasActive !== active) {
+    broadcastPresence(client.roomId);
+  }
+}
+
 function sendPendingPlayers(roomId: string): void {
   const host = findRoomHost(roomId);
   if (!host) {
@@ -622,7 +647,9 @@ function getPlayers(roomId: string): PresencePlayer[] {
     playerName: client.playerName,
     characterName: client.characterName,
     roomRole: client.roomRole,
-    joinedAt: client.joinedAt
+    joinedAt: client.joinedAt,
+    sheetStatus: client.sheetActive ? "active" : "offline",
+    sheetSeenAt: client.sheetSeenAt
   }));
 }
 
@@ -1076,7 +1103,7 @@ function isSingleTraitRollTitle(value: string): boolean {
     return false;
   }
 
-  return !/^(ADD DICE TO ROLL|ATTRIBUTES|CLEAR|COTERIE|CUSTOM|DETAILS|DETAILED|DICE POOL|DISCIPLINES|EXPAND|FLAWS|GAME RULES|GROUPS|HEALTH|HUMANITY|HUNGER|INVENTORY|LIBRARY|LOCAL|MENTAL|MERITS|NOTES|PHYSICAL|RE-ROLL|REROLL|ROLL|SELECT DICE TO REROLL|SKILLS|SOCIAL|SUCCESSES?|SUCCESS|WILLPOWER)$/i.test(
+  return !/^(ADD DICE TO ROLL|ATTRIBUTES|CLEAR|COTERIE|CUSTOM|DETAILS|DETAILED|DICE POOL|DISCIPLINES|EXPAND|FLAWS|GAME RULES|GROUPS|HEALTH|HUNGER|INVENTORY|LIBRARY|LOCAL|MENTAL|MERITS|NOTES|PHYSICAL|RE-ROLL|REROLL|ROLL|SELECT DICE TO REROLL|SKILLS|SOCIAL|SUCCESSES?|SUCCESS)$/i.test(
     title
   );
 }
