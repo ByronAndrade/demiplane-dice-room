@@ -62,7 +62,7 @@ const defaultDiceAnimationScale = 0.75;
 const minDiceAnimationScale = 0.45;
 const maxDiceAnimationScale = 1.15;
 const defaultRelayUrl = "wss://demiplane-dice-room-relay.foxbyron.workers.dev";
-const extensionUiVersion = "0.1.98";
+const extensionUiVersion = "0.1.99";
 const pageBridgeMessageSource = "demiplane-dice-room-page";
 const pageDiceRollResponseWaitMs = 1400;
 const pageDiceRollResponseTtlMs = 8_000;
@@ -70,6 +70,7 @@ const activeToastByActor = new Map<string, HTMLElement>();
 let collapsed = true;
 let settingsOpen = false;
 let compactPanel = false;
+let suppressNextBrandClick = false;
 let panelOpacity = 0.94;
 let diceAnimationScale = defaultDiceAnimationScale;
 let panelPosition: { left: number; top: number } | undefined;
@@ -2192,7 +2193,7 @@ function updateDiceClearButtonState(): void {
   const canClear = visible && canClearDiceAnimations();
   panel.clearDiceButton.hidden = !visible;
   panel.clearDiceButton.disabled = !canClear;
-  panel.clearDiceButton.dataset.tooltip = canClear ? t("clearDice") : t("clearDiceDisabled");
+  panel.clearDiceButton.dataset.tooltip = t("clearDice");
   panel.clearDiceButton.setAttribute("aria-label", t("clearDice"));
 }
 
@@ -2296,45 +2297,6 @@ function createPanel(): {
         display: none;
       }
 
-      :host([data-compact="true"]) .panel {
-        width: 52px;
-        height: 52px;
-        max-height: none;
-        border-radius: 999px;
-        overflow: visible;
-      }
-
-      :host([data-compact="true"]) .header {
-        width: 52px;
-        height: 52px;
-        justify-content: center;
-        border-bottom: 0;
-        padding: 0;
-        cursor: default;
-      }
-
-      :host([data-compact="true"]) .title {
-        width: 100%;
-        height: 100%;
-      }
-
-      :host([data-compact="true"]) .brand-button {
-        width: 100%;
-        height: 100%;
-        border-radius: 999px;
-        border-color: rgba(218, 55, 70, 0.9);
-        background: rgba(88, 14, 22, 0.9);
-        box-shadow: 0 0 0 1px rgba(218, 55, 70, 0.5) inset;
-      }
-
-      :host([data-compact="true"]) .header-actions,
-      :host([data-compact="true"]) .title span,
-      :host([data-compact="true"]) .list,
-      :host([data-compact="true"]) .diagnostic,
-      :host([data-compact="true"]) .settings-panel {
-        display: none;
-      }
-
       :host(:not([data-diagnostic="true"])) .diagnostic {
         display: none;
       }
@@ -2348,7 +2310,7 @@ function createPanel(): {
       }
 
       :host([data-collapsed="true"]) .panel {
-        width: min(300px, calc(100vw - 32px));
+        width: min(388px, calc(100vw - 32px));
       }
 
       :host([data-settings="true"]) .panel {
@@ -2364,7 +2326,7 @@ function createPanel(): {
       }
 
       .panel {
-        width: min(360px, calc(100vw - 32px));
+        width: min(388px, calc(100vw - 32px));
         max-height: min(520px, calc(100vh - 32px));
         display: flex;
         flex-direction: column;
@@ -2381,7 +2343,7 @@ function createPanel(): {
         display: flex;
         align-items: center;
         justify-content: space-between;
-        gap: 10px;
+        gap: 8px;
         border-bottom: 1px solid rgba(190, 202, 220, 0.14);
         padding: 10px 12px;
         cursor: grab;
@@ -2396,7 +2358,7 @@ function createPanel(): {
       .title {
         display: flex;
         align-items: center;
-        gap: 8px;
+        gap: 7px;
       }
 
       .brand-button {
@@ -2411,6 +2373,7 @@ function createPanel(): {
         background: rgba(15, 19, 25, 0.86);
         cursor: pointer;
         font: inherit;
+        padding: 0;
       }
 
       .brand-button:hover {
@@ -2421,35 +2384,36 @@ function createPanel(): {
       .dice-mark {
         position: relative;
         display: block;
-        width: 24px;
-        height: 22px;
+        width: 36px;
+        height: 26px;
+        transform: scale(0.72);
       }
 
       .dice-mark i {
         position: absolute;
-        width: 11px;
-        height: 11px;
+        width: 12px;
+        height: 12px;
         border: 1px solid rgba(235, 241, 250, 0.92);
         transform: rotate(45deg);
         background: #07090d;
       }
 
       .dice-mark i:nth-child(1) {
-        left: 1px;
-        top: 8px;
+        left: 0;
+        top: 12px;
       }
 
       .dice-mark i:nth-child(2) {
-        left: 7px;
-        top: 1px;
+        left: 12px;
+        top: 0;
         border-color: rgba(255, 205, 211, 0.96);
         background: #b91828;
         z-index: 2;
       }
 
       .dice-mark i:nth-child(3) {
-        right: 1px;
-        top: 8px;
+        right: 0;
+        top: 12px;
       }
 
       .title span {
@@ -2462,7 +2426,7 @@ function createPanel(): {
       .header-actions {
         display: flex;
         align-items: center;
-        gap: 8px;
+        gap: 7px;
       }
 
       .header-actions button {
@@ -2512,6 +2476,8 @@ function createPanel(): {
       .toggle {
         width: 28px;
         height: 28px;
+        display: inline-grid;
+        place-items: center;
         border: 1px solid #343d4a;
         border-radius: 6px;
         color: #dbe2ee;
@@ -2520,6 +2486,7 @@ function createPanel(): {
         font: inherit;
         font-weight: 800;
         line-height: 1;
+        padding: 0;
       }
 
       .icon-button:hover,
@@ -2574,6 +2541,7 @@ function createPanel(): {
         font-weight: 750;
         line-height: 1.25;
         text-align: left;
+        white-space: pre-line;
         pointer-events: none;
         opacity: 0;
         transform: translateY(-3px);
@@ -2585,6 +2553,50 @@ function createPanel(): {
       .tooltip-portal.visible {
         opacity: 1;
         transform: translateY(0);
+      }
+
+      :host([data-compact="true"]) .panel {
+        width: 52px;
+        height: 52px;
+        max-height: none;
+        border-radius: 999px;
+        overflow: visible;
+      }
+
+      :host([data-compact="true"]) .header {
+        width: 52px;
+        height: 52px;
+        justify-content: center;
+        border-bottom: 0;
+        padding: 0;
+        cursor: grab;
+      }
+
+      :host([data-compact="true"]) .title {
+        width: 100%;
+        height: 100%;
+        display: block;
+      }
+
+      :host([data-compact="true"]) .brand-button {
+        width: 52px;
+        height: 52px;
+        border-radius: 999px;
+        border-color: rgba(218, 55, 70, 0.9);
+        background: rgba(88, 14, 22, 0.9);
+        box-shadow: 0 0 0 1px rgba(218, 55, 70, 0.5) inset;
+      }
+
+      :host([data-compact="true"]) .brand-button .dice-mark {
+        transform: scale(0.78);
+      }
+
+      :host([data-compact="true"]) .header-actions,
+      :host([data-compact="true"]) .title span,
+      :host([data-compact="true"]) .list,
+      :host([data-compact="true"]) .diagnostic,
+      :host([data-compact="true"]) .settings-panel {
+        display: none;
       }
 
       .status-connected {
@@ -3143,9 +3155,9 @@ function createPanel(): {
               <path d="M8 21h12" />
             </svg>
           </button>
-          <button data-status class="status" type="button" title="Abrir diagnostico">Desconectado</button>
+          <button data-status class="status" type="button" data-tooltip="Abrir diagnostico">Desconectado</button>
           <span class="version-chip" title="Versao da extensao">v${extensionUiVersion}</span>
-          <span data-players class="players-chip" title="Jogadores na sala">0</span>
+          <span data-players class="players-chip" data-tooltip="Jogadores na sala">0</span>
           <button data-settings-button class="icon-button" type="button" aria-label="Abrir configuracoes" data-tooltip="Abrir configuracoes">⚙</button>
           <button data-toggle class="toggle" type="button" aria-label="Abrir historico" data-tooltip="Abrir historico">^</button>
         </div>
@@ -3396,6 +3408,11 @@ function createPanel(): {
   });
 
   brandButton.addEventListener("click", () => {
+    if (suppressNextBrandClick) {
+      suppressNextBrandClick = false;
+      return;
+    }
+
     compactPanel = !compactPanel;
     if (compactPanel) {
       collapsed = true;
@@ -3649,11 +3666,13 @@ function renderPanel(): void {
   const displayStatus = getDisplayStatus(connectionState.status);
   panel.status.textContent = statusLabel(displayStatus);
   panel.status.className = `status status-${displayStatus}`;
-  panel.status.title = t("openDiagnostic");
+  panel.status.removeAttribute("title");
+  panel.status.dataset.tooltip = t("openDiagnostic");
   updateDiceClearButtonState();
   panel.players.textContent = String(connectionState.players.length);
   panel.players.hidden = connectionState.status !== "connected";
-  panel.players.title = formatPlayersTooltip(connectionState.players);
+  panel.players.removeAttribute("title");
+  panel.players.dataset.tooltip = formatPlayersTooltip(connectionState.players);
   panel.count.textContent = String(unreadRolls.length);
   panel.countLabel.textContent = t("unreadCount", unreadRolls.length);
   panel.countLabel.hidden = unreadRolls.length === 0;
@@ -4038,7 +4057,7 @@ function installPanelDrag(host: HTMLDivElement, handle: HTMLElement): void {
     | undefined;
 
   handle.addEventListener("pointerdown", (event) => {
-    if (event.target instanceof Element && event.target.closest("button, input")) {
+    if (!compactPanel && event.target instanceof Element && event.target.closest("button, input")) {
       return;
     }
 
@@ -4077,6 +4096,7 @@ function installPanelDrag(host: HTMLDivElement, handle: HTMLElement): void {
 
     handle.releasePointerCapture(event.pointerId);
     if (drag.moved) {
+      suppressNextBrandClick = compactPanel;
       void savePanelUiState();
     }
     drag = undefined;
