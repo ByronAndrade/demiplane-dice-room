@@ -62,7 +62,7 @@ const defaultDiceAnimationScale = 0.75;
 const minDiceAnimationScale = 0.45;
 const maxDiceAnimationScale = 1.15;
 const defaultRelayUrl = "wss://demiplane-dice-room-relay.foxbyron.workers.dev";
-const extensionUiVersion = "0.1.101";
+const extensionUiVersion = "0.1.102";
 const pageBridgeMessageSource = "demiplane-dice-room-page";
 const pageDiceRollResponseWaitMs = 1400;
 const pageDiceRollResponseTtlMs = 8_000;
@@ -2396,6 +2396,7 @@ function createPanel(): {
         height: 11px;
         border: 1px solid rgba(235, 241, 250, 0.92);
         background: #07090d;
+        transform-origin: 50% 50%;
       }
 
       .dice-mark i:nth-child(1) {
@@ -2602,6 +2603,56 @@ function createPanel(): {
 
       :host([data-compact="true"]) .brand-button .dice-mark {
         transform: scale(0.72);
+      }
+
+      :host([data-compact="true"]) .brand-button .dice-mark i {
+        transition: transform 520ms cubic-bezier(0.16, 1, 0.3, 1);
+      }
+
+      :host([data-compact="true"]) .brand-button:hover .dice-mark i:nth-child(1),
+      :host([data-compact="true"]) .brand-button:focus-visible .dice-mark i:nth-child(1) {
+        animation: dice-room-die-roll-1 760ms linear infinite;
+      }
+
+      :host([data-compact="true"]) .brand-button:hover .dice-mark i:nth-child(2),
+      :host([data-compact="true"]) .brand-button:focus-visible .dice-mark i:nth-child(2) {
+        animation: dice-room-die-roll-2 940ms linear infinite;
+      }
+
+      :host([data-compact="true"]) .brand-button:hover .dice-mark i:nth-child(3),
+      :host([data-compact="true"]) .brand-button:focus-visible .dice-mark i:nth-child(3) {
+        animation: dice-room-die-roll-3 830ms linear infinite;
+      }
+
+      @keyframes dice-room-die-roll-1 {
+        0% { transform: translate(0, 0) rotate(60deg); }
+        24% { transform: translate(5px, -2px) rotate(150deg); }
+        48% { transform: translate(9px, 4px) rotate(238deg); }
+        72% { transform: translate(4px, -6px) rotate(330deg); }
+        100% { transform: translate(0, 0) rotate(420deg); }
+      }
+
+      @keyframes dice-room-die-roll-2 {
+        0% { transform: translate(0, 0) rotate(38deg); }
+        22% { transform: translate(-5px, 7px) rotate(124deg); }
+        45% { transform: translate(4px, 9px) rotate(210deg); }
+        70% { transform: translate(7px, 2px) rotate(306deg); }
+        100% { transform: translate(0, 0) rotate(398deg); }
+      }
+
+      @keyframes dice-room-die-roll-3 {
+        0% { transform: translate(0, 0) rotate(79deg); }
+        26% { transform: translate(-6px, -3px) rotate(170deg); }
+        52% { transform: translate(-10px, 4px) rotate(258deg); }
+        76% { transform: translate(-4px, -7px) rotate(348deg); }
+        100% { transform: translate(0, 0) rotate(439deg); }
+      }
+
+      @media (prefers-reduced-motion: reduce) {
+        :host([data-compact="true"]) .brand-button:hover .dice-mark i,
+        :host([data-compact="true"]) .brand-button:focus-visible .dice-mark i {
+          animation: none;
+        }
       }
 
       :host([data-compact="true"]) .header-actions,
