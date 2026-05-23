@@ -62,7 +62,7 @@ const defaultDiceAnimationScale = 0.75;
 const minDiceAnimationScale = 0.45;
 const maxDiceAnimationScale = 1.15;
 const defaultRelayUrl = "wss://demiplane-dice-room-relay.foxbyron.workers.dev";
-const extensionUiVersion = "0.1.100";
+const extensionUiVersion = "0.1.101";
 const pageBridgeMessageSource = "demiplane-dice-room-page";
 const pageDiceRollResponseWaitMs = 1400;
 const pageDiceRollResponseTtlMs = 8_000;
@@ -2362,7 +2362,7 @@ function createPanel(): {
       }
 
       .brand-button {
-        width: 34px;
+        width: 50px;
         height: 34px;
         display: inline-grid;
         place-items: center;
@@ -2379,6 +2379,7 @@ function createPanel(): {
       .brand-button:hover {
         border-color: rgba(218, 55, 70, 0.72);
         background: rgba(32, 39, 48, 0.95);
+        box-shadow: 0 0 14px rgba(218, 55, 70, 0.18);
       }
 
       .dice-mark {
@@ -2386,7 +2387,7 @@ function createPanel(): {
         display: block;
         width: 43px;
         height: 29px;
-        transform: scale(0.68);
+        transform: scale(0.78);
       }
 
       .dice-mark i {
@@ -2394,13 +2395,13 @@ function createPanel(): {
         width: 11px;
         height: 11px;
         border: 1px solid rgba(235, 241, 250, 0.92);
-        transform: rotate(45deg);
         background: #07090d;
       }
 
       .dice-mark i:nth-child(1) {
         left: 0;
         top: 14px;
+        transform: rotate(60deg);
       }
 
       .dice-mark i:nth-child(2) {
@@ -2408,12 +2409,14 @@ function createPanel(): {
         top: 0;
         border-color: rgba(255, 205, 211, 0.96);
         background: #b91828;
+        transform: rotate(38deg);
         z-index: 2;
       }
 
       .dice-mark i:nth-child(3) {
         right: 0;
         top: 14px;
+        transform: rotate(79deg);
       }
 
       .title > span {
@@ -2520,6 +2523,7 @@ function createPanel(): {
         height: 17px;
         display: block;
         margin: auto;
+        transform: translateX(-1.5px);
         stroke: currentColor;
         stroke-width: 2;
         stroke-linecap: round;
