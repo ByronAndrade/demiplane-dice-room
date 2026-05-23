@@ -67,7 +67,7 @@ export type RollEvent = {
   createdAt: string;
 };
 
-export const activeDiceRollTtlMs = 34_000;
+export const activeDiceRollTtlMs = 18_000;
 
 export type SharedDiceControlEvent = {
   action: "grab" | "move" | "release";
