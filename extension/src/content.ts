@@ -62,7 +62,7 @@ const defaultDiceAnimationScale = 0.75;
 const minDiceAnimationScale = 0.45;
 const maxDiceAnimationScale = 1.15;
 const defaultRelayUrl = "wss://demiplane-dice-room-relay.foxbyron.workers.dev";
-const extensionUiVersion = "0.1.99";
+const extensionUiVersion = "0.1.100";
 const pageBridgeMessageSource = "demiplane-dice-room-page";
 const pageDiceRollResponseWaitMs = 1400;
 const pageDiceRollResponseTtlMs = 8_000;
@@ -2384,15 +2384,15 @@ function createPanel(): {
       .dice-mark {
         position: relative;
         display: block;
-        width: 36px;
-        height: 26px;
-        transform: scale(0.72);
+        width: 43px;
+        height: 29px;
+        transform: scale(0.68);
       }
 
       .dice-mark i {
         position: absolute;
-        width: 12px;
-        height: 12px;
+        width: 11px;
+        height: 11px;
         border: 1px solid rgba(235, 241, 250, 0.92);
         transform: rotate(45deg);
         background: #07090d;
@@ -2400,11 +2400,11 @@ function createPanel(): {
 
       .dice-mark i:nth-child(1) {
         left: 0;
-        top: 12px;
+        top: 14px;
       }
 
       .dice-mark i:nth-child(2) {
-        left: 12px;
+        left: 16px;
         top: 0;
         border-color: rgba(255, 205, 211, 0.96);
         background: #b91828;
@@ -2413,10 +2413,10 @@ function createPanel(): {
 
       .dice-mark i:nth-child(3) {
         right: 0;
-        top: 12px;
+        top: 14px;
       }
 
-      .title span {
+      .title > span {
         color: #aeb8c7;
         font-size: 11px;
         font-weight: 800;
@@ -2587,12 +2587,21 @@ function createPanel(): {
         box-shadow: 0 0 0 1px rgba(218, 55, 70, 0.5) inset;
       }
 
+      :host([data-compact="true"]) .brand-button:hover,
+      :host([data-compact="true"]) .brand-button:focus-visible {
+        border-color: rgba(255, 82, 97, 1);
+        background: rgba(132, 17, 30, 0.96);
+        box-shadow:
+          0 0 0 2px rgba(218, 55, 70, 0.6) inset,
+          0 0 22px rgba(218, 55, 70, 0.45);
+      }
+
       :host([data-compact="true"]) .brand-button .dice-mark {
-        transform: scale(0.78);
+        transform: scale(0.72);
       }
 
       :host([data-compact="true"]) .header-actions,
-      :host([data-compact="true"]) .title span,
+      :host([data-compact="true"]) .title > span,
       :host([data-compact="true"]) .list,
       :host([data-compact="true"]) .diagnostic,
       :host([data-compact="true"]) .settings-panel {
@@ -4097,6 +4106,11 @@ function installPanelDrag(host: HTMLDivElement, handle: HTMLElement): void {
     handle.releasePointerCapture(event.pointerId);
     if (drag.moved) {
       suppressNextBrandClick = compactPanel;
+      void savePanelUiState();
+    } else if (compactPanel) {
+      compactPanel = false;
+      suppressNextBrandClick = true;
+      renderPanel();
       void savePanelUiState();
     }
     drag = undefined;
