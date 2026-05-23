@@ -18,7 +18,10 @@ const port = Number.parseInt(process.env.PORT ?? "8787", 10);
 const host = process.env.HOST ?? "0.0.0.0";
 const maxMessageBytes = 64 * 1024;
 const maxRoomHistory = 100;
-const maxRoomPlayers = 20;
+const maxRoomPlayers = 10;
+const maxPendingPlayers = 20;
+const maxActiveRooms = readPositiveInt(process.env.DICE_ROOM_MAX_ROOMS, 100);
+const maxRelayConnections = readPositiveInt(process.env.DICE_ROOM_MAX_CONNECTIONS, 500);
 const hostReconnectGraceMs = 120_000;
 const diceControlLockMs = 4_000;
 const activeDiceRollTtlMs = 18_000;
@@ -57,6 +60,30 @@ type DiceControlLock = {
   expiresAt: number;
 };
 
+type RateLimitRule = {
+  capacity: number;
+  refillPerMs: number;
+  message: string;
+  logLabel: string;
+  quiet?: boolean;
+};
+
+type RateBucket = {
+  tokens: number;
+  updatedAt: number;
+  lastSeenAt: number;
+  lastWarningAt: number;
+};
+
+const reconnectRateLimit = createRateLimitRule(10, 30, 5 * 60_000, "Muitas reconexoes em pouco tempo. Aguarde alguns segundos.", "reconnect");
+const roomReconnectRateLimit = createRateLimitRule(30, 90, 5 * 60_000, "Muitas entradas nesta sala em pouco tempo. Aguarde alguns segundos.", "room_reconnect");
+const rollClientRateLimit = createRateLimitRule(15, 30, 60_000, "Muitas rolagens em pouco tempo. Aguarde alguns segundos.", "roll_client");
+const rollRoomRateLimit = createRateLimitRule(60, 180, 60_000, "Muitas rolagens nesta sala em pouco tempo. Aguarde alguns segundos.", "roll_room");
+const diceControlClientRateLimit = createRateLimitRule(30, 30, 1_000, "Movimento de dados limitado temporariamente.", "dice_control_client", true);
+const diceControlRoomRateLimit = createRateLimitRule(180, 180, 1_000, "Movimento de dados da sala limitado temporariamente.", "dice_control_room", true);
+const diceClearRateLimit = createRateLimitRule(12, 12, 60_000, "Limpeza de dados limitada temporariamente. Aguarde alguns segundos.", "dice_clear");
+const playerControlRateLimit = createRateLimitRule(20, 60, 60_000, "Muitas acoes de jogadores em pouco tempo. Aguarde alguns segundos.", "player_control");
+
 type JoinResult =
   | { state: "joined"; client: Client }
   | { state: "pending"; pending: PendingClient }
@@ -69,6 +96,7 @@ const pendingRooms = new Map<string, Set<PendingClient>>();
 const approvedRoomClients = new Map<string, Set<string>>();
 const hostGraceTimers = new Map<string, HostGrace>();
 const diceControlLocks = new Map<string, DiceControlLock>();
+const rateBuckets = new Map<string, RateBucket>();
 
 const heartbeatInterval = setInterval(() => {
   const createdAt = new Date().toISOString();
@@ -82,6 +110,11 @@ const heartbeatInterval = setInterval(() => {
   }
 }, 25_000);
 heartbeatInterval.unref();
+
+const rateBucketPruneInterval = setInterval(() => {
+  pruneRateBuckets();
+}, 60_000);
+rateBucketPruneInterval.unref();
 
 const httpServer = createServer((request, response) => {
   void handleHttpRequest(request, response).catch(() => {
@@ -98,6 +131,12 @@ const wss = new WebSocketServer({ server: httpServer });
 wss.on("connection", (socket, request) => {
   let client: Client | undefined;
   let pendingClient: PendingClient | undefined;
+
+  if (wss.clients.size > maxRelayConnections) {
+    send(socket, errorMessage("relay_busy", "Relay comunitario cheio no momento. Tente novamente em instantes."));
+    socket.close(1013, "relay_busy");
+    return;
+  }
 
   if (!hasValidRelayAccessKey(request)) {
     send(socket, errorMessage("relay_key_required", "Este relay exige uma chave de acesso."));
@@ -181,21 +220,37 @@ wss.on("connection", (socket, request) => {
     }
 
     if (parsed.data.type === "approve_player") {
+      if (isRateLimited(client.socket, `control:${client.roomId}:${client.clientId}`, playerControlRateLimit)) {
+        return;
+      }
       approvePendingPlayer(client, parsed.data.clientId);
       return;
     }
 
     if (parsed.data.type === "reject_player") {
+      if (isRateLimited(client.socket, `control:${client.roomId}:${client.clientId}`, playerControlRateLimit)) {
+        return;
+      }
       rejectPendingPlayer(client, parsed.data.clientId);
       return;
     }
 
     if (parsed.data.type === "kick_player") {
+      if (isRateLimited(client.socket, `control:${client.roomId}:${client.clientId}`, playerControlRateLimit)) {
+        return;
+      }
       kickRoomPlayer(client, parsed.data.clientId);
       return;
     }
 
     if (parsed.data.type === "dice_control") {
+      if (
+        isRateLimited(client.socket, `dice-control:client:${client.roomId}:${client.clientId}`, diceControlClientRateLimit) ||
+        isRateLimited(client.socket, `dice-control:room:${client.roomId}`, diceControlRoomRateLimit)
+      ) {
+        return;
+      }
+
       const event = normalizeDiceControlEvent(parsed.data.event, client);
       if (acceptDiceControlEvent(client, event)) {
         rememberActiveDiceControl(client.roomId, event);
@@ -210,6 +265,10 @@ wss.on("connection", (socket, request) => {
         return;
       }
 
+      if (isRateLimited(client.socket, `dice-clear:${client.roomId}:${client.clientId}`, diceClearRateLimit)) {
+        return;
+      }
+
       const event = normalizeDiceClearEvent(parsed.data.event, client);
       clearActiveDiceRolls(client.roomId);
       releaseDiceControlLocksForRoom(client.roomId);
@@ -218,6 +277,13 @@ wss.on("connection", (socket, request) => {
     }
 
     const roll = normalizeRoll(parsed.data.roll, client);
+    if (
+      isRateLimited(client.socket, `roll:client:${client.roomId}:${client.clientId}`, rollClientRateLimit) ||
+      isRateLimited(client.socket, `roll:room:${client.roomId}`, rollRoomRateLimit)
+    ) {
+      return;
+    }
+
     if (!isUsefulRoll(roll)) {
       send(socket, errorMessage("ignored_roll", "Rolagem ignorada porque nao parece ser um resultado completo.", roll.id));
       return;
@@ -315,14 +381,27 @@ async function handlePublicRelayUrlRequest(request: IncomingMessage, response: S
   sendJson(response, 200, { ok: true, relays: getRelayUrls() });
 }
 
-function getHealthPayload(): { ok: true; rooms: number; players: number; relays: string[]; accessKeyRequired: boolean; roomLimit: number } {
+function getHealthPayload(): {
+  ok: true;
+  rooms: number;
+  players: number;
+  relays: string[];
+  accessKeyRequired: boolean;
+  roomLimit: number;
+  pendingLimit: number;
+  maxRooms: number;
+  maxConnections: number;
+} {
   return {
     ok: true,
     rooms: rooms.size,
     players: getTotalPlayers(),
     relays: getRelayUrls(),
     accessKeyRequired: Boolean(relayAccessKey),
-    roomLimit: maxRoomPlayers
+    roomLimit: maxRoomPlayers,
+    pendingLimit: maxPendingPlayers,
+    maxRooms: maxActiveRooms,
+    maxConnections: maxRelayConnections
   };
 }
 
@@ -331,6 +410,26 @@ function joinRoom(socket: WebSocket, hello: HelloMessage): JoinResult {
   const roomRole = hello.roomRole === "host" ? "host" : "player";
   const existingHost = findRoomHost(roomId);
   const hostGrace = hostGraceTimers.get(roomId);
+  const activeRoomCount = new Set([...rooms.keys(), ...hostGraceTimers.keys()]).size;
+
+  if (
+    roomRole === "host" &&
+    !rooms.has(roomId) &&
+    !hostGrace &&
+    activeRoomCount >= maxActiveRooms
+  ) {
+    send(socket, errorMessage("relay_busy", "Relay comunitario cheio no momento. Tente novamente em instantes."));
+    socket.close(1013, "relay_busy");
+    return undefined;
+  }
+
+  if (
+    isRateLimited(socket, `hello:client:${roomId}:${hello.clientId}`, reconnectRateLimit) ||
+    isRateLimited(socket, `hello:room:${roomId}`, roomReconnectRateLimit)
+  ) {
+    socket.close(1008, "rate_limited");
+    return undefined;
+  }
 
   if (roomRole === "host" && existingHost && existingHost.clientId !== hello.clientId) {
     send(socket, errorMessage("room_host_exists", "Esta sala ja tem um narrador conectado."));
@@ -364,6 +463,14 @@ function joinRoom(socket: WebSocket, hello: HelloMessage): JoinResult {
   }
 
   if (roomRole === "player" && !isPlayerApproved(roomId, hello.clientId)) {
+    const pendingRoom = pendingRooms.get(roomId);
+    const alreadyPending = pendingRoom ? [...pendingRoom].some((pending) => pending.clientId === hello.clientId) : false;
+    if (!alreadyPending && (pendingRoom?.size ?? 0) >= maxPendingPlayers) {
+      send(socket, errorMessage("room_pending_full", "Esta sala tem muitos pedidos de entrada pendentes."));
+      socket.close(1008, "room_pending_full");
+      return undefined;
+    }
+
     const pending: PendingClient = {
       socket,
       clientId: hello.clientId,
@@ -681,6 +788,75 @@ function send(socket: WebSocket, message: ServerMessage): void {
   if (socket.readyState === WebSocket.OPEN) {
     socket.send(JSON.stringify(message));
   }
+}
+
+function isRateLimited(socket: WebSocket, key: string, rule: RateLimitRule): boolean {
+  const now = Date.now();
+  const bucket = consumeRateLimit(key, rule, now);
+  if (bucket.allowed) {
+    return false;
+  }
+
+  if (!rule.quiet && now - bucket.value.lastWarningAt >= 5_000) {
+    bucket.value.lastWarningAt = now;
+    send(socket, errorMessage("rate_limited", rule.message));
+    console.warn(`[rate-limit] ${rule.logLabel} key=${key}`);
+  }
+
+  return true;
+}
+
+function consumeRateLimit(
+  key: string,
+  rule: RateLimitRule,
+  now = Date.now()
+): { allowed: boolean; value: RateBucket } {
+  const bucket = rateBuckets.get(key) ?? {
+    tokens: rule.capacity,
+    updatedAt: now,
+    lastSeenAt: now,
+    lastWarningAt: 0
+  };
+
+  const elapsedMs = Math.max(0, now - bucket.updatedAt);
+  bucket.tokens = Math.min(rule.capacity, bucket.tokens + elapsedMs * rule.refillPerMs);
+  bucket.updatedAt = now;
+  bucket.lastSeenAt = now;
+
+  if (bucket.tokens >= 1) {
+    bucket.tokens -= 1;
+    rateBuckets.set(key, bucket);
+    return { allowed: true, value: bucket };
+  }
+
+  rateBuckets.set(key, bucket);
+  return { allowed: false, value: bucket };
+}
+
+function pruneRateBuckets(): void {
+  const cutoff = Date.now() - 10 * 60_000;
+  for (const [key, bucket] of rateBuckets) {
+    if (bucket.lastSeenAt < cutoff) {
+      rateBuckets.delete(key);
+    }
+  }
+}
+
+function createRateLimitRule(
+  capacity: number,
+  refillAmount: number,
+  refillWindowMs: number,
+  message: string,
+  logLabel: string,
+  quiet = false
+): RateLimitRule {
+  return {
+    capacity,
+    refillPerMs: refillAmount / refillWindowMs,
+    message,
+    logLabel,
+    quiet
+  };
 }
 
 function hasValidRelayAccessKey(request: IncomingMessage): boolean {
@@ -1132,6 +1308,8 @@ function renderStatusPage(): string {
           <div class="stat"><strong id="room-count">${rooms.size}</strong> salas ativas</div>
           <div class="stat"><strong id="player-count">${getTotalPlayers()}</strong> jogadores conectados</div>
           <div class="stat"><strong>${maxRoomPlayers}</strong> limite por sala</div>
+          <div class="stat"><strong>${maxActiveRooms}</strong> limite de salas</div>
+          <div class="stat"><strong>${maxRelayConnections}</strong> limite de conexoes</div>
           <div class="stat"><strong>${relayAccessKey ? "Sim" : "Nao"}</strong> chave exigida</div>
         </div>
 
@@ -1224,6 +1402,11 @@ function getRelayLabel(relayUrl: string): string {
 
 function isPublicRelayUrl(relayUrl: string): boolean {
   return relayUrl.startsWith("wss://") || relayUrl.includes("trycloudflare.com");
+}
+
+function readPositiveInt(value: string | undefined, fallback: number): number {
+  const parsed = Number.parseInt(value ?? "", 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
 }
 
 function isUsefulRoll(roll: RollEvent): boolean {

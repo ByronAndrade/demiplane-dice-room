@@ -29,7 +29,7 @@ const rolls: Array<{ roll: RollEvent; origin: "local" | "remote"; delivery: stri
 const liveToastMs = 9600;
 const maxLiveToasts = 3;
 const sheetActivityReportMs = 5_000;
-const sharedDiceMoveMinIntervalMs = 50;
+const sharedDiceMoveMinIntervalMs = 67;
 const sharedDiceRemoteHoldMs = 4_500;
 const diceAnimationMs = 11_800;
 const diceFadeLeadMs = 420;
@@ -62,7 +62,7 @@ const defaultDiceAnimationScale = 0.75;
 const minDiceAnimationScale = 0.45;
 const maxDiceAnimationScale = 1.15;
 const defaultRelayUrl = "wss://demiplane-dice-room-relay.foxbyron.workers.dev";
-const extensionUiVersion = "0.1.102";
+const extensionUiVersion = "0.1.103";
 const pageBridgeMessageSource = "demiplane-dice-room-page";
 const pageDiceRollResponseWaitMs = 1400;
 const pageDiceRollResponseTtlMs = 8_000;
@@ -221,7 +221,9 @@ const messages = {
     invalidRelayMessage: "Relay enviou uma mensagem invalida.",
     relayUnavailable: "Relay indisponivel",
     missingRelayKey: "Informe a chave do relay ou use um relay proprio/local.",
-    roomFull: "Sala cheia. O limite e de 20 jogadores.",
+    roomFull: "Sala cheia. O limite e de 10 jogadores.",
+    roomPendingFull: "Esta sala tem muitos pedidos de entrada pendentes.",
+    relayBusy: "Relay comunitario cheio no momento. Tente novamente em instantes.",
     roomClosed: "O narrador saiu e a sala foi desfeita.",
     roomHostExists: "Esta sala ja tem um narrador conectado.",
     roomNotFound: "A sala ainda nao foi criada pelo narrador.",
@@ -230,7 +232,10 @@ const messages = {
     sheetOffline: "offline",
     runServer: "No terminal do projeto, rode",
     reconnectHint: "Depois aguarde a reconexao ou clique em Conectar no popup.",
-    disconnectedDiagnostic: "Abra o popup da extensao e clique em Conectar. Relay configurado:"
+    disconnectedDiagnostic: "Abra o popup da extensao e clique em Conectar. Relay configurado:",
+    advancedSettings: "Configuracoes avancadas",
+    communityRelayHelp: "O relay da comunidade ja vem configurado. So altere se voce hospedar seu proprio relay ou recebeu uma configuracao privada.",
+    restoreCommunityRelay: "Restaurar relay da comunidade"
   },
   en: {
     historyCount: (count: number) => `${count} ${count === 1 ? "roll" : "rolls"}`,
@@ -322,7 +327,9 @@ const messages = {
     invalidRelayMessage: "Relay sent an invalid message.",
     relayUnavailable: "Relay unavailable",
     missingRelayKey: "Enter the relay key or use your own/local relay.",
-    roomFull: "Room is full. The limit is 20 players.",
+    roomFull: "Room is full. The limit is 10 players.",
+    roomPendingFull: "This room has too many pending join requests.",
+    relayBusy: "The community relay is full right now. Try again in a moment.",
     roomClosed: "The Storyteller left and the room was closed.",
     roomHostExists: "This room already has a Storyteller connected.",
     roomNotFound: "The room has not been created by the Storyteller yet.",
@@ -331,7 +338,10 @@ const messages = {
     sheetOffline: "offline",
     runServer: "In the project terminal, run",
     reconnectHint: "Then wait for reconnection or click Connect in the popup.",
-    disconnectedDiagnostic: "Open the extension popup and click Connect. Configured relay:"
+    disconnectedDiagnostic: "Open the extension popup and click Connect. Configured relay:",
+    advancedSettings: "Advanced settings",
+    communityRelayHelp: "The community relay is already configured. Only change this if you host your own relay or received a private table setup.",
+    restoreCommunityRelay: "Restore community relay"
   }
 } as const;
 
@@ -2262,6 +2272,7 @@ function createPanel(): {
   passwordInput: HTMLInputElement;
   relayInput: HTMLInputElement;
   relayKeyInput: HTMLInputElement;
+  communityRelayButton: HTMLButtonElement;
   saveRoomButton: HTMLButtonElement;
   connectRoomButton: HTMLButtonElement;
   disconnectRoomButton: HTMLButtonElement;
@@ -2942,6 +2953,73 @@ function createPanel(): {
         padding-top: 10px;
       }
 
+      .advanced-settings {
+        margin-top: 10px;
+        border: 1px solid rgba(190, 202, 220, 0.12);
+        border-radius: 7px;
+        padding: 0;
+        background: rgba(9, 12, 17, 0.28);
+      }
+
+      .advanced-settings summary {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 8px;
+        min-height: 32px;
+        padding: 8px 9px;
+        color: #dce5f2;
+        cursor: pointer;
+        font-size: 11px;
+        font-weight: 850;
+        list-style: none;
+        text-transform: uppercase;
+      }
+
+      .advanced-settings summary::-webkit-details-marker {
+        display: none;
+      }
+
+      .advanced-settings summary::after {
+        content: "+";
+        color: #8e9aaa;
+        font-size: 14px;
+        line-height: 1;
+      }
+
+      .advanced-settings[open] summary::after {
+        content: "-";
+      }
+
+      .advanced-content {
+        display: grid;
+        gap: 10px;
+        border-top: 1px solid rgba(190, 202, 220, 0.1);
+        padding: 9px;
+      }
+
+      .advanced-actions button {
+        width: 100%;
+        min-height: 30px;
+        border: 1px solid rgba(190, 202, 220, 0.18);
+        border-radius: 6px;
+        padding: 6px 8px;
+        color: #dce5f2;
+        background: #202730;
+        cursor: pointer;
+        font: inherit;
+        font-weight: 850;
+      }
+
+      .advanced-actions button:hover {
+        background: #2a3340;
+      }
+
+      .advanced-actions button:disabled {
+        cursor: default;
+        opacity: 0.55;
+      }
+
       .settings-row label {
         display: flex;
         align-items: center;
@@ -3290,18 +3368,27 @@ function createPanel(): {
             </label>
             <input id="dice-room-password" data-password type="password" autocomplete="current-password" />
           </div>
-          <div class="settings-row">
-            <label for="dice-room-relay">
-              <span data-settings-relay-label>Relay</span>
-            </label>
-            <input id="dice-room-relay" data-relay type="url" autocomplete="off" />
-          </div>
-          <div class="settings-row">
-            <label for="dice-room-relay-key">
-              <span data-settings-relay-key-label>Chave do relay</span>
-            </label>
-            <input id="dice-room-relay-key" data-relay-key type="password" autocomplete="off" />
-          </div>
+          <details class="advanced-settings" data-advanced-settings>
+            <summary data-settings-advanced-label>Configuracoes avancadas</summary>
+            <div class="advanced-content">
+              <p data-settings-community-relay-help class="settings-help"></p>
+              <div class="settings-row">
+                <label for="dice-room-relay">
+                  <span data-settings-relay-label>Relay</span>
+                </label>
+                <input id="dice-room-relay" data-relay type="url" autocomplete="off" />
+              </div>
+              <div class="settings-row">
+                <label for="dice-room-relay-key">
+                  <span data-settings-relay-key-label>Chave do relay</span>
+                </label>
+                <input id="dice-room-relay-key" data-relay-key type="password" autocomplete="off" />
+              </div>
+              <div class="advanced-actions">
+                <button data-community-relay type="button">Restaurar relay da comunidade</button>
+              </div>
+            </div>
+          </details>
           <div class="settings-actions">
             <button data-save-room type="button">Salvar</button>
             <button data-connect-room type="button">Conectar</button>
@@ -3401,6 +3488,7 @@ function createPanel(): {
   const passwordInput = shadow.querySelector("[data-password]");
   const relayInput = shadow.querySelector("[data-relay]");
   const relayKeyInput = shadow.querySelector("[data-relay-key]");
+  const communityRelayButton = shadow.querySelector("[data-community-relay]");
   const saveRoomButton = shadow.querySelector("[data-save-room]");
   const connectRoomButton = shadow.querySelector("[data-connect-room]");
   const disconnectRoomButton = shadow.querySelector("[data-disconnect-room]");
@@ -3453,6 +3541,7 @@ function createPanel(): {
     !(passwordInput instanceof HTMLInputElement) ||
     !(relayInput instanceof HTMLInputElement) ||
     !(relayKeyInput instanceof HTMLInputElement) ||
+    !(communityRelayButton instanceof HTMLButtonElement) ||
     !(saveRoomButton instanceof HTMLButtonElement) ||
     !(connectRoomButton instanceof HTMLButtonElement) ||
     !(disconnectRoomButton instanceof HTMLButtonElement) ||
@@ -3548,6 +3637,16 @@ function createPanel(): {
   });
 
   saveRoomButton.addEventListener("click", () => {
+    void savePanelRoomConfig();
+  });
+
+  communityRelayButton.addEventListener("click", () => {
+    if (isRoomLocked()) {
+      return;
+    }
+
+    relayInput.value = defaultConfig.serverUrl;
+    relayKeyInput.value = defaultConfig.relayKey;
     void savePanelRoomConfig();
   });
 
@@ -3706,6 +3805,7 @@ function createPanel(): {
     passwordInput,
     relayInput,
     relayKeyInput,
+    communityRelayButton,
     saveRoomButton,
     connectRoomButton,
     disconnectRoomButton,
@@ -3781,6 +3881,7 @@ function renderPanel(): void {
   panel.passwordInput.disabled = roomLocked;
   panel.relayInput.disabled = roomLocked;
   panel.relayKeyInput.disabled = roomLocked;
+  panel.communityRelayButton.disabled = roomLocked;
   panel.hideCharacterNameInput.disabled = roomLocked || !isHost;
   panel.hideCharacterNameInput.checked = isHost && config.hideCharacterName;
   panel.summaryHideCharacterNameInput.disabled = !roomConnected || !isHost;
@@ -3843,6 +3944,15 @@ function renderPanel(): void {
   if (relayKeyLabel instanceof HTMLSpanElement) {
     relayKeyLabel.textContent = t("relayKey");
   }
+  const advancedSettingsLabel = panel.host.shadowRoot?.querySelector("[data-settings-advanced-label]");
+  if (advancedSettingsLabel instanceof HTMLElement) {
+    advancedSettingsLabel.textContent = t("advancedSettings");
+  }
+  const communityRelayHelp = panel.host.shadowRoot?.querySelector("[data-settings-community-relay-help]");
+  if (communityRelayHelp instanceof HTMLParagraphElement) {
+    communityRelayHelp.textContent = t("communityRelayHelp");
+  }
+  panel.communityRelayButton.textContent = t("restoreCommunityRelay");
   panel.saveRoomButton.textContent = t("save");
   panel.connectRoomButton.textContent = t("connect");
   panel.disconnectRoomButton.textContent = t("disconnect");
@@ -4367,8 +4477,14 @@ function translateConnectionDetail(value: string): string {
   if (value === "Este relay exige uma chave de acesso.") {
     return t("missingRelayKey");
   }
-  if (value === "Sala cheia. O limite e de 20 jogadores.") {
+  if (/^Sala cheia\. O limite e de \d+ jogadores\.$/.test(value)) {
     return t("roomFull");
+  }
+  if (value === "Esta sala tem muitos pedidos de entrada pendentes.") {
+    return t("roomPendingFull");
+  }
+  if (value === "Relay comunitario cheio no momento. Tente novamente em instantes.") {
+    return t("relayBusy");
   }
   if (value === "O narrador saiu e a sala foi desfeita.") {
     return t("roomClosed");

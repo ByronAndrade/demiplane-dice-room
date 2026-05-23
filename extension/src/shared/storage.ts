@@ -1,6 +1,9 @@
 declare const __DICE_ROOM_DEFAULT_RELAY__: string;
+declare const __DICE_ROOM_DEFAULT_RELAY_KEY__: string;
 
 const legacyDefaultRelayUrl = "ws://localhost:8787";
+const defaultRelayUrl = getDefaultRelayUrl();
+const defaultRelayKey = getDefaultRelayKey();
 
 export type ExtensionConfig = {
   serverUrl: string;
@@ -18,8 +21,8 @@ export type ExtensionConfig = {
 };
 
 export const defaultConfig: ExtensionConfig = {
-  serverUrl: getDefaultRelayUrl(),
-  relayKey: "",
+  serverUrl: defaultRelayUrl,
+  relayKey: defaultRelayKey,
   playerName: "",
   characterName: "",
   roomRole: "player",
@@ -34,6 +37,10 @@ export const defaultConfig: ExtensionConfig = {
 
 function getDefaultRelayUrl(): string {
   return __DICE_ROOM_DEFAULT_RELAY__ || legacyDefaultRelayUrl;
+}
+
+function getDefaultRelayKey(): string {
+  return __DICE_ROOM_DEFAULT_RELAY_KEY__ || "";
 }
 
 export async function getConfig(): Promise<ExtensionConfig> {
@@ -60,9 +67,11 @@ export async function getClientId(): Promise<string> {
 }
 
 function normalizeConfig(value: Partial<ExtensionConfig>): ExtensionConfig {
+  const serverUrl = normalizeServerUrl(value.serverUrl);
+
   return {
-    serverUrl: normalizeServerUrl(value.serverUrl),
-    relayKey: cleanString(value.relayKey),
+    serverUrl,
+    relayKey: normalizeRelayKey(value.relayKey, serverUrl),
     playerName: cleanString(value.playerName),
     characterName: cleanString(value.characterName),
     roomRole: value.roomRole === "host" ? "host" : "player",
@@ -83,11 +92,20 @@ function normalizeServerUrl(value: unknown): string {
     return defaultConfig.serverUrl;
   }
 
-  if (serverUrl === legacyDefaultRelayUrl && defaultConfig.serverUrl !== legacyDefaultRelayUrl) {
-    return defaultConfig.serverUrl;
+  if (serverUrl === legacyDefaultRelayUrl && defaultRelayUrl !== legacyDefaultRelayUrl) {
+    return defaultRelayUrl;
   }
 
   return serverUrl;
+}
+
+function normalizeRelayKey(value: unknown, serverUrl: string): string {
+  const relayKey = cleanString(value);
+  if (relayKey) {
+    return relayKey;
+  }
+
+  return serverUrl === defaultRelayUrl ? defaultRelayKey : "";
 }
 
 function cleanString(value: unknown): string {

@@ -140,7 +140,7 @@ async function runScenario() {
   players[0].sendDiceControl(createDiceControlEvent(hostRoll.id, 0, "release", 3, 0.64, 0.34));
   await waitForDiceControl([hostClient, ...players], hostRoll.id, 0, "release", players[0].clientId, "shared die release reaches everyone");
 
-  if (playerCount < 19) {
+  if (playerCount < 9) {
     const latePlayer = await connectClient({
       clientId: `late-${randomUUID()}`,
       playerName: "Late",

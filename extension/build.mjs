@@ -17,7 +17,8 @@ const common = {
   define: {
     __DICE_ROOM_DEFAULT_RELAY__: JSON.stringify(
       process.env.DICE_ROOM_DEFAULT_RELAY || "wss://demiplane-dice-room-relay.foxbyron.workers.dev"
-    )
+    ),
+    __DICE_ROOM_DEFAULT_RELAY_KEY__: JSON.stringify(process.env.DICE_ROOM_DEFAULT_RELAY_KEY || "")
   },
   sourcemap: true,
   logLevel: "info"

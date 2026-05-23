@@ -8,6 +8,7 @@ const detail = requireElement("#detail", HTMLParagraphElement);
 const connectButton = requireElement("#connectButton", HTMLButtonElement);
 const disconnectButton = requireElement("#disconnectButton", HTMLButtonElement);
 const testButton = requireElement("#testButton", HTMLButtonElement);
+const communityRelayButton = requireElement("#communityRelayButton", HTMLButtonElement);
 const lastRoll = requireElement("#lastRoll", HTMLDivElement);
 const createRoomButton = requireElement("#createRoomButton", HTMLButtonElement);
 const joinRoomButton = requireElement("#joinRoomButton", HTMLButtonElement);
@@ -31,6 +32,9 @@ const messages = {
     passwordLabel: "Senha da sala",
     relayLabel: "Relay",
     relayKeyLabel: "Chave do relay",
+    advancedSettings: "Configurações avançadas",
+    communityRelayHelp: "O relay da comunidade ja vem configurado. So altere se voce hospedar seu proprio relay ou recebeu uma configuracao privada.",
+    restoreCommunityRelay: "Restaurar relay da comunidade",
     roomFlowTitle: "Sala da mesa",
     createRoom: "Criar sala",
     joinRoom: "Entrar em sala",
@@ -81,7 +85,9 @@ const messages = {
     enteringRoom: "Entrando na sala...",
     invalidRelayMessage: "Relay enviou uma mensagem invalida.",
     missingRelayKey: "Informe a chave do relay ou use um relay proprio/local.",
-    roomFull: "Sala cheia. O limite e de 20 jogadores.",
+    roomFull: "Sala cheia. O limite e de 10 jogadores.",
+    roomPendingFull: "Esta sala tem muitos pedidos de entrada pendentes.",
+    relayBusy: "Relay comunitario cheio no momento. Tente novamente em instantes.",
     roomClosed: "O narrador saiu e a sala foi desfeita.",
     roomHostExists: "Esta sala ja tem um narrador conectado.",
     roomNotFound: "A sala ainda nao foi criada pelo narrador.",
@@ -95,6 +101,9 @@ const messages = {
     passwordLabel: "Room password",
     relayLabel: "Relay",
     relayKeyLabel: "Relay key",
+    advancedSettings: "Advanced settings",
+    communityRelayHelp: "The community relay is already configured. Only change this if you host your own relay or received a private table setup.",
+    restoreCommunityRelay: "Restore community relay",
     roomFlowTitle: "Table room",
     createRoom: "Create room",
     joinRoom: "Join room",
@@ -145,7 +154,9 @@ const messages = {
     enteringRoom: "Entering room...",
     invalidRelayMessage: "Relay sent an invalid message.",
     missingRelayKey: "Enter the relay key or use your own/local relay.",
-    roomFull: "Room is full. The limit is 20 players.",
+    roomFull: "Room is full. The limit is 10 players.",
+    roomPendingFull: "This room has too many pending join requests.",
+    relayBusy: "The community relay is full right now. Try again in a moment.",
     roomClosed: "The Storyteller left and the room was closed.",
     roomHostExists: "This room already has a Storyteller connected.",
     roomNotFound: "The room has not been created by the Storyteller yet.",
@@ -199,6 +210,12 @@ disconnectButton.addEventListener("click", () => {
   }
 
   void sendRuntimeMessage({ kind: "popup:disconnect" });
+});
+
+communityRelayButton.addEventListener("click", () => {
+  inputs.serverUrl.value = defaultConfig.serverUrl;
+  inputs.relayKey.value = defaultConfig.relayKey;
+  void saveSettings();
 });
 
 createRoomButton.addEventListener("click", () => {
@@ -409,6 +426,7 @@ function updateRoomLock(locked: boolean): void {
   inputs.password.disabled = locked;
   inputs.serverUrl.disabled = locked;
   inputs.relayKey.disabled = locked;
+  communityRelayButton.disabled = locked;
   inputs.hideCharacterName.disabled = roomMode !== "host";
 }
 
@@ -647,8 +665,14 @@ function translateConnectionDetail(value: string): string {
   if (value === "Este relay exige uma chave de acesso.") {
     return t("missingRelayKey");
   }
-  if (value === "Sala cheia. O limite e de 20 jogadores.") {
+  if (/^Sala cheia\. O limite e de \d+ jogadores\.$/.test(value)) {
     return t("roomFull");
+  }
+  if (value === "Esta sala tem muitos pedidos de entrada pendentes.") {
+    return t("roomPendingFull");
+  }
+  if (value === "Relay comunitario cheio no momento. Tente novamente em instantes.") {
+    return t("relayBusy");
   }
   if (value === "O narrador saiu e a sala foi desfeita.") {
     return t("roomClosed");

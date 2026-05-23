@@ -3,7 +3,8 @@ import { DurableObject } from "cloudflare:workers";
 const protocolVersion = 1;
 const maxMessageBytes = 64 * 1024;
 const maxRoomHistory = 100;
-const maxRoomPlayers = 20;
+const maxRoomPlayers = 10;
+const maxPendingPlayers = 20;
 const hostReconnectGraceMs = 120_000;
 const diceControlLockMs = 4_000;
 const activeDiceRollTtlMs = 18_000;
@@ -202,6 +203,30 @@ type DiceControlLock = {
   expiresAt: number;
 };
 
+type RateLimitRule = {
+  capacity: number;
+  refillPerMs: number;
+  message: string;
+  logLabel: string;
+  quiet?: boolean;
+};
+
+type RateBucket = {
+  tokens: number;
+  updatedAt: number;
+  lastSeenAt: number;
+  lastWarningAt: number;
+};
+
+const reconnectRateLimit = createRateLimitRule(10, 30, 5 * 60_000, "Muitas reconexoes em pouco tempo. Aguarde alguns segundos.", "reconnect");
+const roomReconnectRateLimit = createRateLimitRule(30, 90, 5 * 60_000, "Muitas entradas nesta sala em pouco tempo. Aguarde alguns segundos.", "room_reconnect");
+const rollClientRateLimit = createRateLimitRule(15, 30, 60_000, "Muitas rolagens em pouco tempo. Aguarde alguns segundos.", "roll_client");
+const rollRoomRateLimit = createRateLimitRule(60, 180, 60_000, "Muitas rolagens nesta sala em pouco tempo. Aguarde alguns segundos.", "roll_room");
+const diceControlClientRateLimit = createRateLimitRule(30, 30, 1_000, "Movimento de dados limitado temporariamente.", "dice_control_client", true);
+const diceControlRoomRateLimit = createRateLimitRule(180, 180, 1_000, "Movimento de dados da sala limitado temporariamente.", "dice_control_room", true);
+const diceClearRateLimit = createRateLimitRule(12, 12, 60_000, "Limpeza de dados limitada temporariamente. Aguarde alguns segundos.", "dice_clear");
+const playerControlRateLimit = createRateLimitRule(20, 60, 60_000, "Muitas acoes de jogadores em pouco tempo. Aguarde alguns segundos.", "player_control");
+
 export interface Env {
   DICE_ROOM_ROOMS: DurableObjectNamespace<DiceRoomDurableObject>;
   DICE_ROOM_RELAY_KEY?: string;
@@ -217,7 +242,8 @@ export default {
         relay: "cloudflare",
         websocket: true,
         accessKeyRequired: Boolean(normalizeRelayKey(env.DICE_ROOM_RELAY_KEY)),
-        roomLimit: maxRoomPlayers
+        roomLimit: maxRoomPlayers,
+        pendingLimit: maxPendingPlayers
       });
     }
 
@@ -257,6 +283,7 @@ export default {
 export class DiceRoomDurableObject extends DurableObject<Env> {
   private sessions = new Map<WebSocket, ClientSession>();
   private diceControlLocks = new Map<string, DiceControlLock>();
+  private rateBuckets = new Map<string, RateBucket>();
   private hostGraceTimer: ReturnType<typeof setTimeout> | undefined;
   private hostGraceClientId = "";
 
@@ -343,11 +370,21 @@ export class DiceRoomDurableObject extends DurableObject<Env> {
     }
 
     if (isPlayerControlMessage(parsed.value)) {
+      if (this.isRateLimited(socket, `control:${session.roomId}:${session.clientId}`, playerControlRateLimit)) {
+        return;
+      }
       await this.handlePlayerControl(socket, session, parsed.value);
       return;
     }
 
     if (isDiceControlMessage(parsed.value)) {
+      if (
+        this.isRateLimited(socket, `dice-control:client:${session.roomId}:${session.clientId}`, diceControlClientRateLimit) ||
+        this.isRateLimited(socket, `dice-control:room:${session.roomId}`, diceControlRoomRateLimit)
+      ) {
+        return;
+      }
+
       const event = this.normalizeDiceControlEvent(parsed.value.event, session);
       if (this.acceptDiceControlEvent(session, event)) {
         await this.rememberActiveDiceControl(event);
@@ -359,6 +396,10 @@ export class DiceRoomDurableObject extends DurableObject<Env> {
     if (isDiceClearMessage(parsed.value)) {
       if (session.roomRole !== "host") {
         this.send(socket, errorMessage("host_required", "Apenas o narrador pode limpar os dados da mesa."));
+        return;
+      }
+
+      if (this.isRateLimited(socket, `dice-clear:${session.roomId}:${session.clientId}`, diceClearRateLimit)) {
         return;
       }
 
@@ -375,6 +416,13 @@ export class DiceRoomDurableObject extends DurableObject<Env> {
     }
 
     const roll = normalizeRoll(parsed.value.roll, session);
+    if (
+      this.isRateLimited(socket, `roll:client:${session.roomId}:${session.clientId}`, rollClientRateLimit) ||
+      this.isRateLimited(socket, `roll:room:${session.roomId}`, rollRoomRateLimit)
+    ) {
+      return;
+    }
+
     if (!isUsefulRoll(roll)) {
       this.send(socket, errorMessage("ignored_roll", "Rolagem ignorada porque nao parece ser um resultado completo.", roll.id));
       return;
@@ -437,6 +485,15 @@ export class DiceRoomDurableObject extends DurableObject<Env> {
       this.sessions.get(existingHostSocket) ?? normalizeSession(existingHostSocket.deserializeAttachment()) :
       undefined;
 
+    if (
+      this.isRateLimited(socket, `hello:client:${roomId}:${clientId}`, reconnectRateLimit) ||
+      this.isRateLimited(socket, `hello:room:${roomId}`, roomReconnectRateLimit)
+    ) {
+      socket.close(1008, "rate_limited");
+      this.sessions.delete(socket);
+      return;
+    }
+
     if (roomRole === "host" && existingHostSocket && existingHostSession?.clientId !== clientId) {
       this.send(socket, errorMessage("room_host_exists", "Esta sala ja tem um narrador conectado."));
       socket.close(1008, "room_host_exists");
@@ -479,6 +536,13 @@ export class DiceRoomDurableObject extends DurableObject<Env> {
     }
 
     if (roomRole === "player" && !approvedPlayer) {
+      if (!this.findPendingSocket(roomId, clientId) && this.getPendingCount(roomId) >= maxPendingPlayers) {
+        this.send(socket, errorMessage("room_pending_full", "Esta sala tem muitos pedidos de entrada pendentes."));
+        socket.close(1008, "room_pending_full");
+        this.sessions.delete(socket);
+        return;
+      }
+
       const pendingSession: ClientSession = {
         roomId,
         joinedAt: current?.joinedAt || new Date().toISOString(),
@@ -794,6 +858,60 @@ export class DiceRoomDurableObject extends DurableObject<Env> {
     }
   }
 
+  private isRateLimited(socket: WebSocket, key: string, rule: RateLimitRule): boolean {
+    const now = Date.now();
+    const bucket = this.consumeRateLimit(key, rule, now);
+    if (bucket.allowed) {
+      return false;
+    }
+
+    if (!rule.quiet && now - bucket.value.lastWarningAt >= 5_000) {
+      bucket.value.lastWarningAt = now;
+      this.send(socket, errorMessage("rate_limited", rule.message));
+      console.warn(`[rate-limit] ${rule.logLabel} key=${key}`);
+    }
+
+    return true;
+  }
+
+  private consumeRateLimit(
+    key: string,
+    rule: RateLimitRule,
+    now = Date.now()
+  ): { allowed: boolean; value: RateBucket } {
+    this.pruneRateBuckets(now);
+
+    const bucket = this.rateBuckets.get(key) ?? {
+      tokens: rule.capacity,
+      updatedAt: now,
+      lastSeenAt: now,
+      lastWarningAt: 0
+    };
+
+    const elapsedMs = Math.max(0, now - bucket.updatedAt);
+    bucket.tokens = Math.min(rule.capacity, bucket.tokens + elapsedMs * rule.refillPerMs);
+    bucket.updatedAt = now;
+    bucket.lastSeenAt = now;
+
+    if (bucket.tokens >= 1) {
+      bucket.tokens -= 1;
+      this.rateBuckets.set(key, bucket);
+      return { allowed: true, value: bucket };
+    }
+
+    this.rateBuckets.set(key, bucket);
+    return { allowed: false, value: bucket };
+  }
+
+  private pruneRateBuckets(now = Date.now()): void {
+    const cutoff = now - 10 * 60_000;
+    for (const [key, bucket] of this.rateBuckets) {
+      if (bucket.lastSeenAt < cutoff) {
+        this.rateBuckets.delete(key);
+      }
+    }
+  }
+
   private getPlayers(roomId: string): PresencePlayer[] {
     const players: PresencePlayer[] = [];
 
@@ -916,6 +1034,19 @@ export class DiceRoomDurableObject extends DurableObject<Env> {
 
       const session = this.sessions.get(socket) ?? normalizeSession(socket.deserializeAttachment());
       if (session?.ready && session.roomId === roomId) {
+        count += 1;
+      }
+    }
+
+    return count;
+  }
+
+  private getPendingCount(roomId: string): number {
+    let count = 0;
+
+    for (const socket of this.ctx.getWebSockets()) {
+      const session = this.sessions.get(socket) ?? normalizeSession(socket.deserializeAttachment());
+      if (!session?.ready && session?.roomId === roomId && session.clientId) {
         count += 1;
       }
     }
@@ -1297,6 +1428,23 @@ function normalizeRelayKey(value: unknown): string | undefined {
   return key || undefined;
 }
 
+function createRateLimitRule(
+  capacity: number,
+  refillAmount: number,
+  refillWindowMs: number,
+  message: string,
+  logLabel: string,
+  quiet = false
+): RateLimitRule {
+  return {
+    capacity,
+    refillPerMs: refillAmount / refillWindowMs,
+    message,
+    logLabel,
+    quiet
+  };
+}
+
 function normalizeSession(value: unknown): ClientSession | undefined {
   if (!value || typeof value !== "object") {
     return undefined;
@@ -1379,6 +1527,7 @@ function renderStatusPage(url: URL): Response {
       <p>Use este endereco no campo Relay da extensao:</p>
       <p><code>${escapeHtml(relayUrl)}</code></p>
       <p>Se este relay estiver protegido, informe tambem a chave do relay na extensao. Cada sala aceita ate ${roomLimit} jogadores conectados.</p>
+      <p>O relay comunitario limita excesso de rolagens e movimentos de dados para proteger as mesas contra spam.</p>
       <p>A sala continua sendo definida pelo nome do canal e pela senha dentro da extensao.</p>
     </main>
   </body>

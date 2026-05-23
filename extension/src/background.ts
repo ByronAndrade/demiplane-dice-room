@@ -37,7 +37,6 @@ const liveRollStorageKey = "lastLiveRoll";
 const roomHistoryStorageKey = "roomHistories";
 const activeDiceRollStorageKey = "activeDiceRolls";
 const panelUiStorageKey = "diceRoomPanelUi";
-const protectedDefaultRelayHost = "demiplane-dice-room-relay.foxbyron.workers.dev";
 const socketKeepAliveMs = 20_000;
 const sheetActivityFreshMs = 15_000;
 const sheetPresenceReportMs = 5_000;
@@ -175,19 +174,6 @@ async function connect(): Promise<void> {
         pendingPlayers: [],
         connectedAt: undefined
       });
-    return;
-  }
-
-  if (requiresRelayKey(config)) {
-    setConnectionState({
-      status: "error",
-      detail: "Informe a chave do relay ou use um relay proprio/local.",
-      roomId: undefined,
-      clientId: undefined,
-      players: [],
-      pendingPlayers: [],
-      connectedAt: undefined
-    });
     return;
   }
 
@@ -447,10 +433,6 @@ async function shouldUseRoomDelivery(config: ExtensionConfig): Promise<boolean> 
     return false;
   }
 
-  if (requiresRelayKey(config)) {
-    return false;
-  }
-
   return true;
 }
 
@@ -696,6 +678,10 @@ function handleServerMessage(message: ServerMessage): void {
     case "error":
       if (message.code === "ignored_roll") {
         markPendingRoomRollRejected(message.rollId);
+        return;
+      }
+
+      if (message.code === "rate_limited") {
         return;
       }
 
@@ -1032,18 +1018,6 @@ function broadcastHistory(): void {
 function sendSocketMessage(message: unknown): void {
   if (socket?.readyState === WebSocket.OPEN) {
     socket.send(JSON.stringify(message));
-  }
-}
-
-function requiresRelayKey(config: ExtensionConfig): boolean {
-  if (config.relayKey) {
-    return false;
-  }
-
-  try {
-    return new URL(config.serverUrl).hostname === protectedDefaultRelayHost;
-  } catch {
-    return false;
   }
 }
 

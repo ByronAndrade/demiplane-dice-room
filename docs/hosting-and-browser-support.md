@@ -4,7 +4,7 @@
 
 Para mesas remotas, o fluxo mais simples e usar um relay online 24/7. Com isso, ninguem precisa abrir o `.cmd` antes da sessao: todos instalam a extensao, usam o mesmo endereco `wss://...`, informam a chave do relay quando houver, e entram na sala pelo nome e senha combinados.
 
-O pacote `relay-cloudflare` prepara esse modo usando Cloudflare Workers + Durable Objects, que mantem uma instancia isolada por sala. Cada sala aceita ate 20 jogadores conectados.
+O pacote `relay-cloudflare` prepara esse modo usando Cloudflare Workers + Durable Objects, que mantem uma instancia isolada por sala. Cada sala aceita ate 10 jogadores conectados.
 
 ```bash
 relay-cloudflare/node_modules/.bin/wrangler login
@@ -20,9 +20,10 @@ wss://demiplane-dice-room-relay.SEUSUBDOMINIO.workers.dev
 
 Depois disso, o fluxo de uso fica:
 
-1. O narrador abre a ficha, abre a extensao, escolhe nome da sala e senha, informa a chave do relay se o relay for protegido, e clica em `Criar sala` / `Conectar`.
-2. Os jogadores usam o mesmo relay online, a mesma chave do relay, o mesmo nome de sala e a mesma senha, e clicam em `Entrar em sala` / `Conectar`.
-3. As rolagens passam a ecoar para todos na mesma sala.
+1. O narrador abre a ficha, abre a extensao, escolhe nome da sala e senha, e clica em `Criar sala` / `Conectar`.
+2. Os jogadores usam o mesmo nome de sala e a mesma senha, e clicam em `Entrar em sala` / `Conectar`.
+3. Quem quiser usar relay proprio abre `Configuracoes avancadas` e troca Relay/chave.
+4. As rolagens passam a ecoar para todos na mesma sala.
 
 O launcher local continua existindo como fallback de teste ou para uma sessao temporaria.
 
@@ -32,7 +33,29 @@ Para distribuir a extensao ja configurada com o relay online, gere o pacote assi
 DICE_ROOM_DEFAULT_RELAY=wss://demiplane-dice-room-relay.SEUSUBDOMINIO.workers.dev npm run package:extension
 ```
 
-Nao coloque a chave do relay dentro do pacote publico da extensao. Distribua a chave apenas para as mesas autorizadas, ou peca que cada grupo configure o proprio Worker/relay local.
+Para uma versao comunitaria plug and play, voce tambem pode gerar o pacote com uma chave padrao:
+
+```bash
+DICE_ROOM_DEFAULT_RELAY=wss://demiplane-dice-room-relay.SEUSUBDOMINIO.workers.dev DICE_ROOM_DEFAULT_RELAY_KEY=sua-chave npm run package:extension
+```
+
+Chave dentro de pacote publico nao e segredo. Ela serve apenas como chave comunitaria rotacionavel. Se precisar de uma mesa privada de verdade, distribua uma chave fora da extensao publica ou peca que o grupo configure o proprio Worker/relay local.
+
+## Limites do relay comunitario
+
+Os limites foram escolhidos para bloquear spam sem punir mesa normal:
+
+- 10 jogadores por sala.
+- 20 pedidos pendentes de entrada por sala.
+- 30 rolagens por minuto por jogador, com burst de 15.
+- 180 rolagens por minuto por sala, com burst de 60.
+- Movimento de dados: cliente envia ate cerca de 15/s; relay aceita 30/s por jogador e 180/s por sala.
+- Limpar dados: 12 vezes por minuto pelo narrador.
+- Reconexoes: 30 a cada 5 minutos por cliente/sala, com burst de 10.
+
+O relay descarta excesso de movimento visual silenciosamente. Excesso de rolagens ou acoes administrativas recebe `rate_limited` e a conexao continua aberta.
+
+No relay Node local, `DICE_ROOM_MAX_ROOMS` e `DICE_ROOM_MAX_CONNECTIONS` podem ajustar limites globais de processo. No Cloudflare, use os dashboards/alerts da conta para acompanhar uso do Worker e configure notificacoes de limite no painel da Cloudflare.
 
 ## Relay protegido
 
@@ -183,7 +206,7 @@ Todos os jogadores de uma mesa devem usar o mesmo canal e a mesma senha. O relay
 wss://demiplane-dice-room-relay.foxbyron.workers.dev
 ```
 
-Esse relay padrao pode exigir uma chave de acesso. Sem a chave, use um relay proprio ou o relay local.
+Se precisar usar outro relay, abra `Configuracoes avancadas` na extensao e informe o endpoint/chave.
 
 ## Navegadores
 

@@ -11,7 +11,7 @@
       <header class="header">
         <div>
           <p class="eyebrow">Demiplane</p>
-          <h1>Dice Room <span>0.1.102</span></h1>
+          <h1>Dice Room <span>0.1.103</span></h1>
         </div>
         <span id="statusPill" class="status status-disconnected">Desconectado</span>
       </header>
@@ -46,16 +46,6 @@
           <input id="password" name="password" type="password" autocomplete="current-password" />
         </label>
 
-        <label>
-          <span data-i18n="relayLabel">Relay</span>
-          <input id="serverUrl" name="serverUrl" type="url" required />
-        </label>
-
-        <label>
-          <span data-i18n="relayKeyLabel">Chave do relay</span>
-          <input id="relayKey" name="relayKey" type="password" autocomplete="off" />
-        </label>
-
         <label class="checkbox-label">
           <input id="showOwnRolls" name="showOwnRolls" type="checkbox" />
           <span data-i18n="showOwnRollsLabel">Mostrar minhas rolagens</span>
@@ -79,6 +69,26 @@
         <p class="field-help" data-i18n="enableSharedDiceHelp">
           Permite ver e mover os mesmos dados com a mesa.
         </p>
+
+        <details class="advanced-settings">
+          <summary data-i18n="advancedSettings">Configurações avançadas</summary>
+          <p class="field-help" data-i18n="communityRelayHelp">
+            O relay da comunidade ja vem configurado.
+          </p>
+          <label>
+            <span data-i18n="relayLabel">Relay</span>
+            <input id="serverUrl" name="serverUrl" type="url" required />
+          </label>
+
+          <label>
+            <span data-i18n="relayKeyLabel">Chave do relay</span>
+            <input id="relayKey" name="relayKey" type="password" autocomplete="off" />
+          </label>
+
+          <button id="communityRelayButton" type="button" data-i18n="restoreCommunityRelay">
+            Restaurar relay da comunidade
+          </button>
+        </details>
 
         <div class="actions">
           <button id="saveButton" type="submit" data-i18n="save">Salvar</button>
