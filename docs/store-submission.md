@@ -102,6 +102,12 @@ Generated assets live in `store-assets/`.
 
 - `store-assets/icon-300.png`
 - `store-assets/promo-small-440x280.png`
+- `store-assets/promo-large-1400x560.png`
+- `store-assets/screenshots/edge-real/00-real-shared-dice-over-sheet-1280x800.png`
+- `store-assets/screenshots/edge-real/01-real-demiplane-roll-1280x800.png`
+- `store-assets/screenshots/edge-real/02-real-roll-history-1280x800.png`
+- `store-assets/screenshots/edge-real/03-real-room-settings-1280x800.png`
+- `store-assets/screenshots/edge-real/04-real-compact-panel-1280x800.png`
 - `store-assets/screenshots/chrome-edge-firefox/01-room-panel-1280x800.png`
 - `store-assets/screenshots/chrome-edge-firefox/02-shared-dice-1280x800.png`
 - `store-assets/screenshots/chrome-edge-firefox/03-advanced-settings-1280x800.png`
