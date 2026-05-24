@@ -63,7 +63,7 @@ const defaultDiceAnimationScale = 0.75;
 const minDiceAnimationScale = 0.45;
 const maxDiceAnimationScale = 1.15;
 const defaultRelayUrl = "wss://demiplane-dice-room-relay.foxbyron.workers.dev";
-const extensionUiVersion = "0.1.107";
+const extensionUiVersion = "0.1.108";
 const pageBridgeMessageSource = "demiplane-dice-room-page";
 const pageDiceRollResponseWaitMs = 1400;
 const pageDiceRollResponseTtlMs = 8_000;
@@ -2291,12 +2291,12 @@ function createPanel(): {
   status: HTMLButtonElement;
   players: HTMLSpanElement;
   count: HTMLSpanElement;
-  countLabel: HTMLSpanElement;
   list: HTMLOListElement;
   brandButton: HTMLButtonElement;
   clearDiceButton: HTMLButtonElement;
   storytellerRollButton: HTMLButtonElement;
   toggle: HTMLButtonElement;
+  toggleIcon: HTMLSpanElement;
   tooltip: HTMLDivElement;
   diagnostic: HTMLDivElement;
   panelRoot: HTMLElement;
@@ -2561,6 +2561,32 @@ function createPanel(): {
         font-weight: 800;
         line-height: 1;
         padding: 0;
+      }
+
+      .toggle {
+        overflow: visible;
+      }
+
+      .history-badge {
+        position: absolute;
+        top: -7px;
+        right: -7px;
+        z-index: 2;
+        min-width: 17px;
+        height: 17px;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        border: 2px solid rgba(16, 19, 24, 0.98);
+        border-radius: 999px;
+        padding: 0 4px;
+        color: #fff6f7;
+        background: #d92338;
+        box-shadow: 0 3px 10px rgba(0, 0, 0, 0.32);
+        font-size: 9px;
+        font-weight: 900;
+        line-height: 1;
+        pointer-events: none;
       }
 
       .icon-button:hover,
@@ -3370,7 +3396,6 @@ function createPanel(): {
           <button data-brand-button class="brand-button" type="button" aria-label="Sala de dados" data-tooltip="Sala de dados">
             <span class="dice-mark" aria-hidden="true"><i></i><i></i><i></i></span>
           </button>
-          <span data-count-label><span data-count>0</span> rolagens</span>
         </div>
         <div class="header-actions">
           <button data-clear-dice class="icon-button clear-dice" type="button" aria-label="Limpar dados" data-tooltip="Limpar dados" hidden>
@@ -3401,7 +3426,10 @@ function createPanel(): {
           <span class="version-chip" title="Versao da extensao">v${extensionUiVersion}</span>
           <span data-players class="players-chip" data-tooltip="Jogadores na sala">0</span>
           <button data-settings-button class="icon-button" type="button" aria-label="Abrir configuracoes" data-tooltip="Abrir configuracoes">⚙</button>
-          <button data-toggle class="toggle" type="button" aria-label="Abrir historico" data-tooltip="Abrir historico">^</button>
+          <button data-toggle class="toggle" type="button" aria-label="Abrir historico" data-tooltip="Abrir historico">
+            <span data-toggle-icon aria-hidden="true">^</span>
+            <span data-count class="history-badge" aria-hidden="true" hidden>0</span>
+          </button>
         </div>
       </header>
       <div data-diagnostic class="diagnostic"></div>
@@ -3558,12 +3586,12 @@ function createPanel(): {
   const status = shadow.querySelector("[data-status]");
   const players = shadow.querySelector("[data-players]");
   const count = shadow.querySelector("[data-count]");
-  const countLabel = shadow.querySelector("[data-count-label]");
   const list = shadow.querySelector("[data-list]");
   const brandButton = shadow.querySelector("[data-brand-button]");
   const clearDiceButton = shadow.querySelector("[data-clear-dice]");
   const storytellerRollButton = shadow.querySelector("[data-storyteller-roll]");
   const toggle = shadow.querySelector("[data-toggle]");
+  const toggleIcon = shadow.querySelector("[data-toggle-icon]");
   const tooltip = shadow.querySelector("[data-tooltip-portal]");
   const diagnostic = shadow.querySelector("[data-diagnostic]");
   const settings = shadow.querySelector("[data-settings-button]");
@@ -3614,12 +3642,12 @@ function createPanel(): {
     !(status instanceof HTMLButtonElement) ||
     !(players instanceof HTMLSpanElement) ||
     !(count instanceof HTMLSpanElement) ||
-    !(countLabel instanceof HTMLSpanElement) ||
     !(list instanceof HTMLOListElement) ||
     !(brandButton instanceof HTMLButtonElement) ||
     !(clearDiceButton instanceof HTMLButtonElement) ||
     !(storytellerRollButton instanceof HTMLButtonElement) ||
     !(toggle instanceof HTMLButtonElement) ||
+    !(toggleIcon instanceof HTMLSpanElement) ||
     !(tooltip instanceof HTMLDivElement) ||
     !(diagnostic instanceof HTMLDivElement) ||
     !(settings instanceof HTMLButtonElement) ||
@@ -3889,12 +3917,12 @@ function createPanel(): {
     status,
     players,
     count,
-    countLabel,
     list,
     brandButton,
     clearDiceButton,
     storytellerRollButton,
     toggle,
+    toggleIcon,
     tooltip,
     diagnostic,
     panelRoot,
@@ -3962,10 +3990,8 @@ function renderPanel(): void {
   panel.players.hidden = connectionState.status !== "connected";
   panel.players.removeAttribute("title");
   panel.players.dataset.tooltip = formatPlayersTooltip(connectionState.players);
-  panel.count.textContent = String(unreadRolls.length);
-  panel.countLabel.textContent = t("unreadCount", unreadRolls.length);
-  panel.countLabel.hidden = unreadRolls.length === 0;
-  panel.countLabel.title = t("historyCount", visibleRolls.length);
+  panel.count.textContent = unreadRolls.length > 99 ? "99+" : String(unreadRolls.length);
+  panel.count.hidden = unreadRolls.length === 0;
   panel.host.dataset.collapsed = String(collapsed);
   panel.host.dataset.compact = String(compactPanel);
   panel.host.dataset.diagnostic = String(diagnosticOpen);
@@ -4031,10 +4057,14 @@ function renderPanel(): void {
   panel.diceSizeInput.value = String(diceAnimationScale);
   panel.brandButton.dataset.tooltip = t("diceRoomTitle");
   panel.brandButton.setAttribute("aria-label", t("diceRoomTitle"));
-  panel.toggle.textContent = collapsed ? "^" : "v";
+  panel.toggleIcon.textContent = collapsed ? "^" : "v";
   panel.toggle.removeAttribute("title");
-  panel.toggle.dataset.tooltip = collapsed ? t("openHistory") : t("closeHistory");
-  panel.toggle.setAttribute("aria-label", collapsed ? t("openHistory") : t("closeHistory"));
+  const historyToggleLabel = collapsed ? t("openHistory") : t("closeHistory");
+  panel.toggle.dataset.tooltip = historyToggleLabel;
+  panel.toggle.setAttribute(
+    "aria-label",
+    unreadRolls.length > 0 ? `${historyToggleLabel} (${t("unreadCount", unreadRolls.length)})` : historyToggleLabel
+  );
   panel.settings.removeAttribute("title");
   panel.settings.dataset.tooltip = settingsOpen ? t("closeSettings") : t("openSettings");
   panel.settings.setAttribute("aria-label", settingsOpen ? t("closeSettings") : t("openSettings"));
