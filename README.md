@@ -35,6 +35,12 @@ O Demiplane ja permite rolar dados dentro da ficha de personagem, mas o resultad
 
 Comece por [docs/product-brief.md](docs/product-brief.md) para entender o produto e depois leia [docs/architecture.md](docs/architecture.md) para a arquitetura proposta.
 
+## Publicacao e suporte
+
+- Politica de privacidade: [docs/privacy-policy.md](docs/privacy-policy.md)
+- Suporte e bugs: [docs/support.md](docs/support.md)
+- Materiais para lojas de extensao: [docs/store-submission.md](docs/store-submission.md)
+
 ## Como rodar o prototipo local
 
 Instale as dependencias:
