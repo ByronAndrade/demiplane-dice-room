@@ -211,18 +211,33 @@ def generate() -> None:
 
     promo = Image.new("RGBA", (440, 280), (9, 12, 17, 255))
     draw = ImageDraw.Draw(promo)
-    for index in range(12):
-        x = -80 + index * 55
-        draw.line((x, 280, x + 220, 0), fill=(45, 10, 18, 80), width=24)
-    rounded(draw, (24, 34, 416, 246), 24, (18, 24, 33, 245), (67, 79, 96, 255), 2)
-    icon = Image.open(STORE_ASSETS / "icon-300.png").resize((104, 104), Image.Resampling.LANCZOS)
-    promo.alpha_composite(icon, (36, 88))
-    label(draw, (162, 84), "Demiplane", 24, (177, 187, 202, 255), True)
-    label(draw, (162, 118), "Dice Room", 42, (246, 248, 252, 255), True)
-    label(draw, (164, 174), "Shared rolls for online tables", 18, (210, 220, 232, 255))
-    rounded(draw, (164, 204, 300, 232), 14, (22, 76, 49, 255), (57, 169, 103, 255), 2)
-    label(draw, (232, 218), "Connected", 16, (223, 255, 235, 255), True, anchor="mm")
+    for index in range(10):
+        x = -120 + index * 62
+        draw.line((x, 280, x + 190, 0), fill=(54, 10, 20, 58), width=20)
+    rounded(draw, (28, 38, 412, 242), 22, (18, 24, 33, 248), (67, 79, 96, 255), 2)
+    icon = Image.open(STORE_ASSETS / "icon-300.png").resize((86, 86), Image.Resampling.LANCZOS)
+    promo.alpha_composite(icon, (48, 96))
+    label(draw, (158, 82), "Demiplane", 21, (177, 187, 202, 255), True)
+    label(draw, (158, 114), "Dice Room", 35, (246, 248, 252, 255), True)
+    label(draw, (160, 168), "Shared rolls for online tables", 16, (210, 220, 232, 255))
+    rounded(draw, (160, 202, 286, 230), 14, (22, 76, 49, 255), (57, 169, 103, 255), 2)
+    label(draw, (223, 216), "Connected", 15, (223, 255, 235, 255), True, anchor="mm")
     promo.convert("RGB").save(STORE_ASSETS / "promo-small-440x280.png", quality=95)
+
+    large = Image.new("RGBA", (1400, 560), (9, 12, 17, 255))
+    draw = ImageDraw.Draw(large)
+    for index in range(18):
+        x = -160 + index * 92
+        draw.line((x, 560, x + 360, 0), fill=(54, 10, 20, 54), width=34)
+    rounded(draw, (90, 78, 1310, 482), 42, (18, 24, 33, 248), (67, 79, 96, 255), 4)
+    icon = Image.open(STORE_ASSETS / "icon-300.png").resize((190, 190), Image.Resampling.LANCZOS)
+    large.alpha_composite(icon, (160, 185))
+    label(draw, (420, 158), "Demiplane", 48, (177, 187, 202, 255), True)
+    label(draw, (420, 228), "Dice Room", 88, (246, 248, 252, 255), True)
+    label(draw, (424, 346), "Shared rolls for online tabletop groups", 36, (210, 220, 232, 255))
+    rounded(draw, (424, 410, 690, 468), 28, (22, 76, 49, 255), (57, 169, 103, 255), 4)
+    label(draw, (557, 439), "Connected", 31, (223, 255, 235, 255), True, anchor="mm")
+    large.convert("RGB").save(STORE_ASSETS / "promo-large-1400x560.png", quality=95)
 
     screenshots = [
         ("01-room-panel-1280x800.png", screenshot_room()),
