@@ -63,7 +63,7 @@ const defaultDiceAnimationScale = 0.75;
 const minDiceAnimationScale = 0.45;
 const maxDiceAnimationScale = 1.15;
 const defaultRelayUrl = "wss://demiplane-dice-room-relay.foxbyron.workers.dev";
-const extensionUiVersion = "0.1.106";
+const extensionUiVersion = "0.1.107";
 const pageBridgeMessageSource = "demiplane-dice-room-page";
 const pageDiceRollResponseWaitMs = 1400;
 const pageDiceRollResponseTtlMs = 8_000;
@@ -186,8 +186,8 @@ const messages = {
     disconnect: "Desconectar",
     opacity: "Opacidade",
     language: "Idioma",
-    showOwnRolls: "Mostrar minhas rolagens",
-    showOwnRollsHint: "Normalmente o Demiplane ja mostra sua rolagem. Deixe desligado para ver so as rolagens da sala; interpretacoes especiais ainda aparecem.",
+    showOwnRolls: "Mostrar alertas das minhas rolagens",
+    showOwnRollsHint: "Normalmente o Demiplane ja mostra sua rolagem. Deixe desligado para ocultar alertas das suas rolagens; o historico da mesa continua registrando tudo.",
     enableDiceAnimation: "Animacao dos dados",
     enableDiceAnimationHint: "Mostra os dados caindo e quicando na ficha, com som leve.",
     enableSharedDice: "Dados compartilhados",
@@ -297,8 +297,8 @@ const messages = {
     disconnect: "Disconnect",
     opacity: "Opacity",
     language: "Language",
-    showOwnRolls: "Show my own rolls",
-    showOwnRollsHint: "Demiplane already shows your roll by default. Leave this off to see only room rolls; special interpretations still appear.",
+    showOwnRolls: "Show alerts for my rolls",
+    showOwnRollsHint: "Demiplane already shows your roll by default. Leave this off to hide alerts for your own rolls; table history still records everything.",
     enableDiceAnimation: "Dice animation",
     enableDiceAnimationHint: "Shows dice falling and bouncing on the sheet, with light sound.",
     enableSharedDice: "Shared dice",
@@ -2109,7 +2109,7 @@ function addRoll(roll: RollEvent, origin: "local" | "remote", delivery: string):
   }
 
   rolls.unshift({ roll, origin, delivery });
-  rolls.splice(20);
+  rolls.splice(100);
   renderPanel();
 
   if (delivery !== "history") {
@@ -2154,7 +2154,7 @@ function replaceRolls(nextRolls: StoredRoll[]): void {
 }
 
 function getVisibleRolls(): Array<{ roll: RollEvent; origin: "local" | "remote"; delivery: string }> {
-  return rolls.filter(shouldShowRoll);
+  return rolls;
 }
 
 function getUnreadVisibleRolls(
@@ -2183,16 +2183,12 @@ function markRollsSeen(items: Array<{ roll: RollEvent; origin: "local" | "remote
   return changed;
 }
 
-function shouldShowRoll(item: { roll: RollEvent; origin: "local" | "remote"; delivery: string }): boolean {
+function shouldShowLiveRoll(item: { roll: RollEvent; origin: "local" | "remote"; delivery: string }): boolean {
   if (item.origin !== "local") {
     return true;
   }
 
   return shouldShowOwnRolls() || hasSpecialOutcome(item.roll);
-}
-
-function shouldShowLiveRoll(item: { roll: RollEvent; origin: "local" | "remote"; delivery: string }): boolean {
-  return shouldShowRoll(item);
 }
 
 function shouldShowOwnRolls(): boolean {
@@ -3525,7 +3521,7 @@ function createPanel(): {
         <div class="settings-row">
           <label class="checkbox-row">
             <input data-show-own-rolls type="checkbox" />
-            <span data-settings-show-own-label>Mostrar minhas rolagens</span>
+            <span data-settings-show-own-label>Mostrar alertas das minhas rolagens</span>
           </label>
           <p data-settings-show-own-help class="settings-help"></p>
         </div>
