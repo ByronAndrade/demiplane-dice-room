@@ -103,11 +103,17 @@ Generated assets live in `store-assets/`.
 - `store-assets/icon-300.png`
 - `store-assets/promo-small-440x280.png`
 - `store-assets/promo-large-1400x560.png`
+
+Use the real screenshots first in public listings and project documentation:
+
 - `store-assets/screenshots/edge-real/00-real-shared-dice-over-sheet-1280x800.png`
 - `store-assets/screenshots/edge-real/01-real-demiplane-roll-1280x800.png`
 - `store-assets/screenshots/edge-real/02-real-roll-history-1280x800.png`
 - `store-assets/screenshots/edge-real/03-real-room-settings-1280x800.png`
 - `store-assets/screenshots/edge-real/04-real-compact-panel-1280x800.png`
+
+The Chrome/Edge/Firefox filenames below are compatibility copies using real screenshots:
+
 - `store-assets/screenshots/chrome-edge-firefox/01-room-panel-1280x800.png`
 - `store-assets/screenshots/chrome-edge-firefox/02-shared-dice-1280x800.png`
 - `store-assets/screenshots/chrome-edge-firefox/03-advanced-settings-1280x800.png`

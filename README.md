@@ -6,6 +6,12 @@ Extensao de navegador e relay realtime para compartilhar rolagens do Demiplane e
 
 O Demiplane ja permite rolar dados dentro da ficha de personagem, mas o resultado aparece apenas para quem esta vendo aquela ficha. Este projeto cria uma camada paralela: uma extensao observa as rolagens na pagina, publica o resultado em um canal da mesa, e as outras extensoes conectadas ao mesmo canal exibem o historico compartilhado.
 
+## Capturas
+
+![Dados compartilhados sobre a ficha do Demiplane](store-assets/screenshots/edge-real/00-real-shared-dice-over-sheet-1280x800.png)
+
+A galeria real usada nas lojas fica em `store-assets/screenshots/edge-real/`. O primeiro screenshot mostra o ponto forte da extensao: dados compartilhados aparecendo diretamente sobre a ficha, junto do historico nativo de rolagens do Demiplane.
+
 ## Escopo inicial
 
 - Capturar rolagens exibidas na ficha do Demiplane sem modificar a conta, a ficha ou APIs internas.
