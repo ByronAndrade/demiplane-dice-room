@@ -445,7 +445,7 @@ export class DiceRoomDurableObject extends DurableObject<Env> {
 
   webSocketClose(socket: WebSocket, code: number, reason: string): void {
     const session = this.sessions.get(socket);
-    this.sessions.delete(socket);
+    this.forgetSocketSession(socket);
     socket.close(code, reason);
 
     if (session?.ready) {
@@ -464,7 +464,7 @@ export class DiceRoomDurableObject extends DurableObject<Env> {
 
   webSocketError(socket: WebSocket): void {
     const session = this.sessions.get(socket);
-    this.sessions.delete(socket);
+    this.forgetSocketSession(socket);
 
     if (session?.ready) {
       this.releaseDiceControlLocksForClient(session.roomId, session.clientId || "");
@@ -523,14 +523,14 @@ export class DiceRoomDurableObject extends DurableObject<Env> {
       this.isRateLimited(socket, `hello:room:${roomId}`, roomReconnectRateLimit)
     ) {
       socket.close(1008, "rate_limited");
-      this.sessions.delete(socket);
+      this.forgetSocketSession(socket);
       return;
     }
 
     if (roomRole === "host" && existingHostSocket && existingHostSession?.clientId !== clientId) {
       this.send(socket, errorMessage("room_host_exists", "Esta sala ja tem um narrador conectado."));
       socket.close(1008, "room_host_exists");
-      this.sessions.delete(socket);
+      this.forgetSocketSession(socket);
       return;
     }
 
@@ -542,7 +542,7 @@ export class DiceRoomDurableObject extends DurableObject<Env> {
     ) {
       this.send(socket, errorMessage("room_host_exists", "Esta sala aguarda o narrador original reconectar."));
       socket.close(1008, "room_host_exists");
-      this.sessions.delete(socket);
+      this.forgetSocketSession(socket);
       return;
     }
 
@@ -554,7 +554,7 @@ export class DiceRoomDurableObject extends DurableObject<Env> {
     ) {
       this.send(socket, errorMessage("room_host_exists", "Esta sala pertence ao narrador original."));
       socket.close(1008, "room_host_exists");
-      this.sessions.delete(socket);
+      this.forgetSocketSession(socket);
       return;
     }
 
@@ -562,7 +562,7 @@ export class DiceRoomDurableObject extends DurableObject<Env> {
     if (roomRole === "player" && !existingHostSocket && !roomRecord && !approvedPlayer) {
       this.send(socket, errorMessage("room_not_found", "A sala ainda nao foi criada pelo narrador."));
       socket.close(1008, "room_not_found");
-      this.sessions.delete(socket);
+      this.forgetSocketSession(socket);
       return;
     }
 
@@ -577,7 +577,7 @@ export class DiceRoomDurableObject extends DurableObject<Env> {
     if (nextRoomPlayerCount >= maxRoomPlayers) {
       this.send(socket, errorMessage("room_full", `Sala cheia. O limite e de ${maxRoomPlayers} jogadores.`));
       socket.close(1008, "room_full");
-      this.sessions.delete(socket);
+      this.forgetSocketSession(socket);
       return;
     }
 
@@ -585,14 +585,14 @@ export class DiceRoomDurableObject extends DurableObject<Env> {
       if (!existingHostSocket) {
         this.send(socket, errorMessage("host_offline", "O narrador precisa estar online para aprovar novos jogadores."));
         socket.close(1008, "host_offline");
-        this.sessions.delete(socket);
+        this.forgetSocketSession(socket);
         return;
       }
 
       if (!this.findPendingSocket(roomId, clientId) && this.getPendingCount(roomId) >= maxPendingPlayers) {
         this.send(socket, errorMessage("room_pending_full", "Esta sala tem muitos pedidos de entrada pendentes."));
         socket.close(1008, "room_pending_full");
-        this.sessions.delete(socket);
+        this.forgetSocketSession(socket);
         return;
       }
 
@@ -671,7 +671,7 @@ export class DiceRoomDurableObject extends DurableObject<Env> {
       return;
     }
 
-    this.kickRoomPlayer(socket, hostSession.roomId, message.clientId, hostSession.clientId);
+    await this.kickRoomPlayer(socket, hostSession.roomId, message.clientId, hostSession.clientId);
   }
 
   private normalizeDiceControlEvent(
@@ -752,7 +752,7 @@ export class DiceRoomDurableObject extends DurableObject<Env> {
 
   private async handleLeaveRoom(socket: WebSocket): Promise<void> {
     const session = this.sessions.get(socket) ?? normalizeSession(socket.deserializeAttachment());
-    this.sessions.delete(socket);
+    this.forgetSocketSession(socket);
 
     if (session?.ready && session.roomRole === "host") {
       this.releaseDiceControlLocksForClient(session.roomId, session.clientId || "");
@@ -784,7 +784,7 @@ export class DiceRoomDurableObject extends DurableObject<Env> {
     if (this.getReadyCount(roomId) >= maxRoomPlayers) {
       this.send(pendingSocket, errorMessage("room_full", `Sala cheia. O limite e de ${maxRoomPlayers} jogadores.`));
       pendingSocket.close(1008, "room_full");
-      this.sessions.delete(pendingSocket);
+      this.forgetSocketSession(pendingSocket);
       this.sendPendingPlayers(roomId);
       return;
     }
@@ -824,27 +824,54 @@ export class DiceRoomDurableObject extends DurableObject<Env> {
 
     this.send(pendingSocket, errorMessage("approval_rejected", "O narrador recusou sua entrada na sala."));
     pendingSocket.close(1008, "approval_rejected");
-    this.sessions.delete(pendingSocket);
+    this.forgetSocketSession(pendingSocket);
     this.sendPendingPlayers(roomId);
   }
 
-  private kickRoomPlayer(hostSocket: WebSocket, roomId: string, clientId: string, hostClientId: string): void {
+  private async kickRoomPlayer(hostSocket: WebSocket, roomId: string, clientId: string, hostClientId: string): Promise<void> {
     if (clientId === hostClientId) {
       this.send(hostSocket, errorMessage("invalid_kick", "Use Desconectar para fechar a sala."));
       return;
     }
 
     const targetSocket = this.findReadySocket(roomId, clientId);
-    if (!targetSocket) {
+    const targetSession = targetSocket ? this.sessions.get(targetSocket) ?? normalizeSession(targetSocket.deserializeAttachment()) : undefined;
+    if (!targetSocket || !targetSession?.clientId) {
+      if (await this.isPlayerApproved(clientId)) {
+        await this.unmarkPlayerApproved(clientId);
+        await this.touchRoom();
+        this.broadcastPresence(roomId);
+        return;
+      }
+
       this.send(hostSocket, errorMessage("player_not_found", "Jogador nao encontrado na sala."));
       return;
     }
 
-    this.send(targetSocket, errorMessage("kicked", "Voce foi removido da sala pelo narrador."));
-    targetSocket.close(1008, "kicked");
-    this.sessions.delete(targetSocket);
-    void this.unmarkPlayerApproved(clientId);
-    void this.touchRoom();
+    const targetIdentity = getSessionIdentityKey(targetSession);
+    const kickedClientIds = new Set<string>();
+    for (const socket of this.ctx.getWebSockets()) {
+      const session = this.sessions.get(socket) ?? normalizeSession(socket.deserializeAttachment());
+      if (
+        !session?.ready ||
+        session.roomId !== roomId ||
+        session.roomRole === "host" ||
+        !session.clientId ||
+        (session.clientId !== clientId && getSessionIdentityKey(session) !== targetIdentity)
+      ) {
+        continue;
+      }
+
+      kickedClientIds.add(session.clientId);
+      this.send(socket, errorMessage("kicked", "Voce foi removido da sala pelo narrador."));
+      socket.close(1008, "kicked");
+      this.forgetSocketSession(socket);
+    }
+
+    for (const kickedClientId of kickedClientIds) {
+      await this.unmarkPlayerApproved(kickedClientId);
+    }
+    await this.touchRoom();
     this.broadcastPresence(roomId);
   }
 
@@ -910,7 +937,16 @@ export class DiceRoomDurableObject extends DurableObject<Env> {
     try {
       socket.send(JSON.stringify(message));
     } catch {
-      this.sessions.delete(socket);
+      this.forgetSocketSession(socket);
+    }
+  }
+
+  private forgetSocketSession(socket: WebSocket): void {
+    this.sessions.delete(socket);
+    try {
+      socket.serializeAttachment({});
+    } catch {
+      // Socket attachments are best-effort cleanup for stale Durable Object presence.
     }
   }
 
@@ -969,7 +1005,7 @@ export class DiceRoomDurableObject extends DurableObject<Env> {
   }
 
   private getPlayers(roomId: string): PresencePlayer[] {
-    const players: PresencePlayer[] = [];
+    const players = new Map<string, PresencePlayer>();
 
     for (const socket of this.ctx.getWebSockets()) {
       const session = this.sessions.get(socket) ?? normalizeSession(socket.deserializeAttachment());
@@ -977,7 +1013,7 @@ export class DiceRoomDurableObject extends DurableObject<Env> {
         continue;
       }
 
-      players.push({
+      const player: PresencePlayer = {
         clientId: session.clientId,
         playerName: session.playerName,
         characterName: session.characterName,
@@ -985,10 +1021,15 @@ export class DiceRoomDurableObject extends DurableObject<Env> {
         joinedAt: session.joinedAt,
         sheetStatus: session.sheetActive === true ? "active" : "offline",
         sheetSeenAt: session.sheetSeenAt
-      });
+      };
+      const key = getSessionIdentityKey(session);
+      const current = players.get(key);
+      if (!current || shouldPreferPresencePlayer(player, current)) {
+        players.set(key, player);
+      }
     }
 
-    return players;
+    return [...players.values()];
   }
 
   private getPendingPlayers(roomId: string): PendingPlayer[] {
@@ -1056,7 +1097,7 @@ export class DiceRoomDurableObject extends DurableObject<Env> {
 
     this.send(existingSocket, errorMessage("approval_replaced", "Um novo pedido de entrada substituiu este."));
     existingSocket.close(1001, "approval_replaced");
-    this.sessions.delete(existingSocket);
+    this.forgetSocketSession(existingSocket);
   }
 
   private replaceReadyPlayer(roomId: string, clientId: string, nextSocket: WebSocket): void {
@@ -1072,7 +1113,7 @@ export class DiceRoomDurableObject extends DurableObject<Env> {
 
       this.send(socket, errorMessage("session_replaced", "Uma nova conexao substituiu esta sessao."));
       socket.close(1001, "session_replaced");
-      this.sessions.delete(socket);
+      this.forgetSocketSession(socket);
     }
   }
 
@@ -1256,7 +1297,7 @@ export class DiceRoomDurableObject extends DurableObject<Env> {
       }
 
       this.send(socket, errorMessage("room_closed", "O narrador saiu e a sala foi desfeita."));
-      this.sessions.delete(socket);
+      this.forgetSocketSession(socket);
       socket.close(1001, "room_closed");
     }
 
@@ -1601,6 +1642,32 @@ function normalizeSession(value: unknown): ClientSession | undefined {
     sheetActive: session.sheetActive === true,
     sheetSeenAt: typeof session.sheetSeenAt === "string" ? session.sheetSeenAt : undefined
   };
+}
+
+function getSessionIdentityKey(session: Pick<ClientSession, "clientId" | "playerName" | "characterName" | "roomRole">): string {
+  if (session.roomRole === "host") {
+    return `host:${session.clientId ?? ""}`;
+  }
+
+  return `player:${normalizeIdentityPart(session.characterName || session.playerName)}:${normalizeIdentityPart(session.playerName)}`;
+}
+
+function shouldPreferPresencePlayer(candidate: PresencePlayer, current: PresencePlayer): boolean {
+  if (candidate.sheetStatus !== current.sheetStatus) {
+    return candidate.sheetStatus === "active";
+  }
+
+  const candidateJoinedAt = Date.parse(candidate.joinedAt);
+  const currentJoinedAt = Date.parse(current.joinedAt);
+  if (Number.isFinite(candidateJoinedAt) && Number.isFinite(currentJoinedAt)) {
+    return candidateJoinedAt > currentJoinedAt;
+  }
+
+  return false;
+}
+
+function normalizeIdentityPart(value: string | undefined): string {
+  return (value ?? "").trim().toLocaleLowerCase();
 }
 
 function isBoundedString(value: unknown, min: number, max: number): value is string {

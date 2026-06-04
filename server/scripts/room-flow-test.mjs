@@ -219,7 +219,8 @@ async function runScenario() {
   reconnectedHost.sendRoll(hostAfterReconnectRoll);
   await waitForRoll([reconnectedHost, ...players], hostAfterReconnectRoll.id, "host can publish after reconnect");
 
-  const manualD10Roll = createManualD10Roll(players[0], "manual-d10", 7);
+  const manualD10Roll = createManualD10Roll(players[0], "manual-d10", 10);
+  assertEqual(manualD10Roll.dice[0].label, "0", "manual d10 displays zero on the ten face");
   players[0].sendRoll(manualD10Roll);
   await waitForRoll([reconnectedHost, ...players], manualD10Roll.id, "extension manual d10 reaches everyone");
 
@@ -228,6 +229,8 @@ async function runScenario() {
   const persistedApprovalRoll = createRoll(players[0], "persisted-approval", "STAMINA + SURVIVAL", 2);
   players[0].sendRoll(persistedApprovalRoll);
   await waitForRoll([resumedHost, ...players], persistedApprovalRoll.id, "approved player can publish after table resumes");
+
+  await verifyDuplicateIdentityKick(resumedHost, players);
 
   resumedHost.send({ type: "leave_room", version: 1 });
   await Promise.all(
@@ -255,6 +258,30 @@ async function reconnectClient(client) {
   });
   await nextClient.waitFor((message) => message.type === "welcome", `${client.playerName} reconnect welcome`);
   return nextClient;
+}
+
+async function verifyDuplicateIdentityKick(hostClient, players) {
+  const original = players[0];
+  const duplicate = await connectClient({
+    clientId: `duplicate-${randomUUID()}`,
+    playerName: original.playerName,
+    characterName: original.characterName,
+    roomRole: "player"
+  });
+  await duplicate.waitFor((message) => message.type === "approval_required", "duplicate identity approval required");
+  hostClient.send({ type: "approve_player", version: 1, clientId: duplicate.clientId });
+  const welcome = await duplicate.waitFor((message) => message.type === "welcome", "duplicate identity welcome");
+  assertEqual(welcome.players.length, players.length + 1, "duplicate visible identity does not inflate presence count");
+  await waitForPresenceCount([hostClient, ...players, duplicate], players.length + 1);
+
+  hostClient.send({ type: "kick_player", version: 1, clientId: duplicate.clientId });
+  await Promise.all(
+    [original, duplicate].map((client) =>
+      client.waitFor((message) => message.type === "error" && message.code === "kicked", `${client.playerName} duplicate kicked`)
+    )
+  );
+  players.splice(players.indexOf(original), 1);
+  await waitForPresenceCount([hostClient, ...players], players.length + 1);
 }
 
 async function verifyPlayerRollWhileHostOffline(hostClient, players) {
@@ -509,6 +536,7 @@ function createRoll(client, suffix, title, successes, overrides = {}) {
 }
 
 function createManualD10Roll(client, suffix, value) {
+  const label = value === 10 ? "0" : String(value);
   return {
     type: "roll",
     version: 1,
@@ -527,10 +555,10 @@ function createManualD10Roll(client, suffix, value) {
         value,
         sides: 10,
         face: "blank",
-        label: String(value)
+        label
       }
     ],
-    rawText: `1d10\nResult: ${value}`,
+    rawText: `1d10\nResult: ${label}`,
     createdAt: new Date().toISOString()
   };
 }

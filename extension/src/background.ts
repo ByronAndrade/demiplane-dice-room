@@ -384,6 +384,7 @@ async function publishManualD10Roll(): Promise<{ ok: true; delivered: string; ro
   const clientId = await getClientId();
   const createdAt = new Date().toISOString();
   const value = secureRandomInt(1, 10);
+  const label = formatManualD10Label(value);
   const publicCharacterName = await getPublicCharacterName(config);
   const roll: RollEvent = {
     type: "roll",
@@ -403,10 +404,10 @@ async function publishManualD10Roll(): Promise<{ ok: true; delivered: string; ro
         value,
         sides: 10,
         face: "blank",
-        label: String(value)
+        label
       }
     ],
-    rawText: `1d10\nResultado: ${value}`,
+    rawText: `1d10\nResultado: ${label}`,
     createdAt
   };
 
@@ -1180,6 +1181,10 @@ function secureRandomInt(min: number, max: number): number {
   } while (buffer[0] >= limit);
 
   return lower + (buffer[0] % range);
+}
+
+function formatManualD10Label(value: number): string {
+  return value === 10 ? "0" : String(value);
 }
 
 function isUsefulRoll(roll: RollEvent | undefined): roll is RollEvent {

@@ -63,7 +63,7 @@ const defaultDiceAnimationScale = 0.75;
 const minDiceAnimationScale = 0.45;
 const maxDiceAnimationScale = 1.15;
 const defaultRelayUrl = "wss://demiplane-dice-room-relay.foxbyron.workers.dev";
-const extensionUiVersion = "0.1.109";
+const extensionUiVersion = "0.1.110";
 const pageBridgeMessageSource = "demiplane-dice-room-page";
 const pageDiceRollResponseWaitMs = 1400;
 const pageDiceRollResponseTtlMs = 8_000;
@@ -168,6 +168,7 @@ const messages = {
     approvePlayer: "Aprovar",
     rejectPlayer: "Recusar",
     kickPlayer: "Expulsar",
+    kickPlayerConfirm: (name: string) => `Expulsar ${name} da sala?`,
     connectedPlayers: (count: number) => `${count} ${count === 1 ? "pessoa conectada" : "pessoas conectadas"}`,
     waiting: "Aguardando rolagens",
     roomSettings: "Sala da mesa",
@@ -281,6 +282,7 @@ const messages = {
     approvePlayer: "Approve",
     rejectPlayer: "Reject",
     kickPlayer: "Kick",
+    kickPlayerConfirm: (name: string) => `Kick ${name} from the room?`,
     connectedPlayers: (count: number) => `${count} ${count === 1 ? "person connected" : "people connected"}`,
     waiting: "Waiting for rolls",
     roomSettings: "Table room",
@@ -3451,10 +3453,11 @@ function createPanel(): {
           </button>
           <button data-manual-d10 class="icon-button manual-d10" type="button" aria-label="Rolar 1d10" data-tooltip="Rolar 1d10">
             <svg viewBox="0 0 24 24" aria-hidden="true">
-              <path d="M12 2.8 20.2 8v8L12 21.2 3.8 16V8Z" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round" />
-              <path d="M3.8 8 12 12.8 20.2 8" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round" opacity="0.68" />
-              <path d="M12 12.8v8.4" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" opacity="0.68" />
-              <text x="12" y="10.2" text-anchor="middle">10</text>
+              <path d="M12 2.2 20.8 8.3 17.4 20.8H6.6L3.2 8.3Z" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linejoin="round" />
+              <path d="M12 2.2v18.6" fill="none" stroke="currentColor" stroke-width="1.25" stroke-linecap="round" opacity="0.75" />
+              <path d="M3.2 8.3 12 12.5 20.8 8.3" fill="none" stroke="currentColor" stroke-width="1.25" stroke-linejoin="round" opacity="0.75" />
+              <path d="M6.6 20.8 12 12.5 17.4 20.8" fill="none" stroke="currentColor" stroke-width="1.25" stroke-linejoin="round" opacity="0.75" />
+              <path d="M12 2.2 6.6 20.8M12 2.2l5.4 18.6" fill="none" stroke="currentColor" stroke-width="0.95" stroke-linejoin="round" opacity="0.42" />
             </svg>
           </button>
         </div>
@@ -3909,7 +3912,8 @@ function createPanel(): {
     }
 
     const clientId = action.dataset.clientId;
-    if (!clientId || !window.confirm(t("kickPlayer"))) {
+    const playerName = action.dataset.playerName || t("kickPlayer");
+    if (!clientId || !window.confirm(t("kickPlayerConfirm", playerName))) {
       return;
     }
 
@@ -4386,7 +4390,7 @@ function renderRoomPlayerChip(player: ConnectionState["players"][number], canMan
     : "";
   const canKick = canManagePlayers && player.roomRole !== "host" && player.clientId !== connectionState.clientId;
   const kickButton = canKick
-    ? ` <button class="room-player-action" type="button" data-kick-player data-client-id="${escapeHtml(player.clientId)}">${escapeHtml(t("kickPlayer"))}</button>`
+    ? ` <button class="room-player-action" type="button" data-kick-player data-client-id="${escapeHtml(player.clientId)}" data-player-name="${escapeHtml(name)}">${escapeHtml(t("kickPlayer"))}</button>`
     : "";
   return `<span class="${className}">${escapeHtml(name)}${roleSuffix ? ` <small>${escapeHtml(roleSuffix)}</small>` : ""}${sheetStatus}${kickButton}</span>`;
 }
@@ -7269,7 +7273,7 @@ function renderRoll(item: { roll: RollEvent; origin: "local" | "remote"; deliver
   const resultParts = [
     typeof roll.successes === "number" ? `<span class="chip">${escapeHtml(formatSuccesses(roll.successes))}</span>` : "",
     typeof roll.total === "number" ?
-      `<span class="chip">${escapeHtml(roll.source === "extension" ? t("result") : t("total"))} ${roll.total}</span>` :
+      `<span class="chip">${escapeHtml(roll.source === "extension" ? t("result") : t("total"))} ${escapeHtml(formatRollTotal(roll))}</span>` :
       "",
     roll.dice.length > 0 ? `<span class="chip">${escapeHtml(formatDiceSummary(roll.dice))}</span>` : ""
   ].filter(Boolean);
@@ -7475,7 +7479,7 @@ function describeResult(roll: RollEvent): string {
   }
 
   if (typeof roll.total === "number") {
-    return `${t("result")} ${roll.total}.`;
+    return `${t("result")} ${formatRollTotal(roll)}.`;
   }
 
   return t("resultCaptured");
@@ -7483,6 +7487,14 @@ function describeResult(roll: RollEvent): string {
 
 function formatSuccesses(successes: number): string {
   return `${successes} ${successes === 1 ? t("success") : t("successes")}`;
+}
+
+function formatRollTotal(roll: RollEvent): string {
+  if (roll.source === "extension" && roll.rollTitle.trim().toLowerCase() === "1d10" && roll.total === 10) {
+    return "0";
+  }
+
+  return String(roll.total);
 }
 
 function t<TKey extends keyof (typeof messages)["pt-BR"]>(

@@ -646,14 +646,36 @@ function kickRoomPlayer(host: Client, clientId: string): void {
   const room = rooms.get(host.roomId);
   const target = room ? [...room].find((client) => client.clientId === clientId) : undefined;
   if (!target) {
+    if (isPlayerApproved(host.roomId, clientId)) {
+      unmarkPlayerApproved(host.roomId, clientId);
+      touchRoom(host.roomId);
+      broadcastPresence(host.roomId);
+      return;
+    }
+
     send(host.socket, errorMessage("player_not_found", "Jogador nao encontrado na sala."));
     return;
   }
 
-  send(target.socket, errorMessage("kicked", "Voce foi removido da sala pelo narrador."));
-  target.socket.close(1008, "kicked");
-  room?.delete(target);
-  unmarkPlayerApproved(host.roomId, target.clientId);
+  const targetIdentity = getClientIdentityKey(target);
+  const kickedClientIds = new Set<string>();
+  for (const candidate of [...(room ?? [])]) {
+    if (
+      candidate.roomRole === "host" ||
+      (candidate.clientId !== clientId && getClientIdentityKey(candidate) !== targetIdentity)
+    ) {
+      continue;
+    }
+
+    kickedClientIds.add(candidate.clientId);
+    send(candidate.socket, errorMessage("kicked", "Voce foi removido da sala pelo narrador."));
+    candidate.socket.close(1008, "kicked");
+    room?.delete(candidate);
+  }
+
+  for (const kickedClientId of kickedClientIds) {
+    unmarkPlayerApproved(host.roomId, kickedClientId);
+  }
   touchRoom(host.roomId);
   broadcastPresence(host.roomId);
 }
@@ -938,15 +960,25 @@ function getPlayers(roomId: string): PresencePlayer[] {
     return [];
   }
 
-  return [...room].map((client) => ({
-    clientId: client.clientId,
-    playerName: client.playerName,
-    characterName: client.characterName,
-    roomRole: client.roomRole,
-    joinedAt: client.joinedAt,
-    sheetStatus: client.sheetActive ? "active" : "offline",
-    sheetSeenAt: client.sheetSeenAt
-  }));
+  const players = new Map<string, PresencePlayer>();
+  for (const client of room) {
+    const player: PresencePlayer = {
+      clientId: client.clientId,
+      playerName: client.playerName,
+      characterName: client.characterName,
+      roomRole: client.roomRole,
+      joinedAt: client.joinedAt,
+      sheetStatus: client.sheetActive ? "active" : "offline",
+      sheetSeenAt: client.sheetSeenAt
+    };
+    const key = getClientIdentityKey(client);
+    const current = players.get(key);
+    if (!current || shouldPreferPresencePlayer(player, current)) {
+      players.set(key, player);
+    }
+  }
+
+  return [...players.values()];
 }
 
 function hasRoomHost(roomId: string): boolean {
@@ -1048,6 +1080,32 @@ function normalizeRoll(roll: RollEvent, client: Client): RollEvent {
     playerName: client.playerName,
     characterName: roll.characterName || client.characterName
   };
+}
+
+function getClientIdentityKey(client: Pick<Client, "clientId" | "playerName" | "characterName" | "roomRole">): string {
+  if (client.roomRole === "host") {
+    return `host:${client.clientId}`;
+  }
+
+  return `player:${normalizeIdentityPart(client.characterName || client.playerName)}:${normalizeIdentityPart(client.playerName)}`;
+}
+
+function shouldPreferPresencePlayer(candidate: PresencePlayer, current: PresencePlayer): boolean {
+  if (candidate.sheetStatus !== current.sheetStatus) {
+    return candidate.sheetStatus === "active";
+  }
+
+  const candidateJoinedAt = Date.parse(candidate.joinedAt);
+  const currentJoinedAt = Date.parse(current.joinedAt);
+  if (Number.isFinite(candidateJoinedAt) && Number.isFinite(currentJoinedAt)) {
+    return candidateJoinedAt > currentJoinedAt;
+  }
+
+  return false;
+}
+
+function normalizeIdentityPart(value: string | undefined): string {
+  return (value ?? "").trim().toLocaleLowerCase();
 }
 
 function normalizeDiceControlEvent(event: SharedDiceControlEvent, client: Client): SharedDiceControlEvent {
