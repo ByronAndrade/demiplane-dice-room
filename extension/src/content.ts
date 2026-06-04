@@ -63,7 +63,7 @@ const defaultDiceAnimationScale = 0.75;
 const minDiceAnimationScale = 0.45;
 const maxDiceAnimationScale = 1.15;
 const defaultRelayUrl = "wss://demiplane-dice-room-relay.foxbyron.workers.dev";
-const extensionUiVersion = "0.1.111";
+const extensionUiVersion = "0.1.112";
 const pageBridgeMessageSource = "demiplane-dice-room-page";
 const pageDiceRollResponseWaitMs = 1400;
 const pageDiceRollResponseTtlMs = 8_000;
@@ -2440,9 +2440,9 @@ function createPanel(): {
         display: flex;
         align-items: center;
         justify-content: space-between;
-        gap: 8px;
+        gap: 6px;
         border-bottom: 1px solid rgba(190, 202, 220, 0.14);
-        padding: 10px 12px;
+        padding: 9px 8px;
         cursor: grab;
         user-select: none;
         touch-action: none;
@@ -2455,12 +2455,13 @@ function createPanel(): {
       .title {
         display: flex;
         align-items: center;
-        gap: 7px;
+        gap: 5px;
+        min-width: 0;
       }
 
       .brand-button {
-        width: 50px;
-        height: 34px;
+        width: 42px;
+        height: 32px;
         display: inline-grid;
         place-items: center;
         flex: 0 0 auto;
@@ -2482,29 +2483,29 @@ function createPanel(): {
       .dice-mark {
         position: relative;
         display: block;
-        width: 43px;
-        height: 29px;
-        transform: scale(0.78);
+        width: 34px;
+        height: 26px;
+        transform: scale(0.76);
       }
 
       .dice-mark i {
         position: absolute;
-        width: 11px;
-        height: 11px;
+        width: 10px;
+        height: 10px;
         border: 1px solid rgba(235, 241, 250, 0.92);
         background: #07090d;
         transform-origin: 50% 50%;
       }
 
       .dice-mark i:nth-child(1) {
-        left: 0;
-        top: 14px;
+        left: 1px;
+        top: 13px;
         transform: rotate(60deg);
       }
 
       .dice-mark i:nth-child(2) {
-        left: 16px;
-        top: 0;
+        left: 12px;
+        top: 1px;
         border-color: rgba(255, 205, 211, 0.96);
         background: #b91828;
         transform: rotate(38deg);
@@ -2512,8 +2513,8 @@ function createPanel(): {
       }
 
       .dice-mark i:nth-child(3) {
-        right: 0;
-        top: 14px;
+        right: 1px;
+        top: 13px;
         transform: rotate(79deg);
       }
 
@@ -2527,7 +2528,8 @@ function createPanel(): {
       .header-actions {
         display: flex;
         align-items: center;
-        gap: 7px;
+        gap: 5px;
+        min-width: 0;
       }
 
       .header-actions button {
@@ -2546,11 +2548,11 @@ function createPanel(): {
         display: inline-flex;
         align-items: center;
         justify-content: center;
-        min-width: 24px;
-        height: 22px;
+        min-width: 23px;
+        height: 21px;
         border: 1px solid rgba(190, 202, 220, 0.18);
         border-radius: 999px;
-        padding: 0 7px;
+        padding: 0 6px;
         color: #cbd5e1;
         background: rgba(255, 255, 255, 0.045);
         font-size: 11px;
@@ -2560,7 +2562,7 @@ function createPanel(): {
       .status {
         border: 1px solid #343d4a;
         border-radius: 999px;
-        padding: 4px 8px;
+        padding: 4px 7px;
         color: #dbe2ee;
         background: #1d242d;
         font-size: 11px;
@@ -2575,8 +2577,8 @@ function createPanel(): {
 
       .icon-button,
       .toggle {
-        width: 28px;
-        height: 28px;
+        width: 27px;
+        height: 27px;
         display: inline-grid;
         place-items: center;
         border: 1px solid #343d4a;
@@ -2603,8 +2605,8 @@ function createPanel(): {
       }
 
       .manual-d10 svg {
-        width: 18px;
-        height: 18px;
+        width: 17px;
+        height: 17px;
         display: block;
         margin: auto;
       }
