@@ -66,6 +66,29 @@ export async function getClientId(): Promise<string> {
   return clientId;
 }
 
+export async function getHostRoomKey(roomId: string): Promise<string> {
+  const cleanRoomId = cleanString(roomId);
+  if (!cleanRoomId) {
+    return "";
+  }
+
+  const stored = await chrome.storage.local.get({ hostRoomKeys: {} });
+  const hostRoomKeys = isStringRecord(stored.hostRoomKeys) ? stored.hostRoomKeys : {};
+  const existing = hostRoomKeys[cleanRoomId];
+  if (typeof existing === "string" && existing.length >= 32) {
+    return existing;
+  }
+
+  const hostRoomKey = createSecret();
+  await chrome.storage.local.set({
+    hostRoomKeys: {
+      ...hostRoomKeys,
+      [cleanRoomId]: hostRoomKey
+    }
+  });
+  return hostRoomKey;
+}
+
 function normalizeConfig(value: Partial<ExtensionConfig>): ExtensionConfig {
   const serverUrl = normalizeServerUrl(value.serverUrl);
 
@@ -110,4 +133,20 @@ function normalizeRelayKey(value: unknown, serverUrl: string): string {
 
 function cleanString(value: unknown): string {
   return typeof value === "string" ? value.trim() : "";
+}
+
+function isStringRecord(value: unknown): value is Record<string, string> {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return false;
+  }
+
+  return Object.entries(value).every(([key, item]) => typeof key === "string" && typeof item === "string");
+}
+
+function createSecret(): string {
+  const bytes = new Uint8Array(32);
+  crypto.getRandomValues(bytes);
+  return Array.from(bytes)
+    .map((value) => value.toString(16).padStart(2, "0"))
+    .join("");
 }

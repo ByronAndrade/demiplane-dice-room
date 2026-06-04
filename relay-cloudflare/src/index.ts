@@ -65,6 +65,7 @@ type HelloMessage = {
   roomRole?: "host" | "player";
   channel: string;
   password?: string;
+  hostKey?: string;
 };
 
 type RollMessage = {
@@ -100,6 +101,7 @@ type ActiveDiceRoll = {
 
 type RoomRecord = {
   hostClientId: string;
+  hostKeyHash?: string;
   createdAt: string;
   lastActivityAt: string;
 };
@@ -517,6 +519,7 @@ export class DiceRoomDurableObject extends DurableObject<Env> {
       this.sessions.get(existingHostSocket) ?? normalizeSession(existingHostSocket.deserializeAttachment()) :
       undefined;
     const roomRecord = await this.getRoomRecord();
+    const hostKeyHash = roomRole === "host" ? await hashHostKey(roomId, hello.hostKey) : undefined;
 
     if (
       this.isRateLimited(socket, `hello:client:${roomId}:${clientId}`, reconnectRateLimit) ||
@@ -538,7 +541,8 @@ export class DiceRoomDurableObject extends DurableObject<Env> {
       roomRole === "host" &&
       !existingHostSocket &&
       this.hostGraceClientId &&
-      this.hostGraceClientId !== clientId
+      this.hostGraceClientId !== clientId &&
+      !canResumeRoomAsHost(roomRecord, clientId, hostKeyHash)
     ) {
       this.send(socket, errorMessage("room_host_exists", "Esta sala aguarda o narrador original reconectar."));
       socket.close(1008, "room_host_exists");
@@ -550,7 +554,7 @@ export class DiceRoomDurableObject extends DurableObject<Env> {
       roomRole === "host" &&
       !existingHostSocket &&
       roomRecord?.hostClientId &&
-      roomRecord.hostClientId !== clientId
+      !canResumeRoomAsHost(roomRecord, clientId, hostKeyHash)
     ) {
       this.send(socket, errorMessage("room_host_exists", "Esta sala pertence ao narrador original."));
       socket.close(1008, "room_host_exists");
@@ -568,7 +572,7 @@ export class DiceRoomDurableObject extends DurableObject<Env> {
 
     if (roomRole === "host") {
       this.clearHostGraceTimer();
-      await this.rememberRoomHost(roomId, clientId);
+      await this.rememberRoomHost(roomId, clientId, hostKeyHash);
     }
 
     this.replaceReadyPlayer(roomId, clientId, socket);
@@ -1195,7 +1199,7 @@ export class DiceRoomDurableObject extends DurableObject<Env> {
     return isRoomRecord(record) ? record : undefined;
   }
 
-  private async rememberRoomHost(roomId: string, hostClientId: string): Promise<void> {
+  private async rememberRoomHost(roomId: string, hostClientId: string, hostKeyHash?: string): Promise<void> {
     const now = new Date().toISOString();
     const current = await this.getRoomRecord();
     const record: RoomRecord = {
@@ -1203,6 +1207,10 @@ export class DiceRoomDurableObject extends DurableObject<Env> {
       createdAt: current?.createdAt ?? now,
       lastActivityAt: now
     };
+    const nextHostKeyHash = hostKeyHash ?? current?.hostKeyHash;
+    if (nextHostKeyHash) {
+      record.hostKeyHash = nextHostKeyHash;
+    }
     await this.ctx.storage.put(roomStorageKey, record);
     await this.scheduleRoomExpiry(record);
   }
@@ -1358,7 +1366,8 @@ function isHelloMessage(value: unknown): value is HelloMessage {
     isBoundedString(message.channel, 1, 120) &&
     (message.roomRole === undefined || message.roomRole === "host" || message.roomRole === "player") &&
     (message.characterName === undefined || isBoundedString(message.characterName, 0, 80)) &&
-    (message.password === undefined || isBoundedString(message.password, 0, 240))
+    (message.password === undefined || isBoundedString(message.password, 0, 240)) &&
+    (message.hostKey === undefined || isBoundedString(message.hostKey, 32, 160))
   );
 }
 
@@ -1538,11 +1547,36 @@ function isRoomRecord(value: unknown): value is RoomRecord {
   const record = value as Partial<RoomRecord>;
   return (
     isBoundedString(record.hostClientId, 8, 120) &&
+    (record.hostKeyHash === undefined || isBoundedString(record.hostKeyHash, 32, 128)) &&
     typeof record.createdAt === "string" &&
     !Number.isNaN(Date.parse(record.createdAt)) &&
     typeof record.lastActivityAt === "string" &&
     !Number.isNaN(Date.parse(record.lastActivityAt))
   );
+}
+
+function canResumeRoomAsHost(roomRecord: RoomRecord | undefined, clientId: string, hostKeyHash?: string): boolean {
+  if (!roomRecord) {
+    return false;
+  }
+
+  if (roomRecord.hostClientId === clientId) {
+    return true;
+  }
+
+  return Boolean(roomRecord.hostKeyHash && hostKeyHash && roomRecord.hostKeyHash === hostKeyHash);
+}
+
+async function hashHostKey(roomId: string, hostKey: string | undefined): Promise<string | undefined> {
+  const cleanHostKey = hostKey?.trim();
+  if (!cleanHostKey) {
+    return undefined;
+  }
+
+  const hash = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(`${roomId}\0${cleanHostKey}`));
+  return Array.from(new Uint8Array(hash))
+    .map((value) => value.toString(16).padStart(2, "0"))
+    .join("");
 }
 
 function isUsefulRoll(roll: RollEvent): boolean {

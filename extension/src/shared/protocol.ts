@@ -156,7 +156,17 @@ export type ServerMessage =
     };
 
 export type ClientMessage =
-  | { type: "hello"; version: 1; clientId: string; playerName: string; characterName?: string; roomRole: "host" | "player"; channel: string; password?: string }
+  | {
+      type: "hello";
+      version: 1;
+      clientId: string;
+      playerName: string;
+      characterName?: string;
+      roomRole: "host" | "player";
+      channel: string;
+      password?: string;
+      hostKey?: string;
+    }
   | { type: "roll"; version: 1; roll: RollEvent }
   | { type: "approve_player"; version: 1; clientId: string }
   | { type: "reject_player"; version: 1; clientId: string }

@@ -58,6 +58,7 @@ type HostGrace = {
 
 type RoomRecord = {
   hostClientId: string;
+  hostKeyHash?: string;
   createdAt: number;
   lastActivityAt: number;
 };
@@ -421,6 +422,7 @@ function joinRoom(socket: WebSocket, hello: HelloMessage): JoinResult {
   const existingHost = findRoomHost(roomId);
   const hostGrace = hostGraceTimers.get(roomId);
   const roomRecord = roomRecords.get(roomId);
+  const hostKeyHash = roomRole === "host" ? hashHostKey(roomId, hello.hostKey) : undefined;
   const activeRoomCount = new Set([...rooms.keys(), ...hostGraceTimers.keys(), ...roomRecords.keys()]).size;
 
   if (
@@ -449,13 +451,19 @@ function joinRoom(socket: WebSocket, hello: HelloMessage): JoinResult {
     return undefined;
   }
 
-  if (roomRole === "host" && hostGrace && !existingHost && hostGrace.hostClientId !== hello.clientId) {
+  if (
+    roomRole === "host" &&
+    hostGrace &&
+    !existingHost &&
+    hostGrace.hostClientId !== hello.clientId &&
+    !canResumeRoomAsHost(roomRecord, hello.clientId, hostKeyHash)
+  ) {
     send(socket, errorMessage("room_host_exists", "Esta sala aguarda o narrador original reconectar."));
     socket.close(1008, "room_host_exists");
     return undefined;
   }
 
-  if (roomRole === "host" && roomRecord && !existingHost && roomRecord.hostClientId !== hello.clientId) {
+  if (roomRole === "host" && roomRecord && !existingHost && !canResumeRoomAsHost(roomRecord, hello.clientId, hostKeyHash)) {
     send(socket, errorMessage("room_host_exists", "Esta sala pertence ao narrador original."));
     socket.close(1008, "room_host_exists");
     return undefined;
@@ -469,7 +477,7 @@ function joinRoom(socket: WebSocket, hello: HelloMessage): JoinResult {
 
   if (roomRole === "host") {
     clearHostGraceTimer(roomId);
-    rememberRoomHost(roomId, hello.clientId);
+    rememberRoomHost(roomId, hello.clientId, hostKeyHash);
   }
 
   replaceReadyClient(roomId, hello.clientId, socket);
@@ -790,14 +798,40 @@ function clearHostGraceTimer(roomId: string): void {
   hostGraceTimers.delete(roomId);
 }
 
-function rememberRoomHost(roomId: string, hostClientId: string): void {
+function canResumeRoomAsHost(roomRecord: RoomRecord | undefined, clientId: string, hostKeyHash?: string): boolean {
+  if (!roomRecord) {
+    return false;
+  }
+
+  if (roomRecord.hostClientId === clientId) {
+    return true;
+  }
+
+  return Boolean(roomRecord.hostKeyHash && hostKeyHash && roomRecord.hostKeyHash === hostKeyHash);
+}
+
+function rememberRoomHost(roomId: string, hostClientId: string, hostKeyHash?: string): void {
   const now = Date.now();
   const current = roomRecords.get(roomId);
-  roomRecords.set(roomId, {
+  const record: RoomRecord = {
     hostClientId,
     createdAt: current?.createdAt ?? now,
     lastActivityAt: now
-  });
+  };
+  const nextHostKeyHash = hostKeyHash ?? current?.hostKeyHash;
+  if (nextHostKeyHash) {
+    record.hostKeyHash = nextHostKeyHash;
+  }
+  roomRecords.set(roomId, record);
+}
+
+function hashHostKey(roomId: string, hostKey: string | undefined): string | undefined {
+  const cleanHostKey = hostKey?.trim();
+  if (!cleanHostKey) {
+    return undefined;
+  }
+
+  return createHash("sha256").update(`${roomId}\0${cleanHostKey}`).digest("hex");
 }
 
 function touchRoom(roomId: string): void {

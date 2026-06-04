@@ -10,7 +10,8 @@ export const helloMessageSchema = z.object({
   characterName: z.string().trim().max(80).optional().default(""),
   roomRole: z.enum(["host", "player"]).optional().default("player"),
   channel: z.string().trim().min(1).max(120),
-  password: z.string().max(240).optional().default("")
+  password: z.string().max(240).optional().default(""),
+  hostKey: z.string().trim().min(32).max(160).optional()
 });
 
 export const diceValueSchema = z.object({

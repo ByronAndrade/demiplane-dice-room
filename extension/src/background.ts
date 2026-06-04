@@ -15,7 +15,7 @@ import {
   type SharedDiceControlEvent,
   type StoredRoll
 } from "./shared/protocol";
-import { getClientId, getConfig, saveConfig, type ExtensionConfig } from "./shared/storage";
+import { getClientId, getConfig, getHostRoomKey, saveConfig, type ExtensionConfig } from "./shared/storage";
 
 type RuntimeRequest =
   | { kind: "popup:get-state" }
@@ -203,9 +203,11 @@ async function connect(): Promise<void> {
   });
 
   const publicCharacterName = await getPublicCharacterName(config);
+  let roomId: string;
   let socketUrl: string;
   try {
-    socketUrl = createRoomSocketUrl(config.serverUrl, await createRoomId(config.channel, config.password), config.relayKey);
+    roomId = await createRoomId(config.channel, config.password);
+    socketUrl = createRoomSocketUrl(config.serverUrl, roomId, config.relayKey);
   } catch {
     setConnectionState({
       status: "error",
@@ -218,6 +220,7 @@ async function connect(): Promise<void> {
     });
     return;
   }
+  const hostKey = config.roomRole === "host" ? await getHostRoomKey(roomId) : undefined;
 
   const nextSocket = new WebSocket(socketUrl);
   socket = nextSocket;
@@ -225,7 +228,7 @@ async function connect(): Promise<void> {
   nextSocket.addEventListener("open", () => {
     startSocketKeepAlive(nextSocket);
     startSheetPresenceMonitor(nextSocket);
-    sendSocketMessage({
+    const helloMessage = {
       type: "hello",
       version: protocolVersion,
       clientId,
@@ -234,7 +237,8 @@ async function connect(): Promise<void> {
       roomRole: config.roomRole,
       channel: config.channel,
       password: config.password
-    });
+    } as const;
+    sendSocketMessage(hostKey ? { ...helloMessage, hostKey } : helloMessage);
 
     setConnectionState({
       ...connectionState,

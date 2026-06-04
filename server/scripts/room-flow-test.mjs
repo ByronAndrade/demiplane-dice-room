@@ -86,7 +86,8 @@ async function runScenario() {
     clientId: `host-${randomUUID()}`,
     playerName: "Byron",
     characterName: "Narrador",
-    roomRole: "host"
+    roomRole: "host",
+    hostKey: createHostKey()
   });
   const hostWelcome = await hostClient.waitFor((message) => message.type === "welcome", "host welcome");
   assertEqual(hostWelcome.players.length, 1, "host starts alone in the room");
@@ -230,9 +231,11 @@ async function runScenario() {
   players[0].sendRoll(persistedApprovalRoll);
   await waitForRoll([resumedHost, ...players], persistedApprovalRoll.id, "approved player can publish after table resumes");
 
-  await verifyDuplicateIdentityKick(resumedHost, players);
+  const recoveredHost = await verifyHostRecoveryWithNewClientId(resumedHost, players);
 
-  resumedHost.send({ type: "leave_room", version: 1 });
+  await verifyDuplicateIdentityKick(recoveredHost, players);
+
+  recoveredHost.send({ type: "leave_room", version: 1 });
   await Promise.all(
     players.map((player) =>
       player.waitFor((message) => message.type === "error" && message.code === "room_closed", `${player.playerName} room_closed`)
@@ -254,7 +257,8 @@ async function reconnectClient(client) {
     clientId: client.clientId,
     playerName: client.playerName,
     characterName: client.characterName,
-    roomRole: client.roomRole
+    roomRole: client.roomRole,
+    hostKey: client.hostKey
   });
   await nextClient.waitFor((message) => message.type === "welcome", `${client.playerName} reconnect welcome`);
   return nextClient;
@@ -282,6 +286,40 @@ async function verifyDuplicateIdentityKick(hostClient, players) {
   );
   players.splice(players.indexOf(original), 1);
   await waitForPresenceCount([hostClient, ...players], players.length + 1);
+}
+
+async function verifyHostRecoveryWithNewClientId(hostClient, players) {
+  const hostIdentity = toIdentity(hostClient);
+  assert(hostIdentity.hostKey && hostIdentity.hostKey.length >= 32, "host identity keeps owner key before recovery");
+  hostClient.close();
+  clients.delete(hostClient);
+  await delay(250);
+
+  const impostorHost = await connectClient({
+    ...hostIdentity,
+    clientId: `impostor-host-${randomUUID()}`,
+    hostKey: createHostKey("wrong")
+  });
+  await delay(250);
+  assert(
+    !impostorHost.messages.some((message) => message.type === "welcome"),
+    "wrong owner key cannot take over host role"
+  );
+  assertEqual(impostorHost.socket.readyState, WebSocket.CLOSED, "wrong owner key closes host takeover socket");
+  impostorHost.close();
+  clients.delete(impostorHost);
+
+  const recoveredHost = await connectClient({
+    ...hostIdentity,
+    clientId: `recovered-host-${randomUUID()}`
+  });
+  const welcome = await recoveredHost.waitFor((message) => message.type === "welcome", "host recovery with owner key welcome");
+  assert(
+    welcome.history.some((roll) => roll.id.includes("persisted-approval")),
+    "host recovery keeps persistent room history"
+  );
+  await waitForPresenceCount([recoveredHost, ...players], players.length + 1);
+  return recoveredHost;
 }
 
 async function verifyPlayerRollWhileHostOffline(hostClient, players) {
@@ -345,8 +383,13 @@ function toIdentity(client) {
     clientId: client.clientId,
     playerName: client.playerName,
     characterName: client.characterName,
-    roomRole: client.roomRole
+    roomRole: client.roomRole,
+    hostKey: client.hostKey
   };
+}
+
+function createHostKey(label = "host") {
+  return `${label}-${randomUUID()}-${randomUUID()}`;
 }
 
 async function waitForPresenceCount(targetClients, expectedCount) {
@@ -412,11 +455,12 @@ async function waitForSheetStatus(targetClients, clientId, sheetStatus, label) {
 }
 
 class RoomClient {
-  constructor({ clientId, playerName, characterName, roomRole }) {
+  constructor({ clientId, playerName, characterName, roomRole, hostKey }) {
     this.clientId = clientId;
     this.playerName = playerName;
     this.characterName = characterName;
     this.roomRole = roomRole;
+    this.hostKey = hostKey;
     this.messages = [];
     this.waiters = new Set();
   }
@@ -435,7 +479,8 @@ class RoomClient {
       characterName: this.characterName,
       roomRole: this.roomRole,
       channel,
-      password
+      password,
+      hostKey: this.hostKey
     });
   }
 
@@ -504,7 +549,7 @@ class RoomClient {
     for (const waiter of [...this.waiters]) {
       clearTimeout(waiter.timer);
       this.waiters.delete(waiter);
-      waiter.reject(error);
+      waiter.reject(new Error(`${error.message} while waiting for ${waiter.label}. Last messages: ${summarizeMessages(this.messages)}`));
     }
   }
 }
