@@ -23,6 +23,7 @@ const maxPendingPlayers = 20;
 const maxActiveRooms = readPositiveInt(process.env.DICE_ROOM_MAX_ROOMS, 100);
 const maxRelayConnections = readPositiveInt(process.env.DICE_ROOM_MAX_CONNECTIONS, 500);
 const hostReconnectGraceMs = 120_000;
+const roomIdleTtlMs = 45 * 24 * 60 * 60 * 1000;
 const diceControlLockMs = 4_000;
 const activeDiceRollTtlMs = 18_000;
 const adminToken = process.env.DICE_ROOM_ADMIN_TOKEN ?? "";
@@ -53,6 +54,12 @@ type PendingClient = {
 type HostGrace = {
   hostClientId: string;
   timer: ReturnType<typeof setTimeout>;
+};
+
+type RoomRecord = {
+  hostClientId: string;
+  createdAt: number;
+  lastActivityAt: number;
 };
 
 type DiceControlLock = {
@@ -94,6 +101,7 @@ const roomHistories = new Map<string, RollEvent[]>();
 const activeDiceRolls = new Map<string, ActiveDiceRoll[]>();
 const pendingRooms = new Map<string, Set<PendingClient>>();
 const approvedRoomClients = new Map<string, Set<string>>();
+const roomRecords = new Map<string, RoomRecord>();
 const hostGraceTimers = new Map<string, HostGrace>();
 const diceControlLocks = new Map<string, DiceControlLock>();
 const rateBuckets = new Map<string, RateBucket>();
@@ -113,6 +121,7 @@ heartbeatInterval.unref();
 
 const rateBucketPruneInterval = setInterval(() => {
   pruneRateBuckets();
+  pruneIdleRooms();
 }, 60_000);
 rateBucketPruneInterval.unref();
 
@@ -290,6 +299,7 @@ wss.on("connection", (socket, request) => {
     }
 
     appendHistory(client.roomId, roll);
+    touchRoom(client.roomId);
     rememberActiveDiceRoll(client.roomId, roll);
     broadcast(client.roomId, { type: "roll", version: 1, roomId: client.roomId, roll });
   });
@@ -410,12 +420,14 @@ function joinRoom(socket: WebSocket, hello: HelloMessage): JoinResult {
   const roomRole = hello.roomRole === "host" ? "host" : "player";
   const existingHost = findRoomHost(roomId);
   const hostGrace = hostGraceTimers.get(roomId);
-  const activeRoomCount = new Set([...rooms.keys(), ...hostGraceTimers.keys()]).size;
+  const roomRecord = roomRecords.get(roomId);
+  const activeRoomCount = new Set([...rooms.keys(), ...hostGraceTimers.keys(), ...roomRecords.keys()]).size;
 
   if (
     roomRole === "host" &&
     !rooms.has(roomId) &&
     !hostGrace &&
+    !roomRecord &&
     activeRoomCount >= maxActiveRooms
   ) {
     send(socket, errorMessage("relay_busy", "Relay comunitario cheio no momento. Tente novamente em instantes."));
@@ -443,7 +455,13 @@ function joinRoom(socket: WebSocket, hello: HelloMessage): JoinResult {
     return undefined;
   }
 
-  if (roomRole === "player" && !existingHost && !hostGrace && !isPlayerApproved(roomId, hello.clientId)) {
+  if (roomRole === "host" && roomRecord && !existingHost && roomRecord.hostClientId !== hello.clientId) {
+    send(socket, errorMessage("room_host_exists", "Esta sala pertence ao narrador original."));
+    socket.close(1008, "room_host_exists");
+    return undefined;
+  }
+
+  if (roomRole === "player" && !existingHost && !hostGrace && !roomRecord && !isPlayerApproved(roomId, hello.clientId)) {
     send(socket, errorMessage("room_not_found", "A sala ainda nao foi criada pelo narrador."));
     socket.close(1008, "room_not_found");
     return undefined;
@@ -451,6 +469,7 @@ function joinRoom(socket: WebSocket, hello: HelloMessage): JoinResult {
 
   if (roomRole === "host") {
     clearHostGraceTimer(roomId);
+    rememberRoomHost(roomId, hello.clientId);
   }
 
   replaceReadyClient(roomId, hello.clientId, socket);
@@ -463,6 +482,12 @@ function joinRoom(socket: WebSocket, hello: HelloMessage): JoinResult {
   }
 
   if (roomRole === "player" && !isPlayerApproved(roomId, hello.clientId)) {
+    if (!existingHost) {
+      send(socket, errorMessage("host_offline", "O narrador precisa estar online para aprovar novos jogadores."));
+      socket.close(1008, "host_offline");
+      return undefined;
+    }
+
     const pendingRoom = pendingRooms.get(roomId);
     const alreadyPending = pendingRoom ? [...pendingRoom].some((pending) => pending.clientId === hello.clientId) : false;
     if (!alreadyPending && (pendingRoom?.size ?? 0) >= maxPendingPlayers) {
@@ -503,6 +528,7 @@ function joinRoom(socket: WebSocket, hello: HelloMessage): JoinResult {
 
   room.add(client);
   rooms.set(roomId, room);
+  touchRoom(roomId);
 
   send(client.socket, {
     type: "welcome",
@@ -558,6 +584,7 @@ function approvePendingPlayer(host: Client, clientId: string): void {
 
   removePendingPlayer(pending);
   markPlayerApproved(host.roomId, pending.clientId);
+  touchRoom(host.roomId);
 
   const client: Client = {
     socket: pending.socket,
@@ -627,6 +654,7 @@ function kickRoomPlayer(host: Client, clientId: string): void {
   target.socket.close(1008, "kicked");
   room?.delete(target);
   unmarkPlayerApproved(host.roomId, target.clientId);
+  touchRoom(host.roomId);
   broadcastPresence(host.roomId);
 }
 
@@ -648,8 +676,9 @@ function leaveRoom(client: Client, options: { manual: boolean }): void {
     }
 
     if (room.size === 0) {
-      rooms.set(client.roomId, room);
+      rooms.delete(client.roomId);
     }
+    rememberRoomHost(client.roomId, client.clientId);
     scheduleHostGraceRoomClose(client.roomId, client.clientId);
     broadcastPresence(client.roomId);
     return;
@@ -688,6 +717,7 @@ function closeRoom(roomId: string): void {
   roomHistories.delete(roomId);
   activeDiceRolls.delete(roomId);
   approvedRoomClients.delete(roomId);
+  roomRecords.delete(roomId);
 
   const pendingRoom = pendingRooms.get(roomId);
   if (pendingRoom) {
@@ -719,7 +749,10 @@ function scheduleHostGraceRoomClose(roomId: string, hostClientId: string): void 
   clearHostGraceTimer(roomId);
   const timer = setTimeout(() => {
     hostGraceTimers.delete(roomId);
-    closeRoom(roomId);
+    if (rooms.get(roomId)?.size === 0) {
+      rooms.delete(roomId);
+    }
+    broadcastPresence(roomId);
   }, hostReconnectGraceMs);
   timer.unref();
   hostGraceTimers.set(roomId, { hostClientId, timer });
@@ -733,6 +766,37 @@ function clearHostGraceTimer(roomId: string): void {
 
   clearTimeout(grace.timer);
   hostGraceTimers.delete(roomId);
+}
+
+function rememberRoomHost(roomId: string, hostClientId: string): void {
+  const now = Date.now();
+  const current = roomRecords.get(roomId);
+  roomRecords.set(roomId, {
+    hostClientId,
+    createdAt: current?.createdAt ?? now,
+    lastActivityAt: now
+  });
+}
+
+function touchRoom(roomId: string): void {
+  const current = roomRecords.get(roomId);
+  if (!current) {
+    return;
+  }
+
+  roomRecords.set(roomId, {
+    ...current,
+    lastActivityAt: Date.now()
+  });
+}
+
+function pruneIdleRooms(): void {
+  const cutoff = Date.now() - roomIdleTtlMs;
+  for (const [roomId, record] of roomRecords) {
+    if (record.lastActivityAt < cutoff) {
+      closeRoom(roomId);
+    }
+  }
 }
 
 function broadcastPresence(roomId: string): void {
@@ -1410,6 +1474,17 @@ function readPositiveInt(value: string | undefined, fallback: number): number {
 }
 
 function isUsefulRoll(roll: RollEvent): boolean {
+  if (roll.source === "extension") {
+    return (
+      roll.rollTitle.trim().toLowerCase() === "1d10" &&
+      typeof roll.total === "number" &&
+      roll.total >= 1 &&
+      roll.total <= 10 &&
+      roll.dice.length === 1 &&
+      roll.dice[0]?.sides === 10
+    );
+  }
+
   return (
     isUsefulRollTitle(roll.rollTitle) &&
     typeof roll.successes === "number" &&

@@ -30,12 +30,14 @@ type RuntimeRequest =
   | { kind: "content:sheet-activity"; active: boolean }
   | { kind: "content:dice-control"; event: SharedDiceControlEvent }
   | { kind: "content:dice-clear"; event: SharedDiceClearEvent }
+  | { kind: "content:manual-d10" }
   | { kind: "content:captured-roll"; roll: CapturedRoll };
 
 const localHistoryVersion = 9;
 const liveRollStorageKey = "lastLiveRoll";
 const roomHistoryStorageKey = "roomHistories";
 const activeDiceRollStorageKey = "activeDiceRolls";
+const pendingRoomRollStorageKey = "pendingRoomRolls";
 const panelUiStorageKey = "diceRoomPanelUi";
 const socketKeepAliveMs = 20_000;
 const sheetActivityFreshMs = 15_000;
@@ -124,6 +126,9 @@ async function handleRuntimeMessage(message: RuntimeRequest): Promise<unknown> {
 
     case "content:dice-clear":
       return publishDiceClearEvent(message.event);
+
+    case "content:manual-d10":
+      return publishManualD10Roll();
 
     case "popup:save-config": {
       const current = await getConfig();
@@ -276,7 +281,7 @@ async function connect(): Promise<void> {
           connectedAt: undefined
         });
         activeHistoryRoomId = undefined;
-        pendingRoomRolls = [];
+        clearPendingRoomRolls();
         void restoreLocalHistory({ preserveLocalRoomRolls: true });
         return;
       }
@@ -291,7 +296,7 @@ async function connect(): Promise<void> {
         connectedAt: undefined
       });
       activeHistoryRoomId = undefined;
-      pendingRoomRolls = [];
+      clearPendingRoomRolls();
       void restoreLocalHistory({ preserveLocalRoomRolls: true });
       return;
     }
@@ -344,7 +349,7 @@ async function disconnect(): Promise<void> {
     connectedAt: undefined
   });
   activeHistoryRoomId = undefined;
-  pendingRoomRolls = [];
+  clearPendingRoomRolls();
   await restoreLocalHistory({ preserveLocalRoomRolls: true });
 }
 
@@ -371,6 +376,45 @@ async function publishCapturedRoll(captured: CapturedRoll): Promise<{ ok: true; 
     createdAt
   };
 
+  return publishRollEvent(roll);
+}
+
+async function publishManualD10Roll(): Promise<{ ok: true; delivered: string; roll: RollEvent }> {
+  const config = await getConfig();
+  const clientId = await getClientId();
+  const createdAt = new Date().toISOString();
+  const value = secureRandomInt(1, 10);
+  const publicCharacterName = await getPublicCharacterName(config);
+  const roll: RollEvent = {
+    type: "roll",
+    version: protocolVersion,
+    id: createRollId(clientId, `manual-d10:${value}:${crypto.randomUUID()}`, createdAt),
+    clientId,
+    playerName: config.playerName || "Jogador",
+    characterName: publicCharacterName,
+    source: "extension",
+    system: "generic",
+    rollTitle: "1d10",
+    successes: null,
+    total: value,
+    dice: [
+      {
+        kind: "regular",
+        value,
+        sides: 10,
+        face: "blank",
+        label: String(value)
+      }
+    ],
+    rawText: `1d10\nResultado: ${value}`,
+    createdAt
+  };
+
+  return publishRollEvent(roll);
+}
+
+async function publishRollEvent(roll: RollEvent): Promise<{ ok: true; delivered: string; roll: RollEvent }> {
+  const config = await getConfig();
   const canSend = socket?.readyState === WebSocket.OPEN && connectionState.status === "connected";
   const shouldUseRoom = await shouldUseRoomDelivery(config);
   if ((canSend || shouldUseRoom) && !activeHistoryRoomId) {
@@ -443,6 +487,7 @@ function queueRoomRoll(roll: RollEvent): void {
 
   pendingRoomRolls.push(roll);
   pendingRoomRolls = pendingRoomRolls.slice(-maxPendingRoomRolls);
+  void savePendingRoomRolls();
 }
 
 function flushPendingRoomRolls(): void {
@@ -457,6 +502,7 @@ function flushPendingRoomRolls(): void {
 
 function forgetPendingRoomRoll(rollId: string): void {
   pendingRoomRolls = pendingRoomRolls.filter((roll) => roll.id !== rollId);
+  void savePendingRoomRolls();
 }
 
 function markPendingRoomRollRejected(rollId: string | undefined): void {
@@ -466,6 +512,7 @@ function markPendingRoomRollRejected(rollId: string | undefined): void {
   }
 
   pendingRoomRolls = pendingRoomRolls.filter((roll) => roll.id !== rejectedRollId);
+  void savePendingRoomRolls();
   setRecentRolls(
     recentRolls.map((item): StoredRoll =>
       item.roll.id === rejectedRollId && item.origin === "local" && item.delivery === "sent"
@@ -703,7 +750,7 @@ function handleServerMessage(message: ServerMessage): void {
           connectedAt: undefined
         });
         activeHistoryRoomId = undefined;
-        pendingRoomRolls = [];
+        clearPendingRoomRolls();
         void restoreLocalHistory({ preserveLocalRoomRolls: true });
         return;
       }
@@ -729,6 +776,7 @@ function isTerminalRoomError(code: string): boolean {
 
 async function bootstrap(): Promise<void> {
   recentRolls = await loadStoredRolls();
+  pendingRoomRolls = await loadPendingRoomRolls();
   await maybeAutoConnect();
 }
 
@@ -784,6 +832,7 @@ async function syncRoomHistory(roomId: string, history: RollEvent[]): Promise<vo
   const historyIds = new Set(history.map((roll) => roll.id));
   if (historyIds.size > 0) {
     pendingRoomRolls = pendingRoomRolls.filter((roll) => !historyIds.has(roll.id));
+    void savePendingRoomRolls();
   }
 
   const storedHistory: StoredRoll[] = [...history]
@@ -883,6 +932,24 @@ async function loadStoredRolls(): Promise<StoredRoll[]> {
   }
 
   return Array.isArray(stored.recentRolls) ? (stored.recentRolls as StoredRoll[]).filter((item) => isUsefulRoll(item.roll)) : [];
+}
+
+async function loadPendingRoomRolls(): Promise<RollEvent[]> {
+  const stored = await chrome.storage.local.get({ [pendingRoomRollStorageKey]: [] });
+  return Array.isArray(stored[pendingRoomRollStorageKey])
+    ? (stored[pendingRoomRollStorageKey] as RollEvent[]).filter(isUsefulRoll).slice(-maxPendingRoomRolls)
+    : [];
+}
+
+function savePendingRoomRolls(): Promise<void> {
+  return chrome.storage.local.set({
+    [pendingRoomRollStorageKey]: pendingRoomRolls.filter(isUsefulRoll).slice(-maxPendingRoomRolls)
+  });
+}
+
+function clearPendingRoomRolls(): void {
+  pendingRoomRolls = [];
+  void savePendingRoomRolls();
 }
 
 async function loadSessionRoomHistory(roomId: string): Promise<StoredRoll[]> {
@@ -1097,9 +1164,38 @@ function createTestRoll(): CapturedRoll {
   };
 }
 
+function secureRandomInt(min: number, max: number): number {
+  const lower = Math.ceil(min);
+  const upper = Math.floor(max);
+  const range = upper - lower + 1;
+  if (range <= 0) {
+    return lower;
+  }
+
+  const maxUint = 0xffffffff;
+  const limit = maxUint - (maxUint % range);
+  const buffer = new Uint32Array(1);
+  do {
+    crypto.getRandomValues(buffer);
+  } while (buffer[0] >= limit);
+
+  return lower + (buffer[0] % range);
+}
+
 function isUsefulRoll(roll: RollEvent | undefined): roll is RollEvent {
   if (!roll) {
     return false;
+  }
+
+  if (roll.source === "extension") {
+    return (
+      roll.rollTitle.trim().toLowerCase() === "1d10" &&
+      typeof roll.total === "number" &&
+      roll.total >= 1 &&
+      roll.total <= 10 &&
+      roll.dice.length === 1 &&
+      roll.dice[0]?.sides === 10
+    );
   }
 
   return (

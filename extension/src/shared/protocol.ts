@@ -9,6 +9,7 @@ export type DiceValue = {
   value: number;
   sides?: number;
   face?: DiceFace;
+  label?: string;
 };
 
 export type PresencePlayer = {
@@ -57,7 +58,7 @@ export type RollEvent = {
   clientId: string;
   playerName: string;
   characterName?: string;
-  source: "demiplane";
+  source: "demiplane" | "extension";
   system: string;
   rollTitle: string;
   successes?: number | null;

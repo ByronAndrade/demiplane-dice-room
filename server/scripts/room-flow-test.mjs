@@ -219,7 +219,17 @@ async function runScenario() {
   reconnectedHost.sendRoll(hostAfterReconnectRoll);
   await waitForRoll([reconnectedHost, ...players], hostAfterReconnectRoll.id, "host can publish after reconnect");
 
-  reconnectedHost.send({ type: "leave_room", version: 1 });
+  const manualD10Roll = createManualD10Roll(players[0], "manual-d10", 7);
+  players[0].sendRoll(manualD10Roll);
+  await waitForRoll([reconnectedHost, ...players], manualD10Roll.id, "extension manual d10 reaches everyone");
+
+  const hostAfterOfflineRoll = await verifyPlayerRollWhileHostOffline(reconnectedHost, players);
+  const resumedHost = await reconnectRoomAfterEveryoneClosed(hostAfterOfflineRoll, players);
+  const persistedApprovalRoll = createRoll(players[0], "persisted-approval", "STAMINA + SURVIVAL", 2);
+  players[0].sendRoll(persistedApprovalRoll);
+  await waitForRoll([resumedHost, ...players], persistedApprovalRoll.id, "approved player can publish after table resumes");
+
+  resumedHost.send({ type: "leave_room", version: 1 });
   await Promise.all(
     players.map((player) =>
       player.waitFor((message) => message.type === "error" && message.code === "room_closed", `${player.playerName} room_closed`)
@@ -245,6 +255,71 @@ async function reconnectClient(client) {
   });
   await nextClient.waitFor((message) => message.type === "welcome", `${client.playerName} reconnect welcome`);
   return nextClient;
+}
+
+async function verifyPlayerRollWhileHostOffline(hostClient, players) {
+  const hostIdentity = toIdentity(hostClient);
+  hostClient.close();
+  clients.delete(hostClient);
+  await delay(250);
+
+  const offlineHostRoll = createRoll(players[0], "host-offline-delivery", "MANIPULATION + SUBTERFUGE", 3);
+  players[0].sendRoll(offlineHostRoll);
+  await waitForRoll(players, offlineHostRoll.id, "player roll stays visible while host is offline");
+
+  const resumedHost = await connectClient(hostIdentity);
+  const welcome = await resumedHost.waitFor((message) => message.type === "welcome", "host returns after offline player roll");
+  assert(
+    welcome.history.some((roll) => roll.id === offlineHostRoll.id),
+    "host receives offline player roll from room history"
+  );
+  await waitForPresenceCount([resumedHost, ...players], players.length + 1);
+  return resumedHost;
+}
+
+async function reconnectRoomAfterEveryoneClosed(hostClient, players) {
+  const hostIdentity = toIdentity(hostClient);
+  const playerIdentities = players.map(toIdentity);
+  closeClients([hostClient, ...players]);
+  await delay(250);
+
+  const resumedHost = await connectClient(hostIdentity);
+  const hostWelcome = await resumedHost.waitFor((message) => message.type === "welcome", "persistent host welcome");
+  assert(
+    hostWelcome.history.some((roll) => roll.rollTitle === "1d10" && roll.source === "extension"),
+    "persistent room preserves recent history"
+  );
+
+  const resumedPlayers = [];
+  for (const identity of playerIdentities) {
+    const player = await connectClient(identity);
+    const welcome = await player.waitFor((message) => message.type === "welcome", `${player.playerName} persistent approval welcome`);
+    assert(
+      !welcome.pendingPlayers?.some((pending) => pending.clientId === player.clientId),
+      `${player.playerName} does not return as pending after approval`
+    );
+    resumedPlayers.push(player);
+  }
+
+  players.splice(0, players.length, ...resumedPlayers);
+  await waitForPresenceCount([resumedHost, ...players], players.length + 1);
+  return resumedHost;
+}
+
+function closeClients(targetClients) {
+  for (const client of targetClients) {
+    client.close();
+    clients.delete(client);
+  }
+}
+
+function toIdentity(client) {
+  return {
+    clientId: client.clientId,
+    playerName: client.playerName,
+    characterName: client.characterName,
+    roomRole: client.roomRole
+  };
 }
 
 async function waitForPresenceCount(targetClients, expectedCount) {
@@ -429,6 +504,33 @@ function createRoll(client, suffix, title, successes, overrides = {}) {
     total: null,
     dice,
     rawText: overrides.rawText ?? `${title}\nSUCCESSES: ${successes}\nDETAILS\n10 8 2`,
+    createdAt: new Date().toISOString()
+  };
+}
+
+function createManualD10Roll(client, suffix, value) {
+  return {
+    type: "roll",
+    version: 1,
+    id: `${client.clientId}:${suffix}:${Date.now()}:${randomUUID()}`,
+    clientId: client.clientId,
+    playerName: client.playerName,
+    characterName: client.characterName,
+    source: "extension",
+    system: "generic",
+    rollTitle: "1d10",
+    successes: null,
+    total: value,
+    dice: [
+      {
+        kind: "regular",
+        value,
+        sides: 10,
+        face: "blank",
+        label: String(value)
+      }
+    ],
+    rawText: `1d10\nResult: ${value}`,
     createdAt: new Date().toISOString()
   };
 }

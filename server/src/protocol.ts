@@ -17,7 +17,8 @@ export const diceValueSchema = z.object({
   kind: z.enum(["regular", "hunger", "unknown"]).default("unknown"),
   value: z.number().int().min(1).max(100),
   sides: z.number().int().min(2).max(100).optional(),
-  face: z.enum(["blank", "success", "critical", "skull"]).optional()
+  face: z.enum(["blank", "success", "critical", "skull"]).optional(),
+  label: z.string().trim().min(1).max(12).optional()
 });
 
 export const rollEventSchema = z.object({
@@ -27,7 +28,7 @@ export const rollEventSchema = z.object({
   clientId: z.string().trim().min(8).max(120),
   playerName: z.string().trim().min(1).max(80),
   characterName: z.string().trim().max(80).optional(),
-  source: z.literal("demiplane"),
+  source: z.enum(["demiplane", "extension"]),
   system: z.string().trim().min(1).max(40).default("vampire"),
   rollTitle: z.string().trim().min(1).max(160),
   successes: z.number().int().min(0).max(999).nullable().optional(),

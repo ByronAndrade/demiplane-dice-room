@@ -63,7 +63,7 @@ const defaultDiceAnimationScale = 0.75;
 const minDiceAnimationScale = 0.45;
 const maxDiceAnimationScale = 1.15;
 const defaultRelayUrl = "wss://demiplane-dice-room-relay.foxbyron.workers.dev";
-const extensionUiVersion = "0.1.108";
+const extensionUiVersion = "0.1.109";
 const pageBridgeMessageSource = "demiplane-dice-room-page";
 const pageDiceRollResponseWaitMs = 1400;
 const pageDiceRollResponseTtlMs = 8_000;
@@ -144,6 +144,7 @@ const messages = {
     error: "Erro",
     localMode: "Local",
     diceRoomTitle: "Sala de dados",
+    manualD10: "Rolar 1d10",
     clearDice: "Limpar dados",
     clearDiceDisabled: "Disponivel depois da revelacao dos dados",
     openHistory: "Mostrar historico de rolagens da sala",
@@ -197,6 +198,7 @@ const messages = {
     received: "recebido",
     history: "historico",
     local: "local",
+    rolled: "rolou",
     tested: "testou",
     failed: "Falhou.",
     resultCaptured: "Resultado capturado.",
@@ -255,6 +257,7 @@ const messages = {
     error: "Error",
     localMode: "Local",
     diceRoomTitle: "Dice Room",
+    manualD10: "Roll 1d10",
     clearDice: "Clear dice",
     clearDiceDisabled: "Available after the dice reveal",
     openHistory: "Show room roll history",
@@ -308,6 +311,7 @@ const messages = {
     received: "received",
     history: "history",
     local: "local",
+    rolled: "rolled",
     tested: "rolled",
     failed: "Failed.",
     resultCaptured: "Result captured.",
@@ -2184,6 +2188,10 @@ function markRollsSeen(items: Array<{ roll: RollEvent; origin: "local" | "remote
 }
 
 function shouldShowLiveRoll(item: { roll: RollEvent; origin: "local" | "remote"; delivery: string }): boolean {
+  if (item.roll.source === "extension") {
+    return true;
+  }
+
   if (item.origin !== "local") {
     return true;
   }
@@ -2279,10 +2287,26 @@ function hasSpecialOutcome(roll: RollEvent): boolean {
 }
 
 function isDisplayableRoll(roll: RollEvent): boolean {
+  if (isManualD10Roll(roll)) {
+    return true;
+  }
+
   return (
     isUsefulRollTitle(roll.rollTitle) &&
     typeof roll.successes === "number" &&
     !isControlBlock(roll.rawText)
+  );
+}
+
+function isManualD10Roll(roll: RollEvent): boolean {
+  return (
+    roll.source === "extension" &&
+    roll.rollTitle.trim().toLowerCase() === "1d10" &&
+    typeof roll.total === "number" &&
+    roll.total >= 1 &&
+    roll.total <= 10 &&
+    roll.dice.length === 1 &&
+    roll.dice[0]?.sides === 10
   );
 }
 
@@ -2293,6 +2317,7 @@ function createPanel(): {
   count: HTMLSpanElement;
   list: HTMLOListElement;
   brandButton: HTMLButtonElement;
+  manualD10Button: HTMLButtonElement;
   clearDiceButton: HTMLButtonElement;
   storytellerRollButton: HTMLButtonElement;
   toggle: HTMLButtonElement;
@@ -2563,6 +2588,33 @@ function createPanel(): {
         padding: 0;
       }
 
+      .manual-d10 {
+        border-color: rgba(190, 202, 220, 0.24);
+        color: #eef3fb;
+        background: #1b222b;
+      }
+
+      .manual-d10:hover {
+        border-color: rgba(218, 55, 70, 0.62);
+        background: #2a2028;
+        box-shadow: 0 0 12px rgba(218, 55, 70, 0.16);
+      }
+
+      .manual-d10 svg {
+        width: 18px;
+        height: 18px;
+        display: block;
+        margin: auto;
+      }
+
+      .manual-d10 text {
+        fill: currentColor;
+        font-family: Inter, ui-sans-serif, system-ui, sans-serif;
+        font-size: 8px;
+        font-weight: 900;
+        letter-spacing: 0;
+      }
+
       .toggle {
         overflow: visible;
       }
@@ -2781,6 +2833,7 @@ function createPanel(): {
       }
 
       :host([data-compact="true"]) .header-actions,
+      :host([data-compact="true"]) .manual-d10,
       :host([data-compact="true"]) .title > span,
       :host([data-compact="true"]) .list,
       :host([data-compact="true"]) .diagnostic,
@@ -3396,6 +3449,14 @@ function createPanel(): {
           <button data-brand-button class="brand-button" type="button" aria-label="Sala de dados" data-tooltip="Sala de dados">
             <span class="dice-mark" aria-hidden="true"><i></i><i></i><i></i></span>
           </button>
+          <button data-manual-d10 class="icon-button manual-d10" type="button" aria-label="Rolar 1d10" data-tooltip="Rolar 1d10">
+            <svg viewBox="0 0 24 24" aria-hidden="true">
+              <path d="M12 2.8 20.2 8v8L12 21.2 3.8 16V8Z" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round" />
+              <path d="M3.8 8 12 12.8 20.2 8" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round" opacity="0.68" />
+              <path d="M12 12.8v8.4" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" opacity="0.68" />
+              <text x="12" y="10.2" text-anchor="middle">10</text>
+            </svg>
+          </button>
         </div>
         <div class="header-actions">
           <button data-clear-dice class="icon-button clear-dice" type="button" aria-label="Limpar dados" data-tooltip="Limpar dados" hidden>
@@ -3588,6 +3649,7 @@ function createPanel(): {
   const count = shadow.querySelector("[data-count]");
   const list = shadow.querySelector("[data-list]");
   const brandButton = shadow.querySelector("[data-brand-button]");
+  const manualD10Button = shadow.querySelector("[data-manual-d10]");
   const clearDiceButton = shadow.querySelector("[data-clear-dice]");
   const storytellerRollButton = shadow.querySelector("[data-storyteller-roll]");
   const toggle = shadow.querySelector("[data-toggle]");
@@ -3644,6 +3706,7 @@ function createPanel(): {
     !(count instanceof HTMLSpanElement) ||
     !(list instanceof HTMLOListElement) ||
     !(brandButton instanceof HTMLButtonElement) ||
+    !(manualD10Button instanceof HTMLButtonElement) ||
     !(clearDiceButton instanceof HTMLButtonElement) ||
     !(storytellerRollButton instanceof HTMLButtonElement) ||
     !(toggle instanceof HTMLButtonElement) ||
@@ -3727,6 +3790,10 @@ function createPanel(): {
       kind: "content:dice-clear",
       event
     } satisfies { kind: "content:dice-clear"; event: SharedDiceClearEvent });
+  });
+
+  manualD10Button.addEventListener("click", () => {
+    void sendRuntimeMessage({ kind: "content:manual-d10" });
   });
 
   storytellerRollButton.addEventListener("click", () => {
@@ -3919,6 +3986,7 @@ function createPanel(): {
     count,
     list,
     brandButton,
+    manualD10Button,
     clearDiceButton,
     storytellerRollButton,
     toggle,
@@ -4057,6 +4125,8 @@ function renderPanel(): void {
   panel.diceSizeInput.value = String(diceAnimationScale);
   panel.brandButton.dataset.tooltip = t("diceRoomTitle");
   panel.brandButton.setAttribute("aria-label", t("diceRoomTitle"));
+  panel.manualD10Button.dataset.tooltip = t("manualD10");
+  panel.manualD10Button.setAttribute("aria-label", t("manualD10"));
   panel.toggleIcon.textContent = collapsed ? "^" : "v";
   panel.toggle.removeAttribute("title");
   const historyToggleLabel = collapsed ? t("openHistory") : t("closeHistory");
@@ -4962,6 +5032,7 @@ type AnimatedDie = {
   value: number;
   kind: DiceValue["kind"];
   face: DiceFace;
+  label?: string;
   rollId: string;
   dieIndex: number;
   radius: number;
@@ -5348,6 +5419,7 @@ function createAnimatedDie(
     value: die.value,
     kind: die.kind,
     face: getDieFace(die),
+    label: die.label,
     rollId,
     dieIndex: index,
     x: startX,
@@ -5714,12 +5786,14 @@ function getFaceMiddleToPoleAxis(face: THREE.Vector3[], center: THREE.Vector3, n
 function createFaceLabel({
   value,
   kind,
+  label,
   color,
   glow,
   anchor
 }: {
   value: number;
   kind: DiceValue["kind"];
+  label?: string;
   color: string;
   glow: string;
   anchor: FaceAnchor;
@@ -5741,7 +5815,9 @@ function createFaceLabel({
   context.strokeStyle = "rgba(0, 0, 0, 0.72)";
   context.lineWidth = 8;
   context.fillStyle = color;
-  if (kind === "hunger") {
+  if (label) {
+    drawNumberedDieResult(context, label, color, glow);
+  } else if (kind === "hunger") {
     drawHungerDieResult(context, value, color, glow);
   } else {
     drawRegularDieResult(context, value, color, glow);
@@ -5848,6 +5924,31 @@ function drawHungerDieResult(
       fallback: () => drawFangedAnkhGlyphFallback(context, color)
     });
   }
+}
+
+function drawNumberedDieResult(
+  context: CanvasRenderingContext2D,
+  label: string,
+  color: string,
+  glow: string
+): void {
+  const normalizedLabel = label.trim().slice(0, 12);
+  if (!normalizedLabel) {
+    return;
+  }
+
+  context.save();
+  context.shadowColor = glow;
+  context.shadowBlur = 12;
+  context.font = `900 ${normalizedLabel.length > 1 ? 142 : 168}px Inter, ui-sans-serif, system-ui, sans-serif`;
+  context.textAlign = "center";
+  context.textBaseline = "middle";
+  context.lineWidth = 10;
+  context.strokeStyle = "rgba(0, 0, 0, 0.74)";
+  context.fillStyle = color;
+  context.strokeText(normalizedLabel, resultLabelCanvasWidth / 2, resultLabelCanvasHeight / 2 + 6);
+  context.fillText(normalizedLabel, resultLabelCanvasWidth / 2, resultLabelCanvasHeight / 2 + 6);
+  context.restore();
 }
 
 function drawAnkhResult(
@@ -6045,6 +6146,7 @@ function revealDieResult(die: AnimatedDie, layer: DiceAnimationLayer, now: numbe
   const label = createFaceLabel({
     value: die.value,
     kind: die.kind,
+    label: die.label,
     color: palette.ink,
     glow: palette.inkGlow,
     anchor
@@ -7166,7 +7268,9 @@ function renderRoll(item: { roll: RollEvent; origin: "local" | "remote"; deliver
   const { roll } = item;
   const resultParts = [
     typeof roll.successes === "number" ? `<span class="chip">${escapeHtml(formatSuccesses(roll.successes))}</span>` : "",
-    typeof roll.total === "number" ? `<span class="chip">${escapeHtml(t("total"))} ${roll.total}</span>` : "",
+    typeof roll.total === "number" ?
+      `<span class="chip">${escapeHtml(roll.source === "extension" ? t("result") : t("total"))} ${roll.total}</span>` :
+      "",
     roll.dice.length > 0 ? `<span class="chip">${escapeHtml(formatDiceSummary(roll.dice))}</span>` : ""
   ].filter(Boolean);
 
@@ -7197,16 +7301,23 @@ function renderDie(die: DiceValue): string {
   const kindClass = die.kind === "hunger" ? "die-hunger" : die.kind === "regular" ? "die-regular" : "die-unknown";
   const faceLabel = dieFaceLabel(face);
   const kindLabel = dieKindLabel(die.kind);
+  const label = die.label?.trim();
+  const displayLabel = label || faceLabel;
+  const dieClasses = ["die", kindClass, `die-${face}`, label ? "die-numbered" : ""].filter(Boolean).join(" ");
   return `
-    <span class="die ${kindClass} die-${face}" aria-label="${escapeHtml(`${kindLabel}: ${faceLabel}`)}">
+    <span class="${dieClasses}" aria-label="${escapeHtml(`${kindLabel}: ${displayLabel}`)}">
       <span class="die-gem" aria-hidden="true"></span>
-      <span>${escapeHtml(faceSymbolText(face))}</span>
-      <span>${escapeHtml(faceLabel)}</span>
+      <span>${escapeHtml(label ? "" : faceSymbolText(face))}</span>
+      <span>${escapeHtml(displayLabel)}</span>
     </span>
   `;
 }
 
 function formatDiceSummary(dice: DiceValue[]): string {
+  if (dice.length === 1 && dice[0]?.sides === 10 && dice[0].label) {
+    return "1d10";
+  }
+
   const regular = dice.filter((die) => die.kind === "regular").length;
   const hunger = dice.filter((die) => die.kind === "hunger").length;
   const unknown = dice.length - regular - hunger;
@@ -7343,6 +7454,10 @@ function outcomeLabel(outcome: RollOutcome): string {
 
 function describeRoll(roll: RollEvent): string {
   const result = describeResult(roll);
+  if (roll.source === "extension") {
+    return `${t("rolled")} ${roll.rollTitle}. ${result}`;
+  }
+
   return `${t("tested")} ${roll.rollTitle}. ${result}`;
 }
 

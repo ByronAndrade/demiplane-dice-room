@@ -6,8 +6,10 @@ const maxRoomHistory = 100;
 const maxRoomPlayers = 10;
 const maxPendingPlayers = 20;
 const hostReconnectGraceMs = 120_000;
+const roomIdleTtlMs = 45 * 24 * 60 * 60 * 1000;
 const diceControlLockMs = 4_000;
 const activeDiceRollTtlMs = 18_000;
+const roomStorageKey = "room";
 const historyStorageKey = "history";
 const activeDiceStorageKey = "activeDice";
 const approvedStorageKey = "approvedPlayers";
@@ -17,6 +19,7 @@ type DiceValue = {
   value: number;
   sides?: number;
   face?: "blank" | "success" | "critical" | "skull";
+  label?: string;
 };
 
 type PresencePlayer = {
@@ -43,7 +46,7 @@ type RollEvent = {
   clientId: string;
   playerName: string;
   characterName?: string;
-  source: "demiplane";
+  source: "demiplane" | "extension";
   system: string;
   rollTitle: string;
   successes?: number | null;
@@ -93,6 +96,12 @@ type ActiveDiceRoll = {
   roll: RollEvent;
   expiresAt: string;
   controls?: SharedDiceControlEvent[];
+};
+
+type RoomRecord = {
+  hostClientId: string;
+  createdAt: string;
+  lastActivityAt: string;
 };
 
 type DiceControlMessage = {
@@ -429,6 +438,7 @@ export class DiceRoomDurableObject extends DurableObject<Env> {
     }
 
     await this.appendHistory(session.roomId, roll);
+    await this.touchRoom();
     await this.rememberActiveDiceRoll(roll);
     this.broadcast(session.roomId, { type: "roll", version: 1, roomId: session.roomId, roll });
   }
@@ -441,6 +451,7 @@ export class DiceRoomDurableObject extends DurableObject<Env> {
     if (session?.ready) {
       this.releaseDiceControlLocksForClient(session.roomId, session.clientId || "");
       if (session.roomRole === "host") {
+        void this.rememberRoomHost(session.roomId, session.clientId || "");
         this.scheduleHostGraceRoomClose(session.roomId, session.clientId || "");
         return;
       }
@@ -458,6 +469,7 @@ export class DiceRoomDurableObject extends DurableObject<Env> {
     if (session?.ready) {
       this.releaseDiceControlLocksForClient(session.roomId, session.clientId || "");
       if (session.roomRole === "host") {
+        void this.rememberRoomHost(session.roomId, session.clientId || "");
         this.scheduleHostGraceRoomClose(session.roomId, session.clientId || "");
         return;
       }
@@ -466,6 +478,26 @@ export class DiceRoomDurableObject extends DurableObject<Env> {
     } else if (session?.roomId && session.clientId) {
       this.sendPendingPlayers(session.roomId);
     }
+  }
+
+  async alarm(): Promise<void> {
+    const record = await this.getRoomRecord();
+    if (!record) {
+      return;
+    }
+
+    if (this.hasReadySessions()) {
+      await this.scheduleRoomExpiry(record);
+      return;
+    }
+
+    const lastActivityAt = Date.parse(record.lastActivityAt);
+    if (Number.isFinite(lastActivityAt) && Date.now() - lastActivityAt < roomIdleTtlMs) {
+      await this.scheduleRoomExpiry(record);
+      return;
+    }
+
+    await this.closeRoomRecordOnly();
   }
 
   private async handleHello(socket: WebSocket, hello: HelloMessage): Promise<void> {
@@ -484,6 +516,7 @@ export class DiceRoomDurableObject extends DurableObject<Env> {
     const existingHostSession = existingHostSocket ?
       this.sessions.get(existingHostSocket) ?? normalizeSession(existingHostSocket.deserializeAttachment()) :
       undefined;
+    const roomRecord = await this.getRoomRecord();
 
     if (
       this.isRateLimited(socket, `hello:client:${roomId}:${clientId}`, reconnectRateLimit) ||
@@ -513,8 +546,20 @@ export class DiceRoomDurableObject extends DurableObject<Env> {
       return;
     }
 
+    if (
+      roomRole === "host" &&
+      !existingHostSocket &&
+      roomRecord?.hostClientId &&
+      roomRecord.hostClientId !== clientId
+    ) {
+      this.send(socket, errorMessage("room_host_exists", "Esta sala pertence ao narrador original."));
+      socket.close(1008, "room_host_exists");
+      this.sessions.delete(socket);
+      return;
+    }
+
     const approvedPlayer = await this.isPlayerApproved(clientId);
-    if (roomRole === "player" && !existingHostSocket && !approvedPlayer) {
+    if (roomRole === "player" && !existingHostSocket && !roomRecord && !approvedPlayer) {
       this.send(socket, errorMessage("room_not_found", "A sala ainda nao foi criada pelo narrador."));
       socket.close(1008, "room_not_found");
       this.sessions.delete(socket);
@@ -523,6 +568,7 @@ export class DiceRoomDurableObject extends DurableObject<Env> {
 
     if (roomRole === "host") {
       this.clearHostGraceTimer();
+      await this.rememberRoomHost(roomId, clientId);
     }
 
     this.replaceReadyPlayer(roomId, clientId, socket);
@@ -536,6 +582,13 @@ export class DiceRoomDurableObject extends DurableObject<Env> {
     }
 
     if (roomRole === "player" && !approvedPlayer) {
+      if (!existingHostSocket) {
+        this.send(socket, errorMessage("host_offline", "O narrador precisa estar online para aprovar novos jogadores."));
+        socket.close(1008, "host_offline");
+        this.sessions.delete(socket);
+        return;
+      }
+
       if (!this.findPendingSocket(roomId, clientId) && this.getPendingCount(roomId) >= maxPendingPlayers) {
         this.send(socket, errorMessage("room_pending_full", "Esta sala tem muitos pedidos de entrada pendentes."));
         socket.close(1008, "room_pending_full");
@@ -580,6 +633,7 @@ export class DiceRoomDurableObject extends DurableObject<Env> {
 
     this.sessions.set(socket, session);
     socket.serializeAttachment(session);
+    await this.touchRoom();
 
     this.send(socket, {
       type: "welcome",
@@ -744,6 +798,7 @@ export class DiceRoomDurableObject extends DurableObject<Env> {
     };
 
     await this.markPlayerApproved(approvedClientId);
+    await this.touchRoom();
     this.sessions.set(pendingSocket, session);
     pendingSocket.serializeAttachment(session);
     this.send(pendingSocket, {
@@ -789,6 +844,7 @@ export class DiceRoomDurableObject extends DurableObject<Env> {
     targetSocket.close(1008, "kicked");
     this.sessions.delete(targetSocket);
     void this.unmarkPlayerApproved(clientId);
+    void this.touchRoom();
     this.broadcastPresence(roomId);
   }
 
@@ -955,10 +1011,6 @@ export class DiceRoomDurableObject extends DurableObject<Env> {
     return players;
   }
 
-  private hasRoomHost(roomId: string, except?: WebSocket): boolean {
-    return Boolean(this.findHostSocket(roomId, except));
-  }
-
   private findHostSocket(roomId: string, except?: WebSocket): WebSocket | undefined {
     for (const socket of this.ctx.getWebSockets()) {
       if (socket === except) {
@@ -1041,6 +1093,17 @@ export class DiceRoomDurableObject extends DurableObject<Env> {
     return count;
   }
 
+  private hasReadySessions(): boolean {
+    for (const socket of this.ctx.getWebSockets()) {
+      const session = this.sessions.get(socket) ?? normalizeSession(socket.deserializeAttachment());
+      if (session?.ready) {
+        return true;
+      }
+    }
+
+    return false;
+  }
+
   private getPendingCount(roomId: string): number {
     let count = 0;
 
@@ -1084,6 +1147,43 @@ export class DiceRoomDurableObject extends DurableObject<Env> {
   private async getApprovedPlayers(): Promise<string[]> {
     const approved = await this.ctx.storage.get<string[]>(approvedStorageKey);
     return Array.isArray(approved) ? approved.filter((clientId) => typeof clientId === "string") : [];
+  }
+
+  private async getRoomRecord(): Promise<RoomRecord | undefined> {
+    const record = await this.ctx.storage.get<RoomRecord>(roomStorageKey);
+    return isRoomRecord(record) ? record : undefined;
+  }
+
+  private async rememberRoomHost(roomId: string, hostClientId: string): Promise<void> {
+    const now = new Date().toISOString();
+    const current = await this.getRoomRecord();
+    const record: RoomRecord = {
+      hostClientId,
+      createdAt: current?.createdAt ?? now,
+      lastActivityAt: now
+    };
+    await this.ctx.storage.put(roomStorageKey, record);
+    await this.scheduleRoomExpiry(record);
+  }
+
+  private async touchRoom(): Promise<void> {
+    const current = await this.getRoomRecord();
+    if (!current) {
+      return;
+    }
+
+    const record: RoomRecord = {
+      ...current,
+      lastActivityAt: new Date().toISOString()
+    };
+    await this.ctx.storage.put(roomStorageKey, record);
+    await this.scheduleRoomExpiry(record);
+  }
+
+  private async scheduleRoomExpiry(record: RoomRecord): Promise<void> {
+    const lastActivityAt = Date.parse(record.lastActivityAt);
+    const base = Number.isFinite(lastActivityAt) ? lastActivityAt : Date.now();
+    await this.ctx.storage.setAlarm(base + roomIdleTtlMs);
   }
 
   private async appendHistory(roomId: string, roll: RollEvent): Promise<void> {
@@ -1160,9 +1260,15 @@ export class DiceRoomDurableObject extends DurableObject<Env> {
       socket.close(1001, "room_closed");
     }
 
+    await this.closeRoomRecordOnly();
+  }
+
+  private async closeRoomRecordOnly(): Promise<void> {
+    await this.ctx.storage.delete(roomStorageKey);
     await this.ctx.storage.delete(historyStorageKey);
     await this.ctx.storage.delete(activeDiceStorageKey);
     await this.ctx.storage.delete(approvedStorageKey);
+    await this.ctx.storage.deleteAlarm();
   }
 
   private scheduleHostGraceRoomClose(roomId: string, hostClientId: string): void {
@@ -1171,7 +1277,7 @@ export class DiceRoomDurableObject extends DurableObject<Env> {
     this.hostGraceTimer = setTimeout(() => {
       this.hostGraceTimer = undefined;
       this.hostGraceClientId = "";
-      void this.closeRoom(roomId);
+      this.broadcastPresence(roomId);
     }, hostReconnectGraceMs);
     this.broadcastPresence(roomId);
   }
@@ -1347,7 +1453,7 @@ function isRollEvent(value: unknown): value is RollEvent {
     isBoundedString(roll.id, 8, 160) &&
     isBoundedString(roll.clientId, 8, 120) &&
     isBoundedString(roll.playerName, 1, 80) &&
-    roll.source === "demiplane" &&
+    (roll.source === "demiplane" || roll.source === "extension") &&
     isBoundedString(roll.system, 1, 40) &&
     isBoundedString(roll.rollTitle, 1, 160) &&
     isOptionalInteger(roll.successes, 0, 999) &&
@@ -1370,6 +1476,7 @@ function isDiceValue(value: unknown): value is DiceValue {
   const dieValue = die.value;
   const dieSides = die.sides;
   const dieFace = die.face;
+  const dieLabel = die.label;
   return (
     (die.kind === "regular" || die.kind === "hunger" || die.kind === "unknown") &&
     typeof dieValue === "number" &&
@@ -1377,11 +1484,38 @@ function isDiceValue(value: unknown): value is DiceValue {
     dieValue >= 1 &&
     dieValue <= 100 &&
     (dieSides === undefined || (typeof dieSides === "number" && Number.isInteger(dieSides) && dieSides >= 2 && dieSides <= 100)) &&
-    (dieFace === undefined || dieFace === "blank" || dieFace === "success" || dieFace === "critical" || dieFace === "skull")
+    (dieFace === undefined || dieFace === "blank" || dieFace === "success" || dieFace === "critical" || dieFace === "skull") &&
+    (dieLabel === undefined || isBoundedString(dieLabel, 1, 12))
+  );
+}
+
+function isRoomRecord(value: unknown): value is RoomRecord {
+  if (!value || typeof value !== "object") {
+    return false;
+  }
+
+  const record = value as Partial<RoomRecord>;
+  return (
+    isBoundedString(record.hostClientId, 8, 120) &&
+    typeof record.createdAt === "string" &&
+    !Number.isNaN(Date.parse(record.createdAt)) &&
+    typeof record.lastActivityAt === "string" &&
+    !Number.isNaN(Date.parse(record.lastActivityAt))
   );
 }
 
 function isUsefulRoll(roll: RollEvent): boolean {
+  if (roll.source === "extension") {
+    return (
+      roll.rollTitle.trim().toLowerCase() === "1d10" &&
+      typeof roll.total === "number" &&
+      roll.total >= 1 &&
+      roll.total <= 10 &&
+      roll.dice.length === 1 &&
+      roll.dice[0]?.sides === 10
+    );
+  }
+
   return (
     isUsefulRollTitle(roll.rollTitle) &&
     typeof roll.successes === "number" &&
