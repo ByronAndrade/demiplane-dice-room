@@ -9,113 +9,33 @@
   <body>
     <main class="popup">
       <header class="header">
-        <div>
-          <p class="eyebrow">Demiplane</p>
-          <h1>Dice Room <span>0.1.112</span></h1>
-        </div>
-        <span id="statusPill" class="status status-disconnected">Desconectado</span>
+        <p class="eyebrow">Demiplane</p>
+        <h1>Dice Room <span>0.1.113</span></h1>
+        <p class="intro">Compartilhe rolagens do Demiplane com sua mesa, direto pela ficha.</p>
       </header>
 
-      <section class="room-flow">
-        <p data-i18n="roomFlowTitle">Sala da mesa</p>
-        <div class="mode-actions">
-          <button id="createRoomButton" class="mode-button" type="button" data-i18n="createRoom">Criar sala</button>
-          <button id="joinRoomButton" class="mode-button active" type="button" data-i18n="joinRoom">Entrar em sala</button>
-        </div>
-        <p id="roomModeHint" class="mode-hint"></p>
+      <section class="card">
+        <h2>Como usar</h2>
+        <ol>
+          <li>Abra uma ficha no Demiplane.</li>
+          <li>Clique no disco da Sala de dados dentro da pagina.</li>
+          <li>Crie ou entre na sala pelo painel flutuante.</li>
+          <li>Role os dados normalmente no Demiplane.</li>
+        </ol>
       </section>
 
-      <form id="settingsForm" class="form">
-        <label>
-          <span data-i18n="playerNameLabel">Nome do jogador</span>
-          <input id="playerName" name="playerName" autocomplete="name" required />
-        </label>
-
-        <label class="checkbox-label">
-          <input id="hideCharacterName" name="hideCharacterName" type="checkbox" />
-          <span data-i18n="hideCharacterNameLabel">Fazer rolagem como Narrador</span>
-        </label>
-
-        <label>
-          <span data-i18n="channelLabel">Canal da mesa</span>
-          <input id="channel" name="channel" autocomplete="off" required />
-        </label>
-
-        <label>
-          <span data-i18n="passwordLabel">Senha da sala</span>
-          <input id="password" name="password" type="password" autocomplete="current-password" />
-        </label>
-
-        <label class="checkbox-label">
-          <input id="showOwnRolls" name="showOwnRolls" type="checkbox" />
-          <span data-i18n="showOwnRollsLabel">Mostrar alertas das minhas rolagens</span>
-        </label>
-        <p class="field-help" data-i18n="showOwnRollsHelp">
-          O Demiplane ja mostra sua rolagem; deixe desligado para ocultar alertas das suas rolagens.
-        </p>
-
-        <label class="checkbox-label">
-          <input id="enableDiceAnimation" name="enableDiceAnimation" type="checkbox" />
-          <span data-i18n="enableDiceAnimationLabel">Animacao dos dados</span>
-        </label>
-        <p class="field-help" data-i18n="enableDiceAnimationHelp">
-          Mostra os dados caindo e quicando na ficha, com som leve.
-        </p>
-
-        <label class="checkbox-label">
-          <input id="enableSharedDice" name="enableSharedDice" type="checkbox" />
-          <span data-i18n="enableSharedDiceLabel">Dados compartilhados</span>
-        </label>
-        <p class="field-help" data-i18n="enableSharedDiceHelp">
-          Permite ver e mover os mesmos dados com a mesa.
-        </p>
-
-        <details class="advanced-settings">
-          <summary data-i18n="advancedSettings">Configurações avançadas</summary>
-          <p class="field-help" data-i18n="communityRelayHelp">
-            O relay da comunidade ja vem configurado.
-          </p>
-          <label>
-            <span data-i18n="relayLabel">Relay</span>
-            <input id="serverUrl" name="serverUrl" type="url" required />
-          </label>
-
-          <label>
-            <span data-i18n="relayKeyLabel">Chave do relay</span>
-            <input id="relayKey" name="relayKey" type="password" autocomplete="off" />
-          </label>
-
-          <button id="communityRelayButton" type="button" data-i18n="restoreCommunityRelay">
-            Restaurar relay da comunidade
-          </button>
-        </details>
-
-        <div class="actions">
-          <button id="saveButton" type="submit" data-i18n="save">Salvar</button>
-          <button id="connectButton" type="button" data-i18n="connect">Conectar</button>
-          <button id="disconnectButton" type="button" data-i18n="disconnect">Desconectar</button>
-        </div>
-      </form>
-
-      <section id="pendingRequests" class="pending-requests" hidden aria-live="polite">
-        <p data-i18n="pendingPlayers">Pedidos de entrada</p>
-        <div id="pendingRequestsList" class="pending-requests-list"></div>
+      <section class="card">
+        <h2>Atualizacoes</h2>
+        <p>Baixe sempre a versao mais nova pela pagina de releases.</p>
+        <a data-external-link data-latest-release class="button" href="https://github.com/ByronAndrade/demiplane-dice-room/releases/latest">
+          Abrir ultimo release
+        </a>
       </section>
 
-      <section class="debug">
-        <div>
-          <strong id="playerCount">0</strong>
-          <span data-i18n="inRoom">na sala</span>
-        </div>
-        <button id="testButton" type="button" data-i18n="test">Teste</button>
+      <section class="meta">
+        <p><strong>Autor:</strong> Byron Andrade</p>
+        <p><strong>Suporte:</strong> <a data-support-email href="mailto:foxbyron@gmail.com">foxbyron@gmail.com</a></p>
       </section>
-
-      <section class="recent" aria-live="polite">
-        <p data-i18n="lastRollTitle">Ultima rolagem</p>
-        <div id="lastRoll" class="last-roll">Nenhuma rolagem recebida.</div>
-      </section>
-
-      <p id="detail" class="detail"></p>
     </main>
     <script src="popup.js"></script>
   </body>

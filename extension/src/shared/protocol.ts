@@ -214,13 +214,17 @@ export function createRollId(clientId: string, signature: string, createdAt: str
 }
 
 export async function createRoomId(channel: string, password = ""): Promise<string> {
-  const input = `${channel.trim().toLowerCase()}\0${password}`;
+  const input = `${normalizeRoomChannel(channel)}\0${password}`;
   const bytes = new TextEncoder().encode(input);
   const hash = await crypto.subtle.digest("SHA-256", bytes);
   return Array.from(new Uint8Array(hash))
     .map((value) => value.toString(16).padStart(2, "0"))
     .join("")
     .slice(0, 32);
+}
+
+export function normalizeRoomChannel(channel: string): string {
+  return channel.trim().toLowerCase().replace(/[\s_-]+/g, "_").replace(/^_+|_+$/g, "");
 }
 
 export function createRoomSocketUrl(serverUrl: string, roomId: string, relayKey = ""): string {

@@ -1615,11 +1615,15 @@ function stripRerollTitleSuffix(value: string): string {
 
 function createRoomId(channel: string, password = ""): string {
   return createHash("sha256")
-    .update(channel.trim().toLowerCase())
+    .update(normalizeRoomChannel(channel))
     .update("\0")
     .update(password)
     .digest("hex")
     .slice(0, 32);
+}
+
+function normalizeRoomChannel(channel: string): string {
+  return channel.trim().toLowerCase().replace(/[\s_-]+/g, "_").replace(/^_+|_+$/g, "");
 }
 
 function errorMessage(code: string, message: string, rollId?: string): ServerMessage {

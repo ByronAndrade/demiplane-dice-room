@@ -10,6 +10,7 @@ const port = Number.parseInt(process.env.PORT ?? String(19_000 + Math.floor(Math
 const serverUrl = externalServerUrl || `ws://${host}:${port}`;
 const statusUrl = `http://${host}:${port}/health`;
 const channel = process.env.CHANNEL ?? `room-flow-${Date.now()}`;
+const channelAlias = channel.replace(/[-_]+/g, " ");
 const password = process.env.PASSWORD ?? randomUUID();
 const playerCount = Number.parseInt(process.env.PLAYER_COUNT ?? "3", 10);
 const scenarioTimeoutMs = Number.parseInt(process.env.SCENARIO_TIMEOUT_MS ?? "30000", 10);
@@ -98,7 +99,8 @@ async function runScenario() {
       clientId: `player-${index + 1}-${randomUUID()}`,
       playerName: ["Pablo", "Mina", "Theo"][index] ?? `Player ${index + 1}`,
       characterName: ["Pablo", "Mina", "Theo"][index] ?? `Character ${index + 1}`,
-      roomRole: "player"
+      roomRole: "player",
+      channel: index === 0 ? channelAlias : undefined
     });
     players.push(player);
     await player.waitFor((message) => message.type === "approval_required", `${player.playerName} approval required`);
@@ -455,12 +457,13 @@ async function waitForSheetStatus(targetClients, clientId, sheetStatus, label) {
 }
 
 class RoomClient {
-  constructor({ clientId, playerName, characterName, roomRole, hostKey }) {
+  constructor({ clientId, playerName, characterName, roomRole, hostKey, channel: roomChannel }) {
     this.clientId = clientId;
     this.playerName = playerName;
     this.characterName = characterName;
     this.roomRole = roomRole;
     this.hostKey = hostKey;
+    this.channel = roomChannel || channel;
     this.messages = [];
     this.waiters = new Set();
   }
@@ -478,7 +481,7 @@ class RoomClient {
       playerName: this.playerName,
       characterName: this.characterName,
       roomRole: this.roomRole,
-      channel,
+      channel: this.channel,
       password,
       hostKey: this.hostKey
     });

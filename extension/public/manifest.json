@@ -2,7 +2,7 @@
   "manifest_version": 3,
   "name": "Demiplane Dice Room",
   "description": "Share Demiplane dice rolls with players in the same tabletop room.",
-  "version": "0.1.112",
+  "version": "0.1.113",
   "icons": {
     "16": "assets/icon-16.png",
     "32": "assets/icon-32.png",

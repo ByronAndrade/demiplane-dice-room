@@ -773,6 +773,10 @@ function isTerminalRoomError(code: string): boolean {
     code === "room_closed" ||
     code === "room_full" ||
     code === "room_host_exists" ||
+    code === "room_not_found" ||
+    code === "host_offline" ||
+    code === "relay_key_required" ||
+    code === "room_pending_full" ||
     code === "approval_rejected" ||
     code === "kicked" ||
     code === "session_replaced"

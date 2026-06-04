@@ -63,10 +63,11 @@ const defaultDiceAnimationScale = 0.75;
 const minDiceAnimationScale = 0.45;
 const maxDiceAnimationScale = 1.15;
 const defaultRelayUrl = "wss://demiplane-dice-room-relay.foxbyron.workers.dev";
-const extensionUiVersion = "0.1.112";
+const extensionUiVersion = "0.1.113";
 const pageBridgeMessageSource = "demiplane-dice-room-page";
 const pageDiceRollResponseWaitMs = 1400;
 const pageDiceRollResponseTtlMs = 8_000;
+const panelCompactDefaultVersion = 2;
 const activeToastByActor = new Map<string, HTMLElement>();
 let collapsed = true;
 let settingsOpen = false;
@@ -236,8 +237,9 @@ const messages = {
     roomPendingFull: "Esta sala tem muitos pedidos de entrada pendentes.",
     relayBusy: "Relay comunitario cheio no momento. Tente novamente em instantes.",
     roomClosed: "O narrador saiu e a sala foi desfeita.",
-    roomHostExists: "Esta sala ja tem um narrador conectado.",
-    roomNotFound: "A sala ainda nao foi criada pelo narrador.",
+    roomHostExists: "Esta sala ja existe ou ja tem um narrador conectado. Use o mesmo perfil do narrador para reassumir.",
+    roomNotFound: "Sala nao encontrada. Confira nome e senha da mesa, ou peca para o narrador criar a sala.",
+    hostOffline: "A sala existe, mas o narrador esta offline para aprovar entrada.",
     approvalRejected: "O narrador recusou sua entrada na sala.",
     kicked: "Voce foi removido da sala pelo narrador.",
     sheetOffline: "offline",
@@ -350,8 +352,9 @@ const messages = {
     roomPendingFull: "This room has too many pending join requests.",
     relayBusy: "The community relay is full right now. Try again in a moment.",
     roomClosed: "The Storyteller left and the room was closed.",
-    roomHostExists: "This room already has a Storyteller connected.",
-    roomNotFound: "The room has not been created by the Storyteller yet.",
+    roomHostExists: "This room already exists or already has a Storyteller connected. Use the original Storyteller profile to reclaim it.",
+    roomNotFound: "Room not found. Check the room name/password, or ask the Storyteller to create the room.",
+    hostOffline: "The room exists, but the Storyteller is offline and cannot approve entry.",
     approvalRejected: "The Storyteller rejected your room request.",
     kicked: "You were removed from the room by the Storyteller.",
     sheetOffline: "offline",
@@ -432,11 +435,19 @@ async function initializeContentScript(): Promise<void> {
   chrome.runtime.onMessage.addListener((message: BackgroundMessage) => {
     if (message.kind === "background:connection-state") {
       const revealPendingRequests = shouldRevealPendingRequests(message.state);
+      const revealConnectionError = message.state.status === "error" && message.state.detail !== connectionState.detail;
       connectionState = message.state;
       if (revealPendingRequests) {
         collapsed = true;
         compactPanel = false;
         diagnosticOpen = false;
+        settingsOpen = true;
+        void savePanelUiState();
+      }
+      if (revealConnectionError) {
+        collapsed = true;
+        compactPanel = false;
+        diagnosticOpen = true;
         settingsOpen = true;
         void savePanelUiState();
       }
@@ -4674,6 +4685,7 @@ async function loadPanelUiState(): Promise<void> {
       collapsed?: unknown;
       settingsOpen?: unknown;
       compactPanel?: unknown;
+      compactDefaultVersion?: unknown;
       opacity?: unknown;
         diceAnimationScale?: unknown;
         position?: unknown;
@@ -4684,7 +4696,8 @@ async function loadPanelUiState(): Promise<void> {
 
   collapsed = value?.collapsed !== false;
   settingsOpen = value?.settingsOpen === true;
-  compactPanel = value?.compactPanel === true;
+  compactPanel =
+    value?.compactDefaultVersion === panelCompactDefaultVersion ? value?.compactPanel === true : true;
   panelOpacity = typeof value?.opacity === "number" ? clampNumber(value.opacity, minPanelOpacity, 1) : 0.94;
   diceAnimationScale =
     typeof value?.diceAnimationScale === "number"
@@ -4709,6 +4722,7 @@ async function savePanelUiState(): Promise<void> {
       collapsed,
       settingsOpen,
       compactPanel,
+      compactDefaultVersion: panelCompactDefaultVersion,
       opacity: panelOpacity,
       diceAnimationScale,
       position: panelPosition,
@@ -4775,8 +4789,17 @@ function translateConnectionDetail(value: string): string {
   if (value === "Esta sala ja tem um narrador conectado.") {
     return t("roomHostExists");
   }
+  if (value === "Esta sala aguarda o narrador original reconectar.") {
+    return t("roomHostExists");
+  }
+  if (value === "Esta sala pertence ao narrador original.") {
+    return t("roomHostExists");
+  }
   if (value === "A sala ainda nao foi criada pelo narrador.") {
     return t("roomNotFound");
+  }
+  if (value === "O narrador precisa estar online para aprovar novos jogadores.") {
+    return t("hostOffline");
   }
   if (value === "Aguardando aprovacao do narrador para entrar na sala.") {
     return t("roomPendingByYou");
@@ -4821,9 +4844,9 @@ function renderDiagnostic(): string {
 
   if (connectionState.status === "error") {
     return `
-      <strong>${escapeHtml(t("localConnection"))}</strong>
+      <strong>${escapeHtml(t("relayUnavailable"))}</strong>
+      ${escapeHtml(translateConnectionDetail(connectionState.detail))}<br />
       ${escapeHtml(t("localConnectionHint"))}<br />
-      ${escapeHtml(t("relayUnavailable"))}: ${escapeHtml(translateConnectionDetail(connectionState.detail))}<br />
       ${escapeHtml(t("runServer"))} <code>npm run host:relay</code>. ${escapeHtml(t("reconnectHint"))}
     `;
   }
