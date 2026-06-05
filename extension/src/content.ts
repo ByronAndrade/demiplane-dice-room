@@ -63,7 +63,7 @@ const defaultDiceAnimationScale = 0.75;
 const minDiceAnimationScale = 0.45;
 const maxDiceAnimationScale = 1.15;
 const defaultRelayUrl = "wss://demiplane-dice-room-relay.foxbyron.workers.dev";
-const extensionUiVersion = "0.1.115";
+const extensionUiVersion = "0.1.116";
 const pageBridgeMessageSource = "demiplane-dice-room-page";
 const pageDiceRollResponseWaitMs = 1400;
 const pageDiceRollResponseTtlMs = 8_000;
@@ -80,6 +80,7 @@ let diceClearButtonUpdateAt = 0;
 let panelPosition: { left: number; top: number } | undefined;
 let uiLanguage: UiLanguage = "pt-BR";
 let scanTimer: number | undefined;
+let passiveMutationScanTimer: number | undefined;
 let captureArmedUntil = 0;
 let armedBaselineElements = new WeakSet<Element>();
 let mutatedElementsSinceArm = new WeakSet<Element>();
@@ -555,9 +556,15 @@ function reportSheetActivity(): void {
 
 function startObserver(): void {
   const observer = new MutationObserver((mutations) => {
-    if (isCaptureArmed() && mutations.some((mutation) => isRelevantMutation(mutation))) {
-      markMutatedElementsSinceArm(mutations);
+    if (!mutations.some((mutation) => isRelevantMutation(mutation))) {
+      return;
+    }
+
+    markMutatedElementsSinceArm(mutations);
+    if (isCaptureArmed()) {
       scheduleScan();
+    } else {
+      schedulePassiveMutationScan();
     }
   });
 
@@ -581,6 +588,24 @@ function scheduleScan(): void {
     scanTimer = undefined;
     scanPage();
   }, 180);
+}
+
+function schedulePassiveMutationScan(): void {
+  if (passiveMutationScanTimer) {
+    clearTimeout(passiveMutationScanTimer);
+  }
+
+  passiveMutationScanTimer = setTimeout(() => {
+    passiveMutationScanTimer = undefined;
+    scanPage(isCaptureArmed() ? undefined : { requireMutation: true });
+  }, 220);
+}
+
+function clearPassiveMutationScanTimer(): void {
+  if (passiveMutationScanTimer) {
+    clearTimeout(passiveMutationScanTimer);
+    passiveMutationScanTimer = undefined;
+  }
 }
 
 function handlePageBridgeMessage(event: MessageEvent): void {
@@ -855,6 +880,7 @@ function rectsMostlyOverlap(first: DOMRect, second: DOMRect): boolean {
 }
 
 function armCapture(durationMs = 6000): void {
+  clearPassiveMutationScanTimer();
   baselineCurrentRolls();
   armedBaselineElements = new WeakSet(collectRollCandidates().map(({ element }) => element));
   mutatedElementsSinceArm = new WeakSet<Element>();
@@ -872,6 +898,7 @@ function armCapture(durationMs = 6000): void {
 }
 
 function disarmCapture(): void {
+  clearPassiveMutationScanTimer();
   captureArmedUntil = 0;
   armedBaselineElements = new WeakSet<Element>();
   mutatedElementsSinceArm = new WeakSet<Element>();
@@ -937,8 +964,9 @@ function baselineCurrentRolls(): void {
   }
 }
 
-function scanPage(): void {
-  if (!isCaptureArmed()) {
+function scanPage(options: { requireMutation?: boolean } = {}): void {
+  const requireMutation = options.requireMutation === true;
+  if (!isCaptureArmed() && !requireMutation) {
     return;
   }
 
@@ -949,6 +977,10 @@ function scanPage(): void {
     const previousSignature = elementSignatures.get(element);
     const isBaselineElement = armedBaselineElements.has(element);
     const mutatedAfterArm = mutatedElementsSinceArm.has(element);
+
+    if (requireMutation && (!mutatedAfterArm || previousSignature === captured.signature)) {
+      continue;
+    }
 
     if (publishedElements.has(element) && previousSignature === captured.signature && !mutatedAfterArm) {
       elementSignatures.set(element, captured.signature);
@@ -968,7 +1000,13 @@ function scanPage(): void {
   if (bestCandidate) {
     elementSignatures.set(bestCandidate.element, bestCandidate.captured.signature);
     publishCapturedRoll(bestCandidate.captured, bestCandidate.element);
-    disarmCapture();
+    if (requireMutation) {
+      mutatedElementsSinceArm = new WeakSet<Element>();
+    } else {
+      disarmCapture();
+    }
+  } else if (requireMutation) {
+    mutatedElementsSinceArm = new WeakSet<Element>();
   }
 }
 
