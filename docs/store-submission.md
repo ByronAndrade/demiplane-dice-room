@@ -4,9 +4,9 @@ Use this file as the copy/paste source for browser store submissions.
 
 ## Package Files
 
-- Chrome, Edge, Opera: `artifacts/demiplane-dice-room-0.1.113-chromium.zip`
-- Firefox: `artifacts/demiplane-dice-room-0.1.113-firefox.zip`
-- Source package for reviewer requests: `artifacts/demiplane-dice-room-0.1.113-source.zip`
+- Chrome, Edge, Opera: `artifacts/demiplane-dice-room-0.1.114-chromium.zip`
+- Firefox: `artifacts/demiplane-dice-room-0.1.114-firefox.zip`
+- Source package for reviewer requests: `artifacts/demiplane-dice-room-0.1.114-source.zip`
 
 ## Public URLs
 

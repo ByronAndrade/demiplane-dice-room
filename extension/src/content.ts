@@ -63,7 +63,7 @@ const defaultDiceAnimationScale = 0.75;
 const minDiceAnimationScale = 0.45;
 const maxDiceAnimationScale = 1.15;
 const defaultRelayUrl = "wss://demiplane-dice-room-relay.foxbyron.workers.dev";
-const extensionUiVersion = "0.1.113";
+const extensionUiVersion = "0.1.114";
 const pageBridgeMessageSource = "demiplane-dice-room-page";
 const pageDiceRollResponseWaitMs = 1400;
 const pageDiceRollResponseTtlMs = 8_000;
@@ -109,6 +109,8 @@ let diagnosticOpen = false;
 
 type UiLanguage = "pt-BR" | "en";
 type RollOutcome = "bestialFailure" | "messyCritical" | "criticalSuccess" | "success" | "failure";
+type CompulsionPromptReason = "bestialFailure" | "messyCritical" | "hungerSkull";
+type CompulsionResultKey = "hunger" | "dominance" | "harm" | "paranoia" | "clan";
 type DicePoolHint = {
   regular?: number;
   hunger?: number;
@@ -221,6 +223,17 @@ const messages = {
     outcomeCriticalSuccess: "Critico",
     outcomeSuccess: "Sucesso",
     outcomeFailure: "Falha",
+    compulsion: "Compulsao",
+    rollCompulsion: "Rolar compulsao",
+    compulsionRolled: "Compulsao rolada",
+    compulsionTriggerBestialFailure: "Falha bestial",
+    compulsionTriggerMessyCritical: "Sucesso baguncado",
+    compulsionTriggerHungerSkull: "Caveira de fome",
+    compulsionResultHunger: "Hunger",
+    compulsionResultDominance: "Dominance",
+    compulsionResultHarm: "Harm",
+    compulsionResultParanoia: "Paranoia",
+    compulsionResultClan: "Compulsao de cla",
     activeConnection: "Conexao ativa",
     localConnection: "Modo local ativo",
     localConnectionHint: "A captura local esta funcionando. Conecte em uma sala quando quiser compartilhar rolagens com outros jogadores.",
@@ -336,6 +349,17 @@ const messages = {
     outcomeCriticalSuccess: "Critical success",
     outcomeSuccess: "Success",
     outcomeFailure: "Failure",
+    compulsion: "Compulsion",
+    rollCompulsion: "Roll compulsion",
+    compulsionRolled: "Compulsion rolled",
+    compulsionTriggerBestialFailure: "Bestial failure",
+    compulsionTriggerMessyCritical: "Messy critical",
+    compulsionTriggerHungerSkull: "Hunger skull",
+    compulsionResultHunger: "Hunger",
+    compulsionResultDominance: "Dominance",
+    compulsionResultHarm: "Harm",
+    compulsionResultParanoia: "Paranoia",
+    compulsionResultClan: "Clan Compulsion",
     activeConnection: "Connection active",
     localConnection: "Local mode active",
     localConnectionHint: "Local capture is working. Connect to a room when you want to share rolls with other players.",
@@ -2131,11 +2155,29 @@ function addRoll(roll: RollEvent, origin: "local" | "remote", delivery: string):
 
   if (delivery !== "history") {
     const shouldShowToast = shouldShowLiveRoll({ roll, origin, delivery });
-    const animated = playDiceAnimation(roll, shouldShowToast ? () => showLiveRoll(roll, delivery) : undefined);
+    const animated = playDiceAnimation(roll, shouldShowToast ? () => showLiveRoll(roll, origin, delivery) : undefined);
     if (shouldShowToast && !animated) {
-      showLiveRoll(roll, delivery);
+      showLiveRoll(roll, origin, delivery);
     }
   }
+}
+
+function handleRollCompulsionClick(event: Event): void {
+  const button = event.target instanceof Element ? event.target.closest("button[data-roll-compulsion]") : null;
+  if (!(button instanceof HTMLButtonElement)) {
+    return;
+  }
+
+  const parentRollId = button.dataset.parentRollId;
+  if (!parentRollId || button.disabled) {
+    return;
+  }
+
+  button.disabled = true;
+  button.textContent = t("compulsionRolled");
+  void sendRuntimeMessage({ kind: "content:roll-compulsion", parentRollId }).then(() => {
+    renderPanel();
+  });
 }
 
 function replaceRolls(nextRolls: StoredRoll[]): void {
@@ -2209,7 +2251,7 @@ function shouldShowLiveRoll(item: { roll: RollEvent; origin: "local" | "remote";
     return true;
   }
 
-  return shouldShowOwnRolls() || hasSpecialOutcome(item.roll);
+  return shouldShowOwnRolls() || hasSpecialOutcome(item.roll) || Boolean(getCompulsionPromptReason(item.roll));
 }
 
 function shouldShowOwnRolls(): boolean {
@@ -2300,7 +2342,7 @@ function hasSpecialOutcome(roll: RollEvent): boolean {
 }
 
 function isDisplayableRoll(roll: RollEvent): boolean {
-  if (isManualD10Roll(roll)) {
+  if (isManualD10Roll(roll) || isCompulsionRoll(roll)) {
     return true;
   }
 
@@ -2315,6 +2357,18 @@ function isManualD10Roll(roll: RollEvent): boolean {
   return (
     roll.source === "extension" &&
     roll.rollTitle.trim().toLowerCase() === "1d10" &&
+    typeof roll.total === "number" &&
+    roll.total >= 1 &&
+    roll.total <= 10 &&
+    roll.dice.length === 1 &&
+    roll.dice[0]?.sides === 10
+  );
+}
+
+function isCompulsionRoll(roll: RollEvent): boolean {
+  return (
+    roll.source === "extension" &&
+    /^Compulsion$/im.test(roll.rawText) &&
     typeof roll.total === "number" &&
     roll.total >= 1 &&
     roll.total <= 10 &&
@@ -3449,6 +3503,52 @@ function createPanel(): {
         text-transform: uppercase;
       }
 
+      .compulsion-box {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 8px;
+        margin-top: 8px;
+        border: 1px solid rgba(218, 55, 70, 0.28);
+        border-radius: 7px;
+        padding: 7px 8px;
+        background: rgba(61, 16, 22, 0.34);
+      }
+
+      .compulsion-box span {
+        color: #ffd8dc;
+        font-size: 11px;
+        font-weight: 850;
+        line-height: 1.2;
+      }
+
+      .compulsion-box strong {
+        color: #f6f8fc;
+      }
+
+      .compulsion-box button {
+        flex: 0 0 auto;
+        min-height: 26px;
+        border: 1px solid rgba(218, 55, 70, 0.5);
+        border-radius: 6px;
+        padding: 4px 8px;
+        color: #fff1f3;
+        background: rgba(133, 26, 38, 0.58);
+        font: inherit;
+        font-size: 11px;
+        font-weight: 900;
+        cursor: pointer;
+      }
+
+      .compulsion-box button:hover {
+        background: rgba(164, 34, 49, 0.72);
+      }
+
+      .compulsion-box button:disabled {
+        cursor: default;
+        opacity: 0.6;
+      }
+
       .raw {
         margin-top: 7px;
         color: #96a1b1;
@@ -3811,6 +3911,8 @@ function createPanel(): {
   manualD10Button.addEventListener("click", () => {
     void sendRuntimeMessage({ kind: "content:manual-d10" });
   });
+
+  list.addEventListener("click", handleRollCompulsionClick);
 
   storytellerRollButton.addEventListener("click", () => {
     const config = currentConfig ?? defaultConfig;
@@ -4894,6 +4996,7 @@ function createLiveLayer(): { host: HTMLDivElement; stack: HTMLDivElement } {
         background: rgba(16, 20, 27, 0.94);
         box-shadow: 0 14px 42px rgba(0, 0, 0, 0.42);
         backdrop-filter: blur(14px);
+        pointer-events: auto;
         animation: roll-in 160ms ease-out, roll-out 360ms ease-in ${liveToastMs - 360}ms forwards;
       }
 
@@ -4995,6 +5098,52 @@ function createLiveLayer(): { host: HTMLDivElement; stack: HTMLDivElement } {
         text-transform: uppercase;
       }
 
+      .compulsion-box {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 8px;
+        margin-top: 8px;
+        border: 1px solid rgba(218, 55, 70, 0.28);
+        border-radius: 7px;
+        padding: 7px 8px;
+        background: rgba(61, 16, 22, 0.34);
+      }
+
+      .compulsion-box span {
+        color: #ffd8dc;
+        font-size: 11px;
+        font-weight: 850;
+        line-height: 1.2;
+      }
+
+      .compulsion-box strong {
+        color: #f6f8fc;
+      }
+
+      .compulsion-box button {
+        flex: 0 0 auto;
+        min-height: 26px;
+        border: 1px solid rgba(218, 55, 70, 0.5);
+        border-radius: 6px;
+        padding: 4px 8px;
+        color: #fff1f3;
+        background: rgba(133, 26, 38, 0.58);
+        font: inherit;
+        font-size: 11px;
+        font-weight: 900;
+        cursor: pointer;
+      }
+
+      .compulsion-box button:hover {
+        background: rgba(164, 34, 49, 0.72);
+      }
+
+      .compulsion-box button:disabled {
+        cursor: default;
+        opacity: 0.6;
+      }
+
       @keyframes roll-in {
         from {
           opacity: 0;
@@ -5020,6 +5169,8 @@ function createLiveLayer(): { host: HTMLDivElement; stack: HTMLDivElement } {
   if (!(stack instanceof HTMLDivElement)) {
     throw new Error("Camada de rolagens ao vivo nao foi inicializada corretamente.");
   }
+
+  stack.addEventListener("click", handleRollCompulsionClick);
 
   return { host, stack };
 }
@@ -7249,7 +7400,7 @@ function playDiceImpactSound(volume: number): void {
   thud.stop(context.currentTime + duration * 1.3);
 }
 
-function showLiveRoll(roll: RollEvent, delivery: string): void {
+function showLiveRoll(roll: RollEvent, origin: "local" | "remote", delivery: string): void {
   if (!liveLayer || !isDisplayableRoll(roll)) {
     return;
   }
@@ -7272,6 +7423,7 @@ function showLiveRoll(roll: RollEvent, delivery: string): void {
     ${typeof roll.successes === "number" ? `<span class="success">${escapeHtml(formatSuccesses(roll.successes))}</span>` : ""}
     ${renderDiceRow(roll.dice)}
     ${renderOutcome(roll)}
+    ${renderCompulsionAction({ roll, origin, delivery })}
   `;
 
   activeToastByActor.set(actorKey, toast);
@@ -7313,8 +7465,36 @@ function renderRoll(item: { roll: RollEvent; origin: "local" | "remote"; deliver
       ${resultParts.length > 0 ? `<div class="result">${resultParts.join("")}</div>` : ""}
       ${renderDiceRow(roll.dice)}
       ${renderOutcome(roll)}
+      ${renderCompulsionAction(item)}
     </li>
   `;
+}
+
+function renderCompulsionAction(item: { roll: RollEvent; origin: "local" | "remote"; delivery: string }): string {
+  const linkedCompulsion = getLinkedCompulsionRoll(item.roll.id);
+  if (linkedCompulsion) {
+    return `
+      <div class="compulsion-box">
+        <span>${escapeHtml(t("compulsion"))}: <strong>${escapeHtml(compulsionResultLabel(getCompulsionResultKeyFromRoll(linkedCompulsion)))}</strong></span>
+      </div>
+    `;
+  }
+
+  const reason = getCompulsionPromptReason(item.roll);
+  if (!reason || !canCurrentClientRollCompulsion(item)) {
+    return "";
+  }
+
+  return `
+    <div class="compulsion-box">
+      <span>${escapeHtml(compulsionPromptReasonLabel(reason))}</span>
+      <button data-roll-compulsion data-parent-roll-id="${escapeHtml(item.roll.id)}" type="button">${escapeHtml(t("rollCompulsion"))}</button>
+    </div>
+  `;
+}
+
+function canCurrentClientRollCompulsion(item: { roll: RollEvent; origin: "local" | "remote"; delivery: string }): boolean {
+  return item.origin === "local" || Boolean(connectionState.clientId && item.roll.clientId === connectionState.clientId);
 }
 
 function renderDiceRow(dice: DiceValue[]): string {
@@ -7457,6 +7637,93 @@ function getRollOutcome(roll: RollEvent): RollOutcome | undefined {
   return "success";
 }
 
+function getCompulsionPromptReason(roll: RollEvent): CompulsionPromptReason | undefined {
+  if (roll.source !== "demiplane" || typeof roll.successes !== "number") {
+    return undefined;
+  }
+
+  const hungerOnes = roll.dice.filter(isHungerSkull).length;
+  const tens = roll.dice.filter(isCriticalDie).length;
+  const hungerTens = roll.dice.filter((die) => die.kind === "hunger" && isCriticalDie(die)).length;
+
+  if (roll.successes <= 0 && hungerOnes > 0) {
+    return "bestialFailure";
+  }
+
+  if (tens >= 2 && hungerTens > 0) {
+    return "messyCritical";
+  }
+
+  if (hungerOnes > 0) {
+    return "hungerSkull";
+  }
+
+  return undefined;
+}
+
+function getLinkedCompulsionRoll(parentRollId: string): RollEvent | undefined {
+  return rolls.find((item) => getCompulsionParentRollId(item.roll) === parentRollId)?.roll;
+}
+
+function getCompulsionParentRollId(roll: RollEvent): string | undefined {
+  if (!isCompulsionRoll(roll)) {
+    return undefined;
+  }
+
+  return roll.rawText.match(/^Parent Roll:\s*(.+)$/im)?.[1]?.trim();
+}
+
+function getCompulsionResultKeyFromRoll(roll: RollEvent): CompulsionResultKey {
+  const rawKey = roll.rawText.match(/^Compulsion Key:\s*(hunger|dominance|harm|paranoia|clan)$/im)?.[1];
+  if (rawKey === "hunger" || rawKey === "dominance" || rawKey === "harm" || rawKey === "paranoia" || rawKey === "clan") {
+    return rawKey;
+  }
+
+  return getCompulsionResultKey(typeof roll.total === "number" ? roll.total : 10);
+}
+
+function getCompulsionResultKey(value: number): CompulsionResultKey {
+  if (value >= 1 && value <= 3) {
+    return "hunger";
+  }
+  if (value >= 4 && value <= 5) {
+    return "dominance";
+  }
+  if (value >= 6 && value <= 7) {
+    return "harm";
+  }
+  if (value >= 8 && value <= 9) {
+    return "paranoia";
+  }
+  return "clan";
+}
+
+function compulsionResultLabel(key: CompulsionResultKey): string {
+  if (key === "hunger") {
+    return t("compulsionResultHunger");
+  }
+  if (key === "dominance") {
+    return t("compulsionResultDominance");
+  }
+  if (key === "harm") {
+    return t("compulsionResultHarm");
+  }
+  if (key === "paranoia") {
+    return t("compulsionResultParanoia");
+  }
+  return t("compulsionResultClan");
+}
+
+function compulsionPromptReasonLabel(reason: CompulsionPromptReason): string {
+  if (reason === "bestialFailure") {
+    return t("compulsionTriggerBestialFailure");
+  }
+  if (reason === "messyCritical") {
+    return t("compulsionTriggerMessyCritical");
+  }
+  return t("compulsionTriggerHungerSkull");
+}
+
 function isHungerSkull(die: DiceValue): boolean {
   return die.face === "skull" || (die.kind === "hunger" && die.value === 1);
 }
@@ -7482,6 +7749,10 @@ function outcomeLabel(outcome: RollOutcome): string {
 }
 
 function describeRoll(roll: RollEvent): string {
+  if (isCompulsionRoll(roll)) {
+    return `${t("compulsion")}: ${compulsionResultLabel(getCompulsionResultKeyFromRoll(roll))}`;
+  }
+
   const result = describeResult(roll);
   if (roll.source === "extension") {
     return `${t("rolled")} ${roll.rollTitle}. ${result}`;
@@ -7515,7 +7786,7 @@ function formatSuccesses(successes: number): string {
 }
 
 function formatRollTotal(roll: RollEvent): string {
-  if (roll.source === "extension" && roll.rollTitle.trim().toLowerCase() === "1d10" && roll.total === 10) {
+  if ((isManualD10Roll(roll) || isCompulsionRoll(roll)) && roll.total === 10) {
     return "0";
   }
 

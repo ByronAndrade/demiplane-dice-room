@@ -176,6 +176,10 @@ async function runScenario() {
   players[0].sendRoll(playerRoll);
   await waitForRoll([hostClient, ...players], playerRoll.id, "player roll reaches host and table");
 
+  const compulsionRoll = createCompulsionRoll(players[0], playerRoll.id, 10);
+  players[0].sendRoll(compulsionRoll);
+  await waitForRoll([hostClient, ...players], compulsionRoll.id, "compulsion roll reaches host and table");
+
   const ignoredRoll = createRoll(players[0], "ignored-dice-pool", "CUSTOM", null, {
     rawText: "CUSTOM\nDICE POOL\nREGULAR HUNGER\nADD DICE TO ROLL"
   });
@@ -607,6 +611,34 @@ function createManualD10Roll(client, suffix, value) {
       }
     ],
     rawText: `1d10\nResult: ${label}`,
+    createdAt: new Date().toISOString()
+  };
+}
+
+function createCompulsionRoll(client, parentRollId, value) {
+  const label = value === 10 ? "0" : String(value);
+  return {
+    type: "roll",
+    version: 1,
+    id: `${client.clientId}:compulsion:${Date.now()}:${randomUUID()}`,
+    clientId: client.clientId,
+    playerName: client.playerName,
+    characterName: client.characterName,
+    source: "extension",
+    system: "vampire",
+    rollTitle: "1d10",
+    successes: null,
+    total: value,
+    dice: [
+      {
+        kind: "regular",
+        value,
+        sides: 10,
+        face: "blank",
+        label
+      }
+    ],
+    rawText: `Compulsion\nParent Roll: ${parentRollId}\nResult: ${label}\nCompulsion Key: clan\nCompulsion: Clan Compulsion`,
     createdAt: new Date().toISOString()
   };
 }

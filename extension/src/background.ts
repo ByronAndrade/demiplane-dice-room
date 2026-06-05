@@ -31,6 +31,7 @@ type RuntimeRequest =
   | { kind: "content:dice-control"; event: SharedDiceControlEvent }
   | { kind: "content:dice-clear"; event: SharedDiceClearEvent }
   | { kind: "content:manual-d10" }
+  | { kind: "content:roll-compulsion"; parentRollId: string }
   | { kind: "content:captured-roll"; roll: CapturedRoll };
 
 const localHistoryVersion = 9;
@@ -129,6 +130,9 @@ async function handleRuntimeMessage(message: RuntimeRequest): Promise<unknown> {
 
     case "content:manual-d10":
       return publishManualD10Roll();
+
+    case "content:roll-compulsion":
+      return publishCompulsionRoll(message.parentRollId);
 
     case "popup:save-config": {
       const current = await getConfig();
@@ -412,6 +416,55 @@ async function publishManualD10Roll(): Promise<{ ok: true; delivered: string; ro
       }
     ],
     rawText: `1d10\nResultado: ${label}`,
+    createdAt
+  };
+
+  return publishRollEvent(roll);
+}
+
+async function publishCompulsionRoll(parentRollId: string): Promise<{ ok: true; delivered: string; roll: RollEvent; existing?: boolean }> {
+  const cleanParentRollId = parentRollId.trim();
+  const existing = recentRolls.find((item) => getCompulsionParentRollId(item.roll) === cleanParentRollId);
+  if (existing) {
+    return { ok: true, delivered: existing.delivery, roll: existing.roll, existing: true };
+  }
+
+  const config = await getConfig();
+  const clientId = await getClientId();
+  const createdAt = new Date().toISOString();
+  const value = secureRandomInt(1, 10);
+  const label = formatManualD10Label(value);
+  const compulsionKey = getCompulsionResultKey(value);
+  const compulsionLabel = compulsionResultLabel(compulsionKey);
+  const publicCharacterName = await getPublicCharacterName(config);
+  const roll: RollEvent = {
+    type: "roll",
+    version: protocolVersion,
+    id: createRollId(clientId, `compulsion:${cleanParentRollId}:${value}:${crypto.randomUUID()}`, createdAt),
+    clientId,
+    playerName: config.playerName || "Jogador",
+    characterName: publicCharacterName,
+    source: "extension",
+    system: "vampire",
+    rollTitle: "1d10",
+    successes: null,
+    total: value,
+    dice: [
+      {
+        kind: "regular",
+        value,
+        sides: 10,
+        face: "blank",
+        label
+      }
+    ],
+    rawText: [
+      "Compulsion",
+      `Parent Roll: ${cleanParentRollId}`,
+      `Result: ${label}`,
+      `Compulsion Key: ${compulsionKey}`,
+      `Compulsion: ${compulsionLabel}`
+    ].join("\n"),
     createdAt
   };
 
@@ -1195,20 +1248,70 @@ function formatManualD10Label(value: number): string {
   return value === 10 ? "0" : String(value);
 }
 
+type CompulsionResultKey = "hunger" | "dominance" | "harm" | "paranoia" | "clan";
+
+function getCompulsionParentRollId(roll: RollEvent): string | undefined {
+  if (!isCompulsionRoll(roll)) {
+    return undefined;
+  }
+
+  return roll.rawText.match(/^Parent Roll:\s*(.+)$/im)?.[1]?.trim();
+}
+
+function getCompulsionResultKey(value: number): CompulsionResultKey {
+  if (value >= 1 && value <= 3) {
+    return "hunger";
+  }
+  if (value >= 4 && value <= 5) {
+    return "dominance";
+  }
+  if (value >= 6 && value <= 7) {
+    return "harm";
+  }
+  if (value >= 8 && value <= 9) {
+    return "paranoia";
+  }
+  return "clan";
+}
+
+function compulsionResultLabel(key: CompulsionResultKey): string {
+  if (key === "hunger") {
+    return "Hunger";
+  }
+  if (key === "dominance") {
+    return "Dominance";
+  }
+  if (key === "harm") {
+    return "Harm";
+  }
+  if (key === "paranoia") {
+    return "Paranoia";
+  }
+  return "Clan Compulsion";
+}
+
+function isExtensionD10Roll(roll: RollEvent): boolean {
+  return (
+    (roll.rollTitle.trim().toLowerCase() === "1d10" || roll.rollTitle.trim().toLowerCase() === "compulsion") &&
+    typeof roll.total === "number" &&
+    roll.total >= 1 &&
+    roll.total <= 10 &&
+    roll.dice.length === 1 &&
+    roll.dice[0]?.sides === 10
+  );
+}
+
+function isCompulsionRoll(roll: RollEvent): boolean {
+  return roll.source === "extension" && isExtensionD10Roll(roll) && /^Compulsion$/im.test(roll.rawText);
+}
+
 function isUsefulRoll(roll: RollEvent | undefined): roll is RollEvent {
   if (!roll) {
     return false;
   }
 
   if (roll.source === "extension") {
-    return (
-      roll.rollTitle.trim().toLowerCase() === "1d10" &&
-      typeof roll.total === "number" &&
-      roll.total >= 1 &&
-      roll.total <= 10 &&
-      roll.dice.length === 1 &&
-      roll.dice[0]?.sides === 10
-    );
+    return isExtensionD10Roll(roll);
   }
 
   return (

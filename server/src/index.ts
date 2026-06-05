@@ -1567,20 +1567,25 @@ function readPositiveInt(value: string | undefined, fallback: number): number {
 
 function isUsefulRoll(roll: RollEvent): boolean {
   if (roll.source === "extension") {
-    return (
-      roll.rollTitle.trim().toLowerCase() === "1d10" &&
-      typeof roll.total === "number" &&
-      roll.total >= 1 &&
-      roll.total <= 10 &&
-      roll.dice.length === 1 &&
-      roll.dice[0]?.sides === 10
-    );
+    return isExtensionD10Roll(roll);
   }
 
   return (
     isUsefulRollTitle(roll.rollTitle) &&
     typeof roll.successes === "number" &&
     !/(add dice to roll|dice pool|clear|regular\s+hunger)/i.test(roll.rawText)
+  );
+}
+
+function isExtensionD10Roll(roll: RollEvent): boolean {
+  const title = roll.rollTitle.trim().toLowerCase();
+  return (
+    (title === "1d10" || title === "compulsion") &&
+    typeof roll.total === "number" &&
+    roll.total >= 1 &&
+    roll.total <= 10 &&
+    roll.dice.length === 1 &&
+    roll.dice[0]?.sides === 10
   );
 }
 
