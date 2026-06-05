@@ -45,7 +45,8 @@ function startLocalRelay() {
     env: {
       ...process.env,
       HOST: host,
-      PORT: String(port)
+      PORT: String(port),
+      HOST_RECONNECT_GRACE_MS: "750"
     },
     stdio: ["ignore", "pipe", "pipe"]
   });
@@ -309,9 +310,9 @@ async function verifyHostRecoveryWithNewClientId(hostClient, players) {
   await delay(250);
   assert(
     !impostorHost.messages.some((message) => message.type === "welcome"),
-    "wrong owner key cannot take over host role"
+    "wrong owner key cannot take over host role during grace"
   );
-  assertEqual(impostorHost.socket.readyState, WebSocket.CLOSED, "wrong owner key closes host takeover socket");
+  assertEqual(impostorHost.socket.readyState, WebSocket.CLOSED, "wrong owner key closes host takeover socket during grace");
   impostorHost.close();
   clients.delete(impostorHost);
 
@@ -325,7 +326,26 @@ async function verifyHostRecoveryWithNewClientId(hostClient, players) {
     "host recovery keeps persistent room history"
   );
   await waitForPresenceCount([recoveredHost, ...players], players.length + 1);
-  return recoveredHost;
+
+  recoveredHost.close();
+  clients.delete(recoveredHost);
+  await delay(900);
+
+  const orphanReclaimedHost = await connectClient({
+    ...hostIdentity,
+    clientId: `orphan-reclaimed-host-${randomUUID()}`,
+    hostKey: createHostKey("new-extension-profile")
+  });
+  const orphanWelcome = await orphanReclaimedHost.waitFor(
+    (message) => message.type === "welcome",
+    "orphan persistent room host reclaim welcome"
+  );
+  assert(
+    orphanWelcome.history.some((roll) => roll.id.includes("persisted-approval")),
+    "orphan persistent room reclaim keeps history"
+  );
+  await waitForPresenceCount([orphanReclaimedHost, ...players], players.length + 1);
+  return orphanReclaimedHost;
 }
 
 async function verifyPlayerRollWhileHostOffline(hostClient, players) {

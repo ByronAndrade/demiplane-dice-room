@@ -550,18 +550,6 @@ export class DiceRoomDurableObject extends DurableObject<Env> {
       return;
     }
 
-    if (
-      roomRole === "host" &&
-      !existingHostSocket &&
-      roomRecord?.hostClientId &&
-      !canResumeRoomAsHost(roomRecord, clientId, hostKeyHash)
-    ) {
-      this.send(socket, errorMessage("room_host_exists", "Esta sala pertence ao narrador original."));
-      socket.close(1008, "room_host_exists");
-      this.forgetSocketSession(socket);
-      return;
-    }
-
     const approvedPlayer = await this.isPlayerApproved(clientId);
     if (roomRole === "player" && !existingHostSocket && !roomRecord && !approvedPlayer) {
       this.send(socket, errorMessage("room_not_found", "A sala ainda nao foi criada pelo narrador."));

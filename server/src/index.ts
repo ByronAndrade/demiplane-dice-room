@@ -22,7 +22,7 @@ const maxRoomPlayers = 10;
 const maxPendingPlayers = 20;
 const maxActiveRooms = readPositiveInt(process.env.DICE_ROOM_MAX_ROOMS, 100);
 const maxRelayConnections = readPositiveInt(process.env.DICE_ROOM_MAX_CONNECTIONS, 500);
-const hostReconnectGraceMs = 120_000;
+const hostReconnectGraceMs = readPositiveInt(process.env.HOST_RECONNECT_GRACE_MS, 120_000);
 const roomIdleTtlMs = 45 * 24 * 60 * 60 * 1000;
 const diceControlLockMs = 4_000;
 const activeDiceRollTtlMs = 18_000;
@@ -459,12 +459,6 @@ function joinRoom(socket: WebSocket, hello: HelloMessage): JoinResult {
     !canResumeRoomAsHost(roomRecord, hello.clientId, hostKeyHash)
   ) {
     send(socket, errorMessage("room_host_exists", "Esta sala aguarda o narrador original reconectar."));
-    socket.close(1008, "room_host_exists");
-    return undefined;
-  }
-
-  if (roomRole === "host" && roomRecord && !existingHost && !canResumeRoomAsHost(roomRecord, hello.clientId, hostKeyHash)) {
-    send(socket, errorMessage("room_host_exists", "Esta sala pertence ao narrador original."));
     socket.close(1008, "room_host_exists");
     return undefined;
   }
