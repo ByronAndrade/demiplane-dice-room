@@ -56,6 +56,7 @@ const diceFaceCollapseSpeed = 14;
 const diceHardFaceCollapseSpeed = 28;
 const maxActiveAnimatedDice = 15;
 const maxAnimatedDice = maxActiveAnimatedDice;
+const maxManualDicePoolDice = maxActiveAnimatedDice;
 const maxSeenRollIds = 200;
 const panelUiStorageKey = "diceRoomPanelUi";
 const minPanelOpacity = 0.3;
@@ -63,7 +64,7 @@ const defaultDiceAnimationScale = 0.75;
 const minDiceAnimationScale = 0.45;
 const maxDiceAnimationScale = 1.15;
 const defaultRelayUrl = "wss://demiplane-dice-room-relay.foxbyron.workers.dev";
-const extensionUiVersion = "0.1.116";
+const extensionUiVersion = "0.1.117";
 const pageBridgeMessageSource = "demiplane-dice-room-page";
 const pageDiceRollResponseWaitMs = 1400;
 const pageDiceRollResponseTtlMs = 8_000;
@@ -79,6 +80,7 @@ let diceClearButtonUpdateTimer: number | undefined;
 let diceClearButtonUpdateAt = 0;
 let panelPosition: { left: number; top: number } | undefined;
 let uiLanguage: UiLanguage = "pt-BR";
+let manualDicePool = { regular: 0, hunger: 0 };
 let scanTimer: number | undefined;
 let passiveMutationScanTimer: number | undefined;
 let captureArmedUntil = 0;
@@ -149,6 +151,15 @@ const messages = {
     localMode: "Local",
     diceRoomTitle: "Sala de dados",
     manualD10: "Rolar 1d10",
+    dicePool: "Dice Pool",
+    dicePoolCustom: "Custom",
+    rollDicePool: "Rolar",
+    clearDicePool: "Limpar",
+    addRegularDie: "Adicionar dado preto",
+    removeRegularDie: "Remover dado preto",
+    addHungerDie: "Adicionar dado de fome",
+    removeHungerDie: "Remover dado de fome",
+    dicePoolLimit: (count: number) => `Limite de ${count} dados`,
     clearDice: "Limpar dados",
     clearDiceDisabled: "Disponivel depois da revelacao dos dados",
     openHistory: "Mostrar historico de rolagens da sala",
@@ -275,6 +286,15 @@ const messages = {
     localMode: "Local",
     diceRoomTitle: "Dice Room",
     manualD10: "Roll 1d10",
+    dicePool: "Dice Pool",
+    dicePoolCustom: "Custom",
+    rollDicePool: "Roll",
+    clearDicePool: "Clear",
+    addRegularDie: "Add regular die",
+    removeRegularDie: "Remove regular die",
+    addHungerDie: "Add hunger die",
+    removeHungerDie: "Remove hunger die",
+    dicePoolLimit: (count: number) => `${count} dice limit`,
     clearDice: "Clear dice",
     clearDiceDisabled: "Available after the dice reveal",
     openHistory: "Show room roll history",
@@ -2431,6 +2451,19 @@ function createPanel(): {
   diagnostic: HTMLDivElement;
   panelRoot: HTMLElement;
   header: HTMLElement;
+  diceRoller: HTMLElement;
+  dicePoolTitle: HTMLElement;
+  dicePoolPips: HTMLDivElement;
+  dicePoolSummary: HTMLSpanElement;
+  dicePoolLimit: HTMLSpanElement;
+  regularCount: HTMLSpanElement;
+  hungerCount: HTMLSpanElement;
+  addRegularButton: HTMLButtonElement;
+  removeRegularButton: HTMLButtonElement;
+  addHungerButton: HTMLButtonElement;
+  removeHungerButton: HTMLButtonElement;
+  clearDicePoolButton: HTMLButtonElement;
+  rollDicePoolButton: HTMLButtonElement;
   settings: HTMLButtonElement;
   settingsPanel: HTMLDivElement;
   roomSummary: HTMLDivElement;
@@ -2506,6 +2539,10 @@ function createPanel(): {
       }
 
       :host([data-settings="true"]) .list {
+        display: none;
+      }
+
+      :host([data-settings="true"]) .dice-roller {
         display: none;
       }
 
@@ -2942,6 +2979,7 @@ function createPanel(): {
       :host([data-compact="true"]) .header-actions,
       :host([data-compact="true"]) .manual-d10,
       :host([data-compact="true"]) .title > span,
+      :host([data-compact="true"]) .dice-roller,
       :host([data-compact="true"]) .list,
       :host([data-compact="true"]) .diagnostic,
       :host([data-compact="true"]) .settings-panel {
@@ -2985,6 +3023,181 @@ function createPanel(): {
         padding: 8px;
         overflow: auto;
         list-style: none;
+      }
+
+      .dice-roller {
+        display: grid;
+        gap: 8px;
+        border-bottom: 1px solid rgba(190, 202, 220, 0.14);
+        padding: 8px;
+        background:
+          linear-gradient(135deg, rgba(92, 15, 25, 0.24), rgba(7, 10, 14, 0.62)),
+          rgba(255, 255, 255, 0.02);
+      }
+
+      .dice-roller-head {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 8px;
+      }
+
+      .dice-roller-title {
+        color: #f3f6fb;
+        font-size: 11px;
+        font-weight: 900;
+        text-transform: uppercase;
+      }
+
+      .dice-roller-meta {
+        display: flex;
+        align-items: center;
+        gap: 7px;
+        min-width: 0;
+      }
+
+      .dice-roller-summary,
+      .dice-roller-limit {
+        color: #9ba7b8;
+        font-size: 10px;
+        font-weight: 850;
+        white-space: nowrap;
+      }
+
+      .dice-roller-clear {
+        border: 0;
+        padding: 0;
+        color: #ff4e5e;
+        background: transparent;
+        cursor: pointer;
+        font: inherit;
+        font-size: 10px;
+        font-weight: 900;
+        text-transform: uppercase;
+      }
+
+      .dice-roller-clear:disabled {
+        cursor: default;
+        opacity: 0.45;
+      }
+
+      .dice-pips {
+        min-height: 22px;
+        display: flex;
+        align-items: center;
+        gap: 5px;
+        overflow: hidden;
+      }
+
+      .dice-pip {
+        width: 12px;
+        height: 12px;
+        flex: 0 0 auto;
+        border: 1px solid rgba(235, 241, 250, 0.94);
+        background: #f4f6fb;
+        transform: rotate(45deg);
+      }
+
+      .dice-pip.hunger {
+        border-color: rgba(255, 205, 211, 0.96);
+        background: #d92338;
+      }
+
+      .dice-pips-empty {
+        color: #9ba7b8;
+        font-size: 10px;
+        font-weight: 850;
+        text-transform: uppercase;
+      }
+
+      .dice-roller-controls {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) auto;
+        gap: 6px;
+        align-items: end;
+      }
+
+      .dice-stepper {
+        display: grid;
+        gap: 4px;
+      }
+
+      .dice-stepper-label {
+        display: flex;
+        align-items: center;
+        gap: 5px;
+        color: #cbd5e1;
+        font-size: 9px;
+        font-weight: 900;
+        text-transform: uppercase;
+      }
+
+      .dice-stepper-icon {
+        width: 13px;
+        height: 13px;
+        border: 1px solid rgba(235, 241, 250, 0.94);
+        background: #06080c;
+        transform: rotate(45deg);
+      }
+
+      .dice-stepper-icon.hunger {
+        border-color: rgba(255, 205, 211, 0.96);
+        background: #d92338;
+      }
+
+      .dice-stepper-controls {
+        display: grid;
+        grid-template-columns: 27px minmax(28px, 1fr) 27px;
+        gap: 4px;
+        align-items: center;
+      }
+
+      .dice-stepper-controls button,
+      .dice-roll-button {
+        min-height: 27px;
+        border: 1px solid rgba(190, 202, 220, 0.2);
+        border-radius: 6px;
+        color: #eaf0f8;
+        background: #202730;
+        cursor: pointer;
+        font: inherit;
+        font-size: 12px;
+        font-weight: 900;
+      }
+
+      .dice-stepper-controls button:hover {
+        background: #2a3340;
+      }
+
+      .dice-stepper-controls button:disabled,
+      .dice-roll-button:disabled {
+        cursor: default;
+        opacity: 0.45;
+      }
+
+      .dice-count {
+        min-height: 27px;
+        display: inline-grid;
+        place-items: center;
+        border: 1px solid rgba(190, 202, 220, 0.12);
+        border-radius: 6px;
+        color: #f4f6fb;
+        background: rgba(9, 12, 17, 0.48);
+        font-size: 12px;
+        font-weight: 900;
+      }
+
+      .dice-roll-button {
+        min-width: 72px;
+        border-color: rgba(0, 164, 214, 0.58);
+        color: #e8faff;
+        background: rgba(20, 96, 119, 0.82);
+        text-transform: uppercase;
+      }
+
+      .dice-roll-button:not(:disabled):hover {
+        background: rgba(27, 124, 153, 0.92);
+        box-shadow: 0 0 12px rgba(0, 164, 214, 0.22);
       }
 
       .diagnostic {
@@ -3791,6 +4004,36 @@ function createPanel(): {
         </div>
         </div>
       </div>
+      <section data-dice-roller class="dice-roller" aria-label="Dice Pool">
+        <div class="dice-roller-head">
+          <strong data-dice-pool-title class="dice-roller-title">Dice Pool</strong>
+          <div class="dice-roller-meta">
+            <span data-dice-pool-summary class="dice-roller-summary">Custom</span>
+            <span data-dice-pool-limit class="dice-roller-limit"></span>
+            <button data-dice-pool-clear class="dice-roller-clear" type="button">Clear</button>
+          </div>
+        </div>
+        <div data-dice-pool-pips class="dice-pips" aria-hidden="true"></div>
+        <div class="dice-roller-controls">
+          <div class="dice-stepper">
+            <span class="dice-stepper-label"><i class="dice-stepper-icon"></i><span data-dice-pool-regular-label>Regular</span></span>
+            <div class="dice-stepper-controls">
+              <button data-dice-pool-remove-regular type="button" aria-label="Remover dado preto">-</button>
+              <span data-dice-pool-regular-count class="dice-count">0</span>
+              <button data-dice-pool-add-regular type="button" aria-label="Adicionar dado preto">+</button>
+            </div>
+          </div>
+          <div class="dice-stepper">
+            <span class="dice-stepper-label"><i class="dice-stepper-icon hunger"></i><span data-dice-pool-hunger-label>Hunger</span></span>
+            <div class="dice-stepper-controls">
+              <button data-dice-pool-remove-hunger type="button" aria-label="Remover dado de fome">-</button>
+              <span data-dice-pool-hunger-count class="dice-count">0</span>
+              <button data-dice-pool-add-hunger type="button" aria-label="Adicionar dado de fome">+</button>
+            </div>
+          </div>
+          <button data-dice-pool-roll class="dice-roll-button" type="button">Roll</button>
+        </div>
+      </section>
       <ol data-list class="list"></ol>
     </section>
     <div data-tooltip-portal class="tooltip-portal" hidden></div>
@@ -3810,6 +4053,19 @@ function createPanel(): {
   const toggleIcon = shadow.querySelector("[data-toggle-icon]");
   const tooltip = shadow.querySelector("[data-tooltip-portal]");
   const diagnostic = shadow.querySelector("[data-diagnostic]");
+  const diceRoller = shadow.querySelector("[data-dice-roller]");
+  const dicePoolTitle = shadow.querySelector("[data-dice-pool-title]");
+  const dicePoolPips = shadow.querySelector("[data-dice-pool-pips]");
+  const dicePoolSummary = shadow.querySelector("[data-dice-pool-summary]");
+  const dicePoolLimit = shadow.querySelector("[data-dice-pool-limit]");
+  const regularCount = shadow.querySelector("[data-dice-pool-regular-count]");
+  const hungerCount = shadow.querySelector("[data-dice-pool-hunger-count]");
+  const addRegularButton = shadow.querySelector("[data-dice-pool-add-regular]");
+  const removeRegularButton = shadow.querySelector("[data-dice-pool-remove-regular]");
+  const addHungerButton = shadow.querySelector("[data-dice-pool-add-hunger]");
+  const removeHungerButton = shadow.querySelector("[data-dice-pool-remove-hunger]");
+  const clearDicePoolButton = shadow.querySelector("[data-dice-pool-clear]");
+  const rollDicePoolButton = shadow.querySelector("[data-dice-pool-roll]");
   const settings = shadow.querySelector("[data-settings-button]");
   const settingsPanel = shadow.querySelector("[data-settings-panel]");
   const roomSummary = shadow.querySelector("[data-room-summary]");
@@ -3867,6 +4123,19 @@ function createPanel(): {
     !(toggleIcon instanceof HTMLSpanElement) ||
     !(tooltip instanceof HTMLDivElement) ||
     !(diagnostic instanceof HTMLDivElement) ||
+    !(diceRoller instanceof HTMLElement) ||
+    !(dicePoolTitle instanceof HTMLElement) ||
+    !(dicePoolPips instanceof HTMLDivElement) ||
+    !(dicePoolSummary instanceof HTMLSpanElement) ||
+    !(dicePoolLimit instanceof HTMLSpanElement) ||
+    !(regularCount instanceof HTMLSpanElement) ||
+    !(hungerCount instanceof HTMLSpanElement) ||
+    !(addRegularButton instanceof HTMLButtonElement) ||
+    !(removeRegularButton instanceof HTMLButtonElement) ||
+    !(addHungerButton instanceof HTMLButtonElement) ||
+    !(removeHungerButton instanceof HTMLButtonElement) ||
+    !(clearDicePoolButton instanceof HTMLButtonElement) ||
+    !(rollDicePoolButton instanceof HTMLButtonElement) ||
     !(settings instanceof HTMLButtonElement) ||
     !(settingsPanel instanceof HTMLDivElement) ||
     !(roomSummary instanceof HTMLDivElement) ||
@@ -3948,6 +4217,23 @@ function createPanel(): {
 
   manualD10Button.addEventListener("click", () => {
     void sendRuntimeMessage({ kind: "content:manual-d10" });
+  });
+
+  addRegularButton.addEventListener("click", () => updateManualDicePool(1, 0));
+  removeRegularButton.addEventListener("click", () => updateManualDicePool(-1, 0));
+  addHungerButton.addEventListener("click", () => updateManualDicePool(0, 1));
+  removeHungerButton.addEventListener("click", () => updateManualDicePool(0, -1));
+  clearDicePoolButton.addEventListener("click", () => {
+    manualDicePool = { regular: 0, hunger: 0 };
+    renderPanel();
+  });
+  rollDicePoolButton.addEventListener("click", () => {
+    const { regular, hunger } = manualDicePool;
+    if (regular + hunger <= 0) {
+      return;
+    }
+
+    void sendRuntimeMessage({ kind: "content:manual-dice-pool", regular, hunger });
   });
 
   list.addEventListener("click", handleRollCompulsionClick);
@@ -4152,6 +4438,19 @@ function createPanel(): {
     diagnostic,
     panelRoot,
     header,
+    diceRoller,
+    dicePoolTitle,
+    dicePoolPips,
+    dicePoolSummary,
+    dicePoolLimit,
+    regularCount,
+    hungerCount,
+    addRegularButton,
+    removeRegularButton,
+    addHungerButton,
+    removeHungerButton,
+    clearDicePoolButton,
+    rollDicePoolButton,
     settings,
     settingsPanel,
     roomSummary,
@@ -4284,6 +4583,7 @@ function renderPanel(): void {
   panel.brandButton.setAttribute("aria-label", t("diceRoomTitle"));
   panel.manualD10Button.dataset.tooltip = t("manualD10");
   panel.manualD10Button.setAttribute("aria-label", t("manualD10"));
+  renderManualDicePool();
   panel.toggleIcon.textContent = collapsed ? "^" : "v";
   panel.toggle.removeAttribute("title");
   const historyToggleLabel = collapsed ? t("openHistory") : t("closeHistory");
@@ -4410,6 +4710,76 @@ function renderPanel(): void {
   }
 
   panel.list.innerHTML = visibleRolls.map(renderRoll).join("");
+}
+
+function renderManualDicePool(): void {
+  if (!panel) {
+    return;
+  }
+
+  const total = getManualDicePoolTotal();
+  const canAdd = total < maxManualDicePoolDice;
+  panel.dicePoolTitle.textContent = t("dicePool");
+  panel.dicePoolSummary.textContent =
+    total > 0 ? `${t("dicePoolCustom")}: ${total}` : t("dicePoolCustom");
+  panel.dicePoolLimit.textContent = t("dicePoolLimit", maxManualDicePoolDice);
+  panel.regularCount.textContent = String(manualDicePool.regular);
+  panel.hungerCount.textContent = String(manualDicePool.hunger);
+  panel.removeRegularButton.disabled = manualDicePool.regular <= 0;
+  panel.removeHungerButton.disabled = manualDicePool.hunger <= 0;
+  panel.addRegularButton.disabled = !canAdd;
+  panel.addHungerButton.disabled = !canAdd;
+  panel.clearDicePoolButton.disabled = total <= 0;
+  panel.rollDicePoolButton.disabled = total <= 0;
+  panel.clearDicePoolButton.textContent = t("clearDicePool");
+  panel.rollDicePoolButton.textContent = t("rollDicePool");
+  panel.addRegularButton.setAttribute("aria-label", t("addRegularDie"));
+  panel.removeRegularButton.setAttribute("aria-label", t("removeRegularDie"));
+  panel.addHungerButton.setAttribute("aria-label", t("addHungerDie"));
+  panel.removeHungerButton.setAttribute("aria-label", t("removeHungerDie"));
+  panel.rollDicePoolButton.setAttribute("aria-label", t("rollDicePool"));
+  panel.clearDicePoolButton.setAttribute("aria-label", t("clearDicePool"));
+
+  const regularLabel = panel.host.shadowRoot?.querySelector("[data-dice-pool-regular-label]");
+  if (regularLabel instanceof HTMLSpanElement) {
+    regularLabel.textContent = t("regularDie");
+  }
+  const hungerLabel = panel.host.shadowRoot?.querySelector("[data-dice-pool-hunger-label]");
+  if (hungerLabel instanceof HTMLSpanElement) {
+    hungerLabel.textContent = t("hungerDie");
+  }
+
+  if (total <= 0) {
+    panel.dicePoolPips.innerHTML = `<span class="dice-pips-empty">${escapeHtml(t("dicePoolCustom"))}</span>`;
+    return;
+  }
+
+  const pips = [
+    ...Array.from({ length: manualDicePool.regular }, () => '<i class="dice-pip"></i>'),
+    ...Array.from({ length: manualDicePool.hunger }, () => '<i class="dice-pip hunger"></i>')
+  ];
+  panel.dicePoolPips.innerHTML = pips.join("");
+}
+
+function updateManualDicePool(regularDelta: number, hungerDelta: number): void {
+  const regular = clampInteger(manualDicePool.regular + regularDelta, 0, maxManualDicePoolDice);
+  const hunger = clampInteger(manualDicePool.hunger + hungerDelta, 0, maxManualDicePoolDice);
+  if (regular + hunger > maxManualDicePoolDice) {
+    if (regularDelta > 0) {
+      manualDicePool = { regular: maxManualDicePoolDice - manualDicePool.hunger, hunger: manualDicePool.hunger };
+    } else if (hungerDelta > 0) {
+      manualDicePool = { regular: manualDicePool.regular, hunger: maxManualDicePoolDice - manualDicePool.regular };
+    } else {
+      manualDicePool = { regular: Math.min(regular, maxManualDicePoolDice), hunger: Math.max(0, maxManualDicePoolDice - regular) };
+    }
+  } else {
+    manualDicePool = { regular, hunger };
+  }
+  renderPanel();
+}
+
+function getManualDicePoolTotal(): number {
+  return manualDicePool.regular + manualDicePool.hunger;
 }
 
 function setStorytellerRollPreference(enabled: boolean): void {
@@ -4883,6 +5253,11 @@ function isPanelPosition(value: unknown): value is { left: number; top: number }
 
 function clampNumber(value: number, min: number, max: number): number {
   return Math.min(max, Math.max(min, value));
+}
+
+function clampInteger(value: number, min: number, max: number): number {
+  const parsed = Number.isFinite(value) ? Math.floor(value) : min;
+  return Math.min(max, Math.max(min, parsed));
 }
 
 function translateConnectionDetail(value: string): string {

@@ -122,7 +122,7 @@ def draw_panel_header(image: Image.Image, expanded: bool) -> tuple[int, int, int
     draw_diamond(draw, x + 125, y + 70, 16, (8, 12, 18, 255), angle=-10)
     rounded(draw, (x + 420, y + 36, x + 550, y + 82), 23, (23, 34, 48, 255), (92, 112, 139, 255), 3)
     label(draw, (x + 485, y + 59), "Local", 28, (236, 242, 250, 255), True, anchor="mm")
-    label(draw, (x + 575, y + 58), "v0.1.116", 22, (176, 186, 202, 255), True, anchor="lm")
+    label(draw, (x + 575, y + 58), "v0.1.117", 22, (176, 186, 202, 255), True, anchor="lm")
     rounded(draw, (x + 710, y + 30, x + 774, y + 92), 14, (28, 37, 50, 255), (60, 74, 92, 255), 3)
     label(draw, (x + 742, y + 61), "gear", 13, (220, 228, 238, 255), anchor="mm")
     rounded(draw, (x + 786, y + 30, x + 850, y + 92), 14, (28, 37, 50, 255), (60, 74, 92, 255), 3)
