@@ -9,7 +9,6 @@ import {
   type BackgroundMessage,
   type CapturedRoll,
   type ConnectionState,
-  type DiceValue,
   type RollEvent,
   type ServerMessage,
   type SharedDiceClearEvent,
@@ -32,7 +31,6 @@ type RuntimeRequest =
   | { kind: "content:dice-control"; event: SharedDiceControlEvent }
   | { kind: "content:dice-clear"; event: SharedDiceClearEvent }
   | { kind: "content:manual-d10" }
-  | { kind: "content:manual-dice-pool"; regular: number; hunger: number }
   | { kind: "content:roll-compulsion"; parentRollId: string }
   | { kind: "content:captured-roll"; roll: CapturedRoll };
 
@@ -46,7 +44,6 @@ const socketKeepAliveMs = 20_000;
 const sheetActivityFreshMs = 15_000;
 const sheetPresenceReportMs = 5_000;
 const maxPendingRoomRolls = 100;
-const maxManualDicePoolDice = 15;
 
 let socket: WebSocket | undefined;
 let reconnectTimer: number | undefined;
@@ -133,9 +130,6 @@ async function handleRuntimeMessage(message: RuntimeRequest): Promise<unknown> {
 
     case "content:manual-d10":
       return publishManualD10Roll();
-
-    case "content:manual-dice-pool":
-      return publishManualDicePoolRoll(message.regular, message.hunger);
 
     case "content:roll-compulsion":
       return publishCompulsionRoll(message.parentRollId);
@@ -422,47 +416,6 @@ async function publishManualD10Roll(): Promise<{ ok: true; delivered: string; ro
       }
     ],
     rawText: `1d10\nResultado: ${label}`,
-    createdAt
-  };
-
-  return publishRollEvent(roll);
-}
-
-async function publishManualDicePoolRoll(
-  regularInput: number,
-  hungerInput: number
-): Promise<{ ok: true; delivered: string; roll: RollEvent }> {
-  const config = await getConfig();
-  const clientId = await getClientId();
-  const createdAt = new Date().toISOString();
-  const regular = clampInteger(regularInput, 0, maxManualDicePoolDice);
-  const hunger = clampInteger(hungerInput, 0, maxManualDicePoolDice - regular);
-  const dice = [
-    ...Array.from({ length: regular }, () => rollVampireDie("regular")),
-    ...Array.from({ length: hunger }, () => rollVampireDie("hunger"))
-  ];
-  const publicCharacterName = await getPublicCharacterName(config);
-  const successes = calculateVampireSuccesses(dice);
-  const roll: RollEvent = {
-    type: "roll",
-    version: protocolVersion,
-    id: createRollId(clientId, `manual-pool:${regular}:${hunger}:${diceKey(dice)}:${crypto.randomUUID()}`, createdAt),
-    clientId,
-    playerName: config.playerName || "Jogador",
-    characterName: publicCharacterName,
-    source: "extension",
-    system: "vampire",
-    rollTitle: "CUSTOM",
-    successes,
-    total: null,
-    dice,
-    rawText: [
-      "CUSTOM",
-      `Successes: ${successes}`,
-      `Regular: ${regular}`,
-      `Hunger: ${hunger}`,
-      `Details: ${dice.map((die) => `${die.kind}:${formatManualD10Label(die.value)}`).join(", ")}`
-    ].join("\n"),
     createdAt
   };
 
@@ -1295,44 +1248,6 @@ function formatManualD10Label(value: number): string {
   return value === 10 ? "0" : String(value);
 }
 
-function rollVampireDie(kind: "regular" | "hunger"): DiceValue {
-  const value = secureRandomInt(1, 10);
-  return {
-    kind,
-    value,
-    sides: 10,
-    face: getVampireDieFace(kind, value)
-  };
-}
-
-function getVampireDieFace(kind: "regular" | "hunger", value: number): DiceValue["face"] {
-  if (kind === "hunger" && value === 1) {
-    return "skull";
-  }
-  if (value === 10) {
-    return "critical";
-  }
-  if (value >= 6) {
-    return "success";
-  }
-  return "blank";
-}
-
-function calculateVampireSuccesses(dice: DiceValue[]): number {
-  const successCount = dice.filter((die) => die.face === "success").length;
-  const criticalCount = dice.filter((die) => die.face === "critical").length;
-  return successCount + criticalCount + Math.floor(criticalCount / 2) * 2;
-}
-
-function diceKey(dice: DiceValue[]): string {
-  return dice.map((die) => `${die.kind}:${die.value}:${die.face ?? ""}`).join(",");
-}
-
-function clampInteger(value: number, min: number, max: number): number {
-  const parsed = Number.isFinite(value) ? Math.floor(value) : min;
-  return Math.min(max, Math.max(min, parsed));
-}
-
 type CompulsionResultKey = "hunger" | "dominance" | "harm" | "paranoia" | "clan";
 
 function getCompulsionParentRollId(roll: RollEvent): string | undefined {
@@ -1390,24 +1305,13 @@ function isCompulsionRoll(roll: RollEvent): boolean {
   return roll.source === "extension" && isExtensionD10Roll(roll) && /^Compulsion$/im.test(roll.rawText);
 }
 
-function isExtensionDicePoolRoll(roll: RollEvent): boolean {
-  return (
-    roll.source === "extension" &&
-    /^custom$/i.test(roll.rollTitle.trim()) &&
-    typeof roll.successes === "number" &&
-    roll.dice.length > 0 &&
-    roll.dice.length <= maxManualDicePoolDice &&
-    roll.dice.every((die) => die.sides === 10 && (die.kind === "regular" || die.kind === "hunger"))
-  );
-}
-
 function isUsefulRoll(roll: RollEvent | undefined): roll is RollEvent {
   if (!roll) {
     return false;
   }
 
   if (roll.source === "extension") {
-    return isExtensionD10Roll(roll) || isExtensionDicePoolRoll(roll);
+    return isExtensionD10Roll(roll);
   }
 
   return (
